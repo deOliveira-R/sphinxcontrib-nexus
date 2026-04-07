@@ -183,22 +183,18 @@ def load_sqlite(path: Path) -> KnowledgeGraph:
             if row["node_id"] in g:
                 g.nodes[row["node_id"]][row["key"]] = json.loads(row["value"])
 
-        # Edges
-        edge_map: dict[int, tuple[str, str]] = {}
+        # Edges — track the NetworkX key for each SQLite edge_id
+        edge_nx_keys: dict[int, tuple[str, str, int]] = {}
         for row in conn.execute("SELECT id, source, target, type FROM edges"):
-            g.add_edge(row["source"], row["target"], type=row["type"])
-            edge_map[row["id"]] = (row["source"], row["target"])
+            nx_key = g.add_edge(row["source"], row["target"], type=row["type"])
+            edge_nx_keys[row["id"]] = (row["source"], row["target"], nx_key)
 
-        # Edge extra attributes
+        # Edge extra attributes — restore to the correct edge via tracked key
         for row in conn.execute("SELECT edge_id, key, value FROM edge_attrs"):
             eid = row["edge_id"]
-            if eid in edge_map:
-                src, tgt = edge_map[eid]
-                # Find the last edge between src and tgt
-                if g.has_edge(src, tgt):
-                    keys = list(g[src][tgt])
-                    if keys:
-                        g[src][tgt][keys[-1]][row["key"]] = json.loads(row["value"])
+            if eid in edge_nx_keys:
+                src, tgt, nx_key = edge_nx_keys[eid]
+                g[src][tgt][nx_key][row["key"]] = json.loads(row["value"])
 
         return kg
     finally:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -213,6 +214,24 @@ def main(argv: list[str] | None = None) -> int:
         "--db", type=Path, default=Path("_nexus/graph.db"),
     )
 
+    # --- ingest ---
+    ingest_cmd = sub.add_parser(
+        "ingest",
+        help="Ingest a document (PDF, text) into the graph via LLM extraction",
+    )
+    ingest_cmd.add_argument(
+        "file", type=Path,
+        help="Document to ingest (PDF, txt, md, rst, tex).",
+    )
+    ingest_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    ingest_cmd.add_argument(
+        "--llm", default=None,
+        help="LLM command (default: 'claude -p'). Must accept prompt on stdin.",
+    )
+    ingest_cmd.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -232,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         "query": _run_query,
         "impact": _run_impact,
         "provenance": _run_provenance,
+        "ingest": _run_ingest,
         "coverage": _run_coverage,
         "staleness": _run_staleness,
         "migration": _run_migration,
@@ -289,17 +309,51 @@ def _run_setup(args: argparse.Namespace) -> int:
     for name in installed:
         print(f"  {name}/SKILL.md")
 
-    print()
-    print("MCP server configuration for Claude Code settings.json:")
-    print()
-    print('  {')
-    print('    "mcpServers": {')
-    print('      "nexus": {')
-    print('        "command": "nexus",')
-    print('        "args": ["serve", "--db", "<path>/graph.db", "--project-root", "<path>"]')
-    print('      }')
-    print('    }')
-    print('  }')
+    # Install .mcp.json for MCP server configuration
+    mcp_json = Path.cwd() / ".mcp.json"
+    nexus_cmd = shutil.which("nexus") or ".venv/bin/nexus"
+    db_path = "docs/_build/html/_nexus/graph.db"
+    mcp_config = {
+        "mcpServers": {
+            "nexus": {
+                "command": nexus_cmd,
+                "args": ["serve", "--db", db_path, "--project-root", "."],
+            }
+        }
+    }
+    if mcp_json.exists():
+        # Merge with existing .mcp.json
+        existing = json.loads(mcp_json.read_text())
+        existing.setdefault("mcpServers", {})["nexus"] = mcp_config["mcpServers"]["nexus"]
+        mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+        print(f"\nUpdated {mcp_json} with nexus MCP server")
+    else:
+        mcp_json.write_text(json.dumps(mcp_config, indent=2) + "\n")
+        print(f"\nCreated {mcp_json} with nexus MCP server")
+
+    # Install PostToolUse hook for auto-rebuild after git commit
+    settings_dir = Path.cwd() / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    print(f"\nTo auto-rebuild the graph after git commits, add this hook to .claude/settings.json:")
+    print("""
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit:*)",
+            "command": ".venv/bin/python -m sphinx -b html docs docs/_build/html -q 2>/dev/null &",
+            "timeout": 5000,
+            "async": true,
+            "statusMessage": "Rebuilding knowledge graph..."
+          }
+        ]
+      }
+    ]
+  }""")
+
     return 0
 
 
@@ -479,6 +533,33 @@ def _run_migration(args: argparse.Namespace) -> int:
         print(f"\n  Documentation updates needed:")
         for d in result.doc_updates:
             print(f"    {d.id}")
+    return 0
+
+
+def _run_ingest(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus.export import load_sqlite, write_sqlite
+    from sphinxcontrib.nexus.ingest import ingest_file
+
+    file_path = args.file.resolve()
+    if not file_path.exists():
+        print(f"Error: {file_path} does not exist", file=sys.stderr)
+        return 1
+
+    if args.db.exists():
+        from sphinxcontrib.nexus.export import load_sqlite
+        graph = load_sqlite(args.db)
+    else:
+        from sphinxcontrib.nexus.graph import KnowledgeGraph
+        graph = KnowledgeGraph()
+
+    result = ingest_file(file_path, graph, llm_command=args.llm)
+    write_sqlite(graph, args.db)
+
+    print(f"Ingested: {result.source_file}")
+    print(f"  Concepts:      {result.concepts_added}")
+    print(f"  Equations:     {result.equations_added}")
+    print(f"  Relationships: {result.relationships_added}")
+    print(f"  Citations:     {result.citations_added}")
     return 0
 
 

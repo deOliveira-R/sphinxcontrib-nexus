@@ -1198,11 +1198,15 @@ class GraphQuery:
     # ------------------------------------------------------------------
 
     def processes(self, min_length: int = 3) -> list[ProcessResult]:
-        """Detect execution flows: maximal call chains from entry points.
+        """Detect named execution flows from entry points.
 
         An entry point is a function with no incoming CALLS edges (or only
-        test callers). Each chain follows CALLS edges to build a named
-        process.
+        from test/demo code). Each flow follows the dominant call path
+        (most-connected successor at each step) and is labeled by its
+        module context and primary action.
+
+        Returns flows sorted by length, with descriptive labels like:
+        "SN Transport: main → solve_sn → transport_sweep → sweep_1d"
         """
         call_graph = nx.DiGraph()
         for src, tgt, data in self._g.edges(data=True):
@@ -1212,21 +1216,24 @@ class GraphQuery:
         if not call_graph:
             return []
 
-        # Entry points: nodes with in-degree 0 in the call graph
-        entry_points = [
-            n for n in call_graph.nodes
-            if call_graph.in_degree(n) == 0
-        ]
+        # Entry points: in-degree 0 in call graph, excluding externals
+        entry_points = []
+        for n in call_graph.nodes:
+            if call_graph.in_degree(n) == 0:
+                ntype = self._g.nodes.get(n, {}).get("type", "")
+                if ntype in ("function", "method"):
+                    entry_points.append(n)
 
         results: list[ProcessResult] = []
         for entry in entry_points:
-            # BFS to build the longest chain from this entry
-            chain = self._longest_call_chain(call_graph, entry)
+            chain = self._dominant_call_chain(call_graph, entry)
             if len(chain) < min_length:
                 continue
 
             entry_node = self._node_result(entry)
-            name = entry_node.name or entry
+
+            # Generate descriptive label from the chain
+            label = self._label_process(chain)
 
             steps = []
             for i, node_id in enumerate(chain):
@@ -1238,7 +1245,7 @@ class GraphQuery:
                 ))
 
             results.append(ProcessResult(
-                name=name,
+                name=label,
                 entry_point=entry_node,
                 steps=steps,
                 length=len(chain),
@@ -1248,23 +1255,59 @@ class GraphQuery:
         return results
 
     @staticmethod
-    def _longest_call_chain(
+    def _dominant_call_chain(
         call_graph: nx.DiGraph, start: str,
     ) -> list[str]:
-        """Find the longest non-cyclic path from start via DFS."""
-        best: list[str] = []
-        stack: list[tuple[str, list[str]]] = [(start, [start])]
-        while stack:
-            node, path = stack.pop()
-            if len(path) > len(best):
-                best = path
-            for succ in call_graph.successors(node):
-                if succ not in path:  # avoid cycles
-                    stack.append((succ, path + [succ]))
-            # Cap search to avoid explosion on large graphs
-            if len(best) > 20:
+        """Follow the dominant path: at each step, pick the successor
+        with the highest out-degree (most connections = most important)."""
+        chain = [start]
+        visited = {start}
+        current = start
+        while True:
+            successors = [
+                s for s in call_graph.successors(current)
+                if s not in visited
+            ]
+            if not successors:
                 break
-        return best
+            # Pick successor with highest out-degree
+            best = max(successors, key=lambda s: call_graph.out_degree(s))
+            chain.append(best)
+            visited.add(best)
+            current = best
+            if len(chain) > 20:
+                break
+        return chain
+
+    def _label_process(self, chain: list[str]) -> str:
+        """Generate a human-readable label for a call chain."""
+        # Extract module context from entry point
+        entry_name = self._g.nodes.get(chain[0], {}).get("name", chain[0])
+        parts = entry_name.split(".")
+
+        # Find the most descriptive non-trivial function in the chain
+        key_functions = []
+        for node_id in chain[1:3]:  # look at first 2 callees
+            name = self._g.nodes.get(node_id, {}).get("name", "")
+            short = name.split(".")[-1] if name else ""
+            if short and not short.startswith("_") and short not in ("main", "run"):
+                key_functions.append(short)
+
+        if key_functions:
+            action = " → ".join(key_functions)
+        else:
+            action = parts[-1] if parts else "unknown"
+
+        # Module context
+        module = parts[0] if parts else "unknown"
+        step_names = " → ".join(
+            self._g.nodes.get(n, {}).get("name", n).split(".")[-1]
+            for n in chain[:4]
+        )
+        if len(chain) > 4:
+            step_names += " → ..."
+
+        return f"{module}: {step_names}"
 
     # ------------------------------------------------------------------
     # Bridge Nodes / Surprising Connections
@@ -1324,3 +1367,103 @@ class GraphQuery:
                 break
 
         return results
+
+    # ------------------------------------------------------------------
+    # Graph Query (Cypher-like)
+    # ------------------------------------------------------------------
+
+    def graph_query(
+        self,
+        pattern: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Execute a structured graph query (mini query language).
+
+        Pattern syntax:
+            MATCH source_type -> edge_type -> target_type
+            WHERE field=value
+            RETURN fields
+
+        Examples:
+            "function -calls-> function"
+                → all function-to-function call edges
+            "file -contains-> equation"
+                → all equations contained by doc pages
+            "* -implements-> equation WHERE name=transport*"
+                → code that implements transport equations
+            "function -type_uses-> external WHERE name=numpy*"
+                → functions using numpy types
+
+        Wildcards: * matches any type/name. name=prefix* for prefix match.
+        """
+        parts = self._parse_pattern(pattern)
+        if parts is None:
+            return [{"error": f"Could not parse pattern: {pattern}"}]
+
+        src_type, edge_type, tgt_type, where_field, where_value = parts
+        results: list[dict[str, Any]] = []
+
+        for src, tgt, data in self._g.edges(data=True):
+            # Filter edge type
+            if edge_type != "*" and data.get("type") != edge_type:
+                continue
+            # Filter source type
+            src_attrs = self._g.nodes.get(src, {})
+            if src_type != "*" and src_attrs.get("type") != src_type:
+                continue
+            # Filter target type
+            tgt_attrs = self._g.nodes.get(tgt, {})
+            if tgt_type != "*" and tgt_attrs.get("type") != tgt_type:
+                continue
+            # WHERE clause
+            if where_field and where_value:
+                # Check both source and target attrs
+                src_val = str(src_attrs.get(where_field, ""))
+                tgt_val = str(tgt_attrs.get(where_field, ""))
+                if where_value.endswith("*"):
+                    prefix = where_value[:-1].lower()
+                    if not (src_val.lower().startswith(prefix) or tgt_val.lower().startswith(prefix)):
+                        continue
+                else:
+                    if src_val.lower() != where_value.lower() and tgt_val.lower() != where_value.lower():
+                        continue
+
+            results.append({
+                "source": {"id": src, "type": src_attrs.get("type", ""), "name": src_attrs.get("name", "")},
+                "edge_type": data.get("type", ""),
+                "target": {"id": tgt, "type": tgt_attrs.get("type", ""), "name": tgt_attrs.get("name", "")},
+            })
+            if len(results) >= limit:
+                break
+
+        return results
+
+    @staticmethod
+    def _parse_pattern(
+        pattern: str,
+    ) -> tuple[str, str, str, str, str] | None:
+        """Parse a query pattern into components."""
+        import re as _re
+
+        where_field = ""
+        where_value = ""
+
+        # Split off WHERE clause
+        if " WHERE " in pattern.upper():
+            pattern, where_clause = _re.split(r"\s+WHERE\s+", pattern, maxsplit=1, flags=_re.IGNORECASE)
+            if "=" in where_clause:
+                where_field, where_value = where_clause.split("=", 1)
+                where_field = where_field.strip()
+                where_value = where_value.strip()
+
+        # Parse: source_type -edge_type-> target_type
+        m = _re.match(r"(\S+)\s+-(\S+)->\s+(\S+)", pattern.strip())
+        if m:
+            return m.group(1), m.group(2), m.group(3), where_field, where_value
+
+        # Also accept: source_type -> target_type (any edge)
+        m = _re.match(r"(\S+)\s+->\s+(\S+)", pattern.strip())
+        if m:
+            return m.group(1), "*", m.group(2), where_field, where_value
+
+        return None

@@ -400,6 +400,66 @@ def processes(min_length: int = 3) -> str:
 
 
 @_mcp.tool()
+def graph_query(pattern: str, limit: int = 50) -> str:
+    """Execute a structured graph traversal query.
+
+    Mini query language for finding edges matching a pattern.
+
+    Syntax:
+        source_type -edge_type-> target_type [WHERE field=value]
+
+    Examples:
+        "function -calls-> function" — all function-to-function calls
+        "file -contains-> equation" — all equations in doc pages
+        "* -implements-> equation" — code implementing equations
+        "function -type_uses-> external WHERE name=numpy*" — numpy usage
+        "* -cites-> *" — all citation edges
+
+    Wildcards: * matches any type. name=prefix* for prefix match.
+
+    Args:
+        pattern: Query pattern (see examples above).
+        limit: Maximum results (default 50).
+    """
+    q = _get_query()
+    results = q.graph_query(pattern, limit=limit)
+    return json.dumps(results, indent=2)
+
+
+@_mcp.tool()
+def ingest(file_path: str, llm_command: str = "") -> str:
+    """Ingest a document (PDF, paper, text) into the knowledge graph.
+
+    Uses an LLM to extract concepts, equations, relationships, and
+    citations from the document and adds them as graph nodes/edges.
+
+    Args:
+        file_path: Path to the document (PDF, txt, md, rst, tex).
+        llm_command: Shell command for LLM (default: 'claude -p').
+    """
+    from sphinxcontrib.nexus.ingest import ingest_file
+
+    q = _get_query()
+    # Get the KnowledgeGraph from the query's internal graph
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+    kg = KnowledgeGraph()
+    kg._graph = q._g
+
+    p = Path(file_path)
+    if not p.is_absolute() and _project_root:
+        p = _project_root / p
+
+    result = ingest_file(p, kg, llm_command=llm_command or None)
+    return json.dumps({
+        "source_file": result.source_file,
+        "concepts_added": result.concepts_added,
+        "equations_added": result.equations_added,
+        "relationships_added": result.relationships_added,
+        "citations_added": result.citations_added,
+    }, indent=2)
+
+
+@_mcp.tool()
 def bridges(top_n: int = 10) -> str:
     """Find bridge nodes connecting separate communities.
 
