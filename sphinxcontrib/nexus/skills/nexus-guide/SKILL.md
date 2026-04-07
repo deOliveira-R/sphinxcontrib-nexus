@@ -48,6 +48,7 @@ For any task involving code understanding, debugging, impact analysis, or verifi
 | `detect_changes` | "What did my git changes affect?" |
 | `rename` | "Safe multi-file rename with preview" |
 | `retest` | "Minimum tests to re-run after changes" |
+| `graph_query` | "Custom pattern matching traversals" |
 
 ### Code+Doc Fusion (unique to Nexus)
 | Tool | What it answers |
@@ -58,6 +59,7 @@ For any task involving code understanding, debugging, impact analysis, or verifi
 | `session_briefing` | "What do I need to know right now?" |
 | `trace_error` | "Which equation is wrong?" |
 | `migration_plan` | "Plan my dependency migration" |
+| `ingest` | "Ingest a paper/PDF into the graph" |
 
 ## Resources (4 resources)
 

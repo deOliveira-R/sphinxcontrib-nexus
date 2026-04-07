@@ -23,28 +23,21 @@ from sphinxcontrib.nexus.graph import (
 
 logger = logging.getLogger(__name__)
 
-_EXTRACTION_PROMPT = """\
-You are a knowledge graph extractor. Given the following document text,
-extract structured information as JSON.
-
-Extract:
-1. **concepts**: Named concepts, methods, algorithms mentioned
-   - Each: {"name": "...", "type": "concept|equation|method|algorithm|term", "description": "..."}
-2. **relationships**: How concepts relate to each other and to code
-   - Each: {"source": "...", "target": "...", "type": "references|implements|derives|cites|related_to", "description": "..."}
-3. **equations**: Named equations with their labels
-   - Each: {"name": "...", "label": "...", "description": "..."}
-4. **citations**: Literature references
-   - Each: {"key": "Author2009", "full_ref": "Author, Title, Journal, Year"}
-
-Return ONLY valid JSON with these four keys: concepts, relationships, equations, citations.
-
-Document text:
----
-{text}
----
-
-JSON output:"""
+_EXTRACTION_PROMPT_TEMPLATE = (
+    "You are a knowledge graph extractor. Given the following document text,\n"
+    "extract structured information as JSON.\n\n"
+    "Extract:\n"
+    '1. concepts: Named concepts, methods, algorithms mentioned.\n'
+    '   Each object: name, type (concept|equation|method|algorithm|term), description\n'
+    '2. relationships: How concepts relate to each other.\n'
+    '   Each object: source, target, type (references|implements|derives|cites|related_to), description\n'
+    '3. equations: Named equations with their labels.\n'
+    '   Each object: name, label, description\n'
+    '4. citations: Literature references.\n'
+    '   Each object: key (e.g. Author2009), full_ref\n\n'
+    "Return ONLY valid JSON with these four keys: concepts, relationships, equations, citations.\n\n"
+    "Document text:\n---\n{text}\n---\n\nJSON output:"
+)
 
 
 @dataclass
@@ -81,7 +74,7 @@ def ingest_file(
     if len(text) > max_chars:
         text = text[:max_chars] + "\n\n[... truncated ...]"
 
-    prompt = _EXTRACTION_PROMPT.format(text=text)
+    prompt = _EXTRACTION_PROMPT_TEMPLATE.format(text=text)
     response = _call_llm(prompt, llm_command)
 
     if not response:
