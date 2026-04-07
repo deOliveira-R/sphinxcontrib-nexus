@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,32 @@ def _on_env_check_consistency(app: Sphinx, env: BuildEnvironment) -> None:
         graph.node_count,
         graph.edge_count,
     )
+
+
+def _finalize_graph(graph: Any) -> None:
+    """Final cleanup before export: confidence scores, phantom nodes."""
+    from sphinxcontrib.nexus.extractors import _EXTERNAL_NAMES
+    from sphinxcontrib.nexus.graph import NodeType
+
+    g = graph.nxgraph
+    # Tag confidence on all edges
+    for _, _, data in g.edges(data=True):
+        if "confidence" not in data:
+            data["confidence"] = 1.0
+
+    # Classify phantom nodes (created by add_edge to nonexistent targets)
+    for node_id in list(g.nodes):
+        attrs = g.nodes[node_id]
+        if attrs.get("type") and attrs["type"] not in ("", "unknown"):
+            continue
+        parts = node_id.split(":", 2)
+        name = parts[2] if len(parts) == 3 else node_id
+        top_level = name.split(".")[0]
+        attrs["type"] = NodeType.EXTERNAL.value if top_level in _EXTERNAL_NAMES else NodeType.UNRESOLVED.value
+        if "name" not in attrs or not attrs["name"]:
+            attrs["name"] = name
+            attrs["display_name"] = name
+            attrs["domain"] = parts[0] if len(parts) >= 2 else "py"
 
 
 def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
@@ -73,6 +99,10 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         )
         merge_graphs(graph, ast_graph)
 
+    # Infer IMPLEMENTS edges once, after all AST merges complete
+    from sphinxcontrib.nexus.merge import _infer_implements
+    _infer_implements(graph.nxgraph)
+
     logger.info(
         "After AST merge: %d nodes, %d edges",
         graph.node_count,
@@ -93,10 +123,8 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     if app.config.nexus_ast_analyze:
         _run_ast_analysis(app, graph)
 
-    # Ensure all edges have confidence scores
-    for _, _, data in graph.nxgraph.edges(data=True):
-        if "confidence" not in data:
-            data["confidence"] = 1.0
+    # Final cleanup: ensure all edges have confidence, classify phantom nodes
+    _finalize_graph(graph)
 
     from sphinxcontrib.nexus.export import write_json, write_sqlite
 

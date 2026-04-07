@@ -224,6 +224,7 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             continue
 
         source_id = _doc_node_id(docname)
+        seen_edges: set[tuple[str, str, str]] = set()  # (source, target, edge_type)
 
         for ref_node in doctree.findall(addnodes.pending_xref):
             refdomain = ref_node.get("refdomain", "")
@@ -245,12 +246,15 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                         domain="citation",
                         docname=docname,
                     ))
-                graph.add_edge(GraphEdge(
-                    source=source_id,
-                    target=target_id,
-                    type=EdgeType.CITES,
-                    metadata={"reftarget": reftarget},
-                ))
+                cite_key = (source_id, target_id, "cites")
+                if cite_key not in seen_edges:
+                    seen_edges.add(cite_key)
+                    graph.add_edge(GraphEdge(
+                        source=source_id,
+                        target=target_id,
+                        type=EdgeType.CITES,
+                        metadata={"reftarget": reftarget},
+                    ))
                 continue
 
             edge_type = REFTYPE_EDGE_MAP.get(reftype, EdgeType.REFERENCES)
@@ -285,16 +289,21 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                         docname="",
                     ))
 
-            graph.add_edge(GraphEdge(
-                source=source_id,
-                target=target_id,
-                type=edge_type,
-                metadata={
-                    "refdomain": refdomain,
-                    "reftype": reftype,
-                    "reftarget": reftarget,
-                },
-            ))
+            # Deduplicate: one edge per (source, target, type) per page.
+            # Multiple :func:`solve_cp` on the same page → one DOCUMENTS edge.
+            edge_key = (source_id, target_id, edge_type.value)
+            if edge_key not in seen_edges:
+                seen_edges.add(edge_key)
+                graph.add_edge(GraphEdge(
+                    source=source_id,
+                    target=target_id,
+                    type=edge_type,
+                    metadata={
+                        "refdomain": refdomain,
+                        "reftype": reftype,
+                        "reftarget": reftarget,
+                    },
+                ))
 
 
 

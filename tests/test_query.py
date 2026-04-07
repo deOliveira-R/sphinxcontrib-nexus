@@ -201,7 +201,7 @@ def test_query_type_filter(sample_graph):
 
 def test_query_limit(sample_graph):
     q = GraphQuery(sample_graph)
-    results = q.query("", limit=2)  # empty string matches everything
+    results = q.query("doc", limit=2)  # "doc" matches doc:index, doc:theory, doc:api
     assert len(results) == 2
 
 

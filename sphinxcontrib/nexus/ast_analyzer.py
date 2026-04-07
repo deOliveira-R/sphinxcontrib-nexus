@@ -565,7 +565,7 @@ def _classify_phantom_nodes(graph: KnowledgeGraph) -> None:
     g = graph.nxgraph
     for node_id in list(g.nodes):
         attrs = g.nodes[node_id]
-        if attrs.get("type"):
+        if attrs.get("type") and attrs["type"] not in ("", "unknown"):
             continue  # already classified
 
         # Extract name from node ID: "py:function:numpy.array" → "numpy.array"

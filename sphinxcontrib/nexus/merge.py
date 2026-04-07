@@ -79,10 +79,8 @@ def merge_graphs(
     for src, tgt, _key, data in ag.edges(keys=True, data=True):
         sg.add_edge(src, tgt, **data)
 
-    # Step 6: infer IMPLEMENTS edges
-    # NOTE: page-level inference is too coarse (produces false positives).
-    # Requires section-level extraction for precision. Disabled until v0.3.0.
-    # _infer_implements(sg)
+    # NOTE: _infer_implements is called separately after all merges,
+    # not here — because merge_graphs may be called per-directory.
 
     # Step 7: tag confidence scores on all edges
     _tag_confidence(sg)
@@ -103,45 +101,62 @@ def _tag_confidence(g: "nx.MultiDiGraph") -> None:
 
 
 def _infer_implements(g: "nx.MultiDiGraph") -> None:
-    """Infer IMPLEMENTS edges from doc structure.
+    """Infer IMPLEMENTS edges from doc structure (conservative).
 
-    Strategy: for each document page, find equations it CONTAINS and
-    code symbols it DOCUMENTS (via :func:, :class:, :meth: roles).
-    Only connect code to equations on the SAME theory page — not across
-    api/ and theory/ pages.
+    Strategy: for each theory page, find its equations and the code
+    symbols it DOCUMENTS. Only create an IMPLEMENTS edge when the code
+    symbol's name shares tokens with the equation label — indicating
+    a genuine implementation relationship rather than just appearing
+    on the same page.
 
-    This avoids the combinatorial explosion of connecting every code
-    symbol to every equation on loosely related pages.
+    Examples of matches:
+      - sweep_spherical ↔ transport-spherical (share "spherical")
+      - compute_pinf_group ↔ p-inf (share "p"/"inf" — too weak, skip)
+      - solve_cp ↔ collision-rate (share no tokens — skip)
+      - _compute_slab_rcp ↔ surface-to-region (share no tokens — skip)
+      - _compute_slab_rcp ↔ rcp-from-double-antideriv (share "rcp" — match)
     """
+    import re as _re
+
     code_types = {"function", "method", "class"}
     seen: set[tuple[str, str]] = set()
     count = 0
 
-    # Only consider theory pages (pages that contain equations)
+    def _tokenize(name: str) -> set[str]:
+        """Split a name into meaningful tokens (min length 3)."""
+        tokens = _re.split(r"[-_.:]+", name.lower())
+        return {t for t in tokens if len(t) >= 3}
+
     for doc_id, attrs in g.nodes(data=True):
         if attrs.get("type") != "file":
             continue
 
-        equations: list[str] = []
-        code_symbols: list[str] = []
+        eq_map: dict[str, set[str]] = {}
+        code_map: dict[str, set[str]] = {}
 
         for _, tgt, data in g.out_edges(doc_id, data=True):
             tgt_attrs = g.nodes.get(tgt, {})
             tgt_type = tgt_attrs.get("type", "")
+            tgt_name = tgt_attrs.get("name", "")
             edge_type = data.get("type", "")
 
-            if tgt_type == "equation":
-                equations.append(tgt)
-            # Only DOCUMENTS edges — these are explicit :func:/:class: references
-            # from the theory page to code. CONTAINS and REFERENCES are too broad.
-            elif tgt_type in code_types and edge_type == "documents":
-                code_symbols.append(tgt)
+            if tgt_type == "equation" and tgt not in eq_map:
+                eq_map[tgt] = _tokenize(tgt_name)
+            elif tgt_type in code_types and edge_type == "documents" and tgt not in code_map:
+                code_map[tgt] = _tokenize(tgt_name)
+
+        equations = list(eq_map.items())
+        code_symbols = list(code_map.items())
 
         if not equations or not code_symbols:
             continue
 
-        for code_id in code_symbols:
-            for eq_id in equations:
+        for code_id, code_tokens in code_symbols:
+            for eq_id, eq_tokens in equations:
+                # Require at least one shared token of length >= 3
+                shared = code_tokens & eq_tokens
+                if not shared:
+                    continue
                 pair = (code_id, eq_id)
                 if pair not in seen:
                     seen.add(pair)
@@ -149,6 +164,7 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
                         code_id, eq_id,
                         type="implements", source="inferred",
                         confidence=0.7,
+                        shared_tokens=sorted(shared),
                     )
                     count += 1
 

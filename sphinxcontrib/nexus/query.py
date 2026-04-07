@@ -423,16 +423,32 @@ class GraphQuery:
         node_types: list[str] | None = None,
         limit: int = 20,
     ) -> list[NodeResult]:
-        """Keyword search across node names and display_names."""
-        text_lower = text.lower()
+        """Keyword search across node IDs, names, and display_names.
+
+        Handles multi-word queries by requiring ALL tokens to match
+        somewhere in the searchable text. Normalizes underscores, dots,
+        and colons to spaces for matching, so "collision probability"
+        matches "collision_probability.CPMesh".
+        """
+        # Tokenize query: split on spaces, underscores, dots
+        tokens = re.split(r"[\s_.:]+", text.lower())
+        tokens = [t for t in tokens if t]
+        if not tokens:
+            return []
+
         results: list[NodeResult] = []
 
         for node_id, attrs in self._g.nodes(data=True):
             if node_types and attrs.get("type") not in node_types:
                 continue
+            # Build searchable text from ID + name + display_name
             name = attrs.get("name", "")
             display_name = attrs.get("display_name", "")
-            if text_lower in name.lower() or text_lower in display_name.lower():
+            searchable = f"{node_id} {name} {display_name}".lower()
+            # Normalize separators to spaces for token matching
+            searchable = re.sub(r"[_.:]+", " ", searchable)
+
+            if all(t in searchable for t in tokens):
                 results.append(self._node_result(node_id))
 
         results.sort(key=lambda r: r.degree, reverse=True)
@@ -725,39 +741,44 @@ class GraphQuery:
         chain.append(ProvenanceStep(node=node, edge_type="target", depth=0))
 
         # Find doc pages connected to this node
+        seen_docs: set[str] = set()
+        seen_code: set[str] = set()
         doc_pages: list[str] = []
 
         if node.type in ("function", "method", "class", "module", "attribute"):
-            # Code symbol → find doc pages that DOCUMENT it (incoming edges)
             for src, _, data in self._g.in_edges(node_id, data=True):
                 src_type = self._g.nodes.get(src, {}).get("type", "")
                 if src_type == "file" and data.get("type") in ("documents", "contains"):
-                    doc_pages.append(src)
-                    chain.append(ProvenanceStep(
-                        node=self._node_result(src),
-                        edge_type="documented_by", depth=1,
-                    ))
+                    if src not in seen_docs:
+                        seen_docs.add(src)
+                        doc_pages.append(src)
+                        chain.append(ProvenanceStep(
+                            node=self._node_result(src),
+                            edge_type="documented_by", depth=1,
+                        ))
 
         elif node.type == "equation":
-            # Equation → find doc page that CONTAINS it
             seen_eqs.add(node_id)
             equations.append(node)
             for src, _, data in self._g.in_edges(node_id, data=True):
                 src_type = self._g.nodes.get(src, {}).get("type", "")
                 if src_type == "file" and data.get("type") == "contains":
-                    doc_pages.append(src)
-                    chain.append(ProvenanceStep(
-                        node=self._node_result(src),
-                        edge_type="contained_by", depth=1,
-                    ))
-                    # Find code symbols documented by this page
-                    for _, tgt, d2 in self._g.out_edges(src, data=True):
-                        tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
-                        if tgt_type in ("function", "method", "class") and d2.get("type") == "documents":
-                            chain.append(ProvenanceStep(
-                                node=self._node_result(tgt),
-                                edge_type="implemented_by", depth=2,
-                            ))
+                    if src not in seen_docs:
+                        seen_docs.add(src)
+                        doc_pages.append(src)
+                        chain.append(ProvenanceStep(
+                            node=self._node_result(src),
+                            edge_type="contained_by", depth=1,
+                        ))
+                        for _, tgt, d2 in self._g.out_edges(src, data=True):
+                            tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
+                            if tgt_type in ("function", "method", "class") and d2.get("type") == "documents":
+                                if tgt not in seen_code:
+                                    seen_code.add(tgt)
+                                    chain.append(ProvenanceStep(
+                                        node=self._node_result(tgt),
+                                        edge_type="implemented_by", depth=2,
+                                    ))
 
         # From doc pages, collect equations and citations
         for doc_id in doc_pages:
