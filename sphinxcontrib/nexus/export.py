@@ -18,14 +18,14 @@ from sphinxcontrib.nexus.graph import KnowledgeGraph
 
 def graph_to_dict(graph: KnowledgeGraph) -> dict:
     """Convert graph to networkx node-link format."""
-    data = nx.node_link_data(graph.nxgraph)
+    data = nx.node_link_data(graph.nxgraph, edges="edges")
     data["graph"] = graph.metadata
     return data
 
 
 def dict_to_graph(data: dict) -> KnowledgeGraph:
     """Load a KnowledgeGraph from networkx node-link format."""
-    nxg = nx.node_link_graph(data)
+    nxg = nx.node_link_graph(data, edges="edges")
     kg = KnowledgeGraph()
     kg._graph = nxg
     kg.metadata = data.get("graph", {})
