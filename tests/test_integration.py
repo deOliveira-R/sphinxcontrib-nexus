@@ -134,7 +134,7 @@ def test_export_loadable(content):
     import networkx as nx
 
     data = _load_graph_json(content)
-    g = nx.node_link_graph(data)
+    g = nx.node_link_graph(data, edges="edges")
     assert g.number_of_nodes() > 0
     assert g.number_of_edges() > 0
 
