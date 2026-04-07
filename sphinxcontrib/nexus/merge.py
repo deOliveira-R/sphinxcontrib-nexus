@@ -80,48 +80,76 @@ def merge_graphs(
         sg.add_edge(src, tgt, **data)
 
     # Step 6: infer IMPLEMENTS edges
-    _infer_implements(sg)
+    # NOTE: page-level inference is too coarse (produces false positives).
+    # Requires section-level extraction for precision. Disabled until v0.3.0.
+    # _infer_implements(sg)
+
+    # Step 7: tag confidence scores on all edges
+    _tag_confidence(sg)
 
     return sphinx_kg
+
+
+def _tag_confidence(g: "nx.MultiDiGraph") -> None:
+    """Tag confidence scores on ALL edges.
+
+    - Sphinx-extracted (documents, references, contains, equation_ref, cites): 1.0
+    - AST structural (calls, imports, inherits, type_uses): 1.0
+    - Inferred (implements): 0.7 (already tagged in _infer_implements)
+    """
+    for _, _, data in g.edges(data=True):
+        if "confidence" not in data:
+            data["confidence"] = 1.0
 
 
 def _infer_implements(g: "nx.MultiDiGraph") -> None:
     """Infer IMPLEMENTS edges from doc structure.
 
-    When a document page both CONTAINS an equation and DOCUMENTS a code
-    symbol (function/method/class), we infer that the code implements
-    the equation. This is the bridge between math and code.
-    """
-    import networkx as nx
+    Strategy: for each document page, find equations it CONTAINS and
+    code symbols it DOCUMENTS (via :func:, :class:, :meth: roles).
+    Only connect code to equations on the SAME theory page — not across
+    api/ and theory/ pages.
 
+    This avoids the combinatorial explosion of connecting every code
+    symbol to every equation on loosely related pages.
+    """
     code_types = {"function", "method", "class"}
+    seen: set[tuple[str, str]] = set()
     count = 0
 
+    # Only consider theory pages (pages that contain equations)
     for doc_id, attrs in g.nodes(data=True):
         if attrs.get("type") != "file":
             continue
 
-        # Find equations and code symbols contained/documented by this doc
         equations: list[str] = []
         code_symbols: list[str] = []
 
         for _, tgt, data in g.out_edges(doc_id, data=True):
-            tgt_type = g.nodes.get(tgt, {}).get("type", "")
+            tgt_attrs = g.nodes.get(tgt, {})
+            tgt_type = tgt_attrs.get("type", "")
             edge_type = data.get("type", "")
+
             if tgt_type == "equation":
                 equations.append(tgt)
-            elif tgt_type in code_types and edge_type in ("documents", "contains"):
+            # Only DOCUMENTS edges — these are explicit :func:/:class: references
+            # from the theory page to code. CONTAINS and REFERENCES are too broad.
+            elif tgt_type in code_types and edge_type == "documents":
                 code_symbols.append(tgt)
 
-        # For each code symbol documented alongside equations,
-        # create IMPLEMENTS edges
+        if not equations or not code_symbols:
+            continue
+
         for code_id in code_symbols:
             for eq_id in equations:
-                # Check same docname (both in the same page)
-                code_doc = g.nodes.get(code_id, {}).get("docname", "")
-                eq_doc = g.nodes.get(eq_id, {}).get("docname", "")
-                if code_doc and eq_doc and code_doc == eq_doc:
-                    g.add_edge(code_id, eq_id, type="implements", source="inferred")
+                pair = (code_id, eq_id)
+                if pair not in seen:
+                    seen.add(pair)
+                    g.add_edge(
+                        code_id, eq_id,
+                        type="implements", source="inferred",
+                        confidence=0.7,
+                    )
                     count += 1
 
     if count:

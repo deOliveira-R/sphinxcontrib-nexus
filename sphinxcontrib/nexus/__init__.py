@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,11 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     # Run AST analysis and merge into the doc graph
     if app.config.nexus_ast_analyze:
         _run_ast_analysis(app, graph)
+
+    # Ensure all edges have confidence scores
+    for _, _, data in graph.nxgraph.edges(data=True):
+        if "confidence" not in data:
+            data["confidence"] = 1.0
 
     from sphinxcontrib.nexus.export import write_json, write_sqlite
 

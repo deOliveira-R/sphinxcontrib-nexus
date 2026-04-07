@@ -79,6 +79,35 @@ class CommunityResult:
     members: list[NodeResult]
     size: int
     label: str = ""
+    cohesion: float = 0.0
+
+
+@dataclass
+class ProcessStep:
+    """One step in an execution flow."""
+
+    node: NodeResult
+    step_number: int
+    calls_next: str = ""
+
+
+@dataclass
+class ProcessResult:
+    """A named execution flow (sequence of function calls)."""
+
+    name: str
+    entry_point: NodeResult
+    steps: list[ProcessStep]
+    length: int
+
+
+@dataclass
+class BridgeResult:
+    """A bridge node connecting otherwise-separate communities."""
+
+    node: NodeResult
+    communities_connected: list[int]
+    betweenness: float
 
 
 @dataclass
@@ -442,8 +471,8 @@ class GraphQuery:
     def communities(self, min_size: int = 2) -> list[CommunityResult]:
         """Detect functional communities using greedy modularity.
 
-        Returns communities sorted by size (largest first).
-        Only includes communities with at least min_size members.
+        Returns communities sorted by size (largest first) with cohesion
+        scores indicating how tightly connected each community is.
         """
         undirected = self._g.to_undirected()
         try:
@@ -461,11 +490,15 @@ class GraphQuery:
             top_type = type_counts.most_common(1)[0][0] if type_counts else "mixed"
             top_member = max(member_nodes, key=lambda n: n.degree)
             label = f"{top_type}:{top_member.name}"
+            # Cohesion: density of the subgraph induced by this community
+            subgraph = undirected.subgraph(members)
+            cohesion = nx.density(subgraph) if len(members) > 1 else 1.0
             results.append(CommunityResult(
                 id=i,
                 members=member_nodes,
                 size=len(members),
                 label=label,
+                cohesion=round(cohesion, 4),
             ))
 
         results.sort(key=lambda c: c.size, reverse=True)
@@ -672,13 +705,18 @@ class GraphQuery:
     def provenance_chain(self, node_id: str) -> ProvenanceResult:
         """Trace citation → equation → code for a symbol.
 
-        Given a code symbol, find which equations it implements and
-        which citations those equations derive from. Given an equation,
-        find the code that implements it and the citations behind it.
+        Given a code symbol, find which doc pages reference it, what
+        equations those pages contain, and what citations they use.
+        Given an equation, find the code documented on the same page.
+
+        Traverses: code ←DOCUMENTS– doc –CONTAINS→ equations
+                                        –CITES→ citations
         """
         equations: list[NodeResult] = []
         citations: list[str] = []
         chain: list[ProvenanceStep] = []
+        seen_eqs: set[str] = set()
+        seen_citations: set[str] = set()
 
         node = self.get_node(node_id)
         if node is None:
@@ -686,39 +724,64 @@ class GraphQuery:
 
         chain.append(ProvenanceStep(node=node, edge_type="target", depth=0))
 
-        # If code symbol → find implemented equations
-        if node.type in ("function", "method", "class"):
-            for _, tgt, data in self._g.out_edges(node_id, data=True):
-                if data.get("type") == "implements":
-                    eq_node = self._node_result(tgt)
-                    equations.append(eq_node)
-                    chain.append(ProvenanceStep(node=eq_node, edge_type="implements", depth=1))
+        # Find doc pages connected to this node
+        doc_pages: list[str] = []
 
-        # If equation → find implementing code (reverse direction)
-        if node.type == "equation":
+        if node.type in ("function", "method", "class", "module", "attribute"):
+            # Code symbol → find doc pages that DOCUMENT it (incoming edges)
+            for src, _, data in self._g.in_edges(node_id, data=True):
+                src_type = self._g.nodes.get(src, {}).get("type", "")
+                if src_type == "file" and data.get("type") in ("documents", "contains"):
+                    doc_pages.append(src)
+                    chain.append(ProvenanceStep(
+                        node=self._node_result(src),
+                        edge_type="documented_by", depth=1,
+                    ))
+
+        elif node.type == "equation":
+            # Equation → find doc page that CONTAINS it
+            seen_eqs.add(node_id)
             equations.append(node)
             for src, _, data in self._g.in_edges(node_id, data=True):
-                if data.get("type") == "implements":
-                    code_node = self._node_result(src)
-                    chain.append(ProvenanceStep(node=code_node, edge_type="implemented_by", depth=1))
-
-        # For each equation, find the doc page and its citations
-        for eq in equations:
-            eq_docname = self._g.nodes.get(eq.id, {}).get("docname", "")
-            if eq_docname:
-                doc_id = f"doc:{eq_docname}"
-                if doc_id in self._g:
-                    doc_node = self._node_result(doc_id)
-                    chain.append(ProvenanceStep(node=doc_node, edge_type="documented_in", depth=2))
-                    # Find citations from this doc
-                    for _, tgt, data in self._g.out_edges(doc_id, data=True):
-                        if data.get("type") == "cites":
-                            tgt_name = self._g.nodes.get(tgt, {}).get("name", tgt)
-                            citations.append(tgt_name)
+                src_type = self._g.nodes.get(src, {}).get("type", "")
+                if src_type == "file" and data.get("type") == "contains":
+                    doc_pages.append(src)
+                    chain.append(ProvenanceStep(
+                        node=self._node_result(src),
+                        edge_type="contained_by", depth=1,
+                    ))
+                    # Find code symbols documented by this page
+                    for _, tgt, d2 in self._g.out_edges(src, data=True):
+                        tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
+                        if tgt_type in ("function", "method", "class") and d2.get("type") == "documents":
                             chain.append(ProvenanceStep(
                                 node=self._node_result(tgt),
-                                edge_type="cites", depth=3,
+                                edge_type="implemented_by", depth=2,
                             ))
+
+        # From doc pages, collect equations and citations
+        for doc_id in doc_pages:
+            for _, tgt, data in self._g.out_edges(doc_id, data=True):
+                tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
+                edge_type = data.get("type", "")
+
+                if tgt_type == "equation" and tgt not in seen_eqs:
+                    seen_eqs.add(tgt)
+                    eq_node = self._node_result(tgt)
+                    equations.append(eq_node)
+                    chain.append(ProvenanceStep(
+                        node=eq_node, edge_type="equation_on_page", depth=2,
+                    ))
+
+                if edge_type == "cites":
+                    tgt_name = self._g.nodes.get(tgt, {}).get("name", tgt)
+                    if tgt_name not in seen_citations:
+                        seen_citations.add(tgt_name)
+                        citations.append(tgt_name)
+                        chain.append(ProvenanceStep(
+                            node=self._node_result(tgt),
+                            edge_type="cites", depth=3,
+                        ))
 
         return ProvenanceResult(
             target=node_id,
@@ -1108,3 +1171,135 @@ class GraphQuery:
             doc_updates=doc_updates,
             total_functions=len(dep_nodes),
         )
+
+    # ------------------------------------------------------------------
+    # Execution Flows / Process Detection
+    # ------------------------------------------------------------------
+
+    def processes(self, min_length: int = 3) -> list[ProcessResult]:
+        """Detect execution flows: maximal call chains from entry points.
+
+        An entry point is a function with no incoming CALLS edges (or only
+        test callers). Each chain follows CALLS edges to build a named
+        process.
+        """
+        call_graph = nx.DiGraph()
+        for src, tgt, data in self._g.edges(data=True):
+            if data.get("type") == "calls":
+                call_graph.add_edge(src, tgt)
+
+        if not call_graph:
+            return []
+
+        # Entry points: nodes with in-degree 0 in the call graph
+        entry_points = [
+            n for n in call_graph.nodes
+            if call_graph.in_degree(n) == 0
+        ]
+
+        results: list[ProcessResult] = []
+        for entry in entry_points:
+            # BFS to build the longest chain from this entry
+            chain = self._longest_call_chain(call_graph, entry)
+            if len(chain) < min_length:
+                continue
+
+            entry_node = self._node_result(entry)
+            name = entry_node.name or entry
+
+            steps = []
+            for i, node_id in enumerate(chain):
+                calls_next = chain[i + 1] if i + 1 < len(chain) else ""
+                steps.append(ProcessStep(
+                    node=self._node_result(node_id),
+                    step_number=i + 1,
+                    calls_next=calls_next,
+                ))
+
+            results.append(ProcessResult(
+                name=name,
+                entry_point=entry_node,
+                steps=steps,
+                length=len(chain),
+            ))
+
+        results.sort(key=lambda p: p.length, reverse=True)
+        return results
+
+    @staticmethod
+    def _longest_call_chain(
+        call_graph: nx.DiGraph, start: str,
+    ) -> list[str]:
+        """Find the longest non-cyclic path from start via DFS."""
+        best: list[str] = []
+        stack: list[tuple[str, list[str]]] = [(start, [start])]
+        while stack:
+            node, path = stack.pop()
+            if len(path) > len(best):
+                best = path
+            for succ in call_graph.successors(node):
+                if succ not in path:  # avoid cycles
+                    stack.append((succ, path + [succ]))
+            # Cap search to avoid explosion on large graphs
+            if len(best) > 20:
+                break
+        return best
+
+    # ------------------------------------------------------------------
+    # Bridge Nodes / Surprising Connections
+    # ------------------------------------------------------------------
+
+    def bridges(self, top_n: int = 10) -> list[BridgeResult]:
+        """Find bridge nodes connecting otherwise-separate communities.
+
+        These are architectural hotspots — high betweenness centrality
+        nodes that sit between communities. Changing them has outsized
+        impact.
+        """
+        undirected = self._g.to_undirected()
+        if undirected.number_of_nodes() == 0:
+            return []
+
+        # Compute betweenness centrality (approximate for large graphs)
+        k = min(100, undirected.number_of_nodes())
+        try:
+            bc = nx.betweenness_centrality(undirected, k=k)
+        except Exception:
+            return []
+
+        # Get community membership
+        try:
+            raw_communities = nx.community.greedy_modularity_communities(undirected)
+        except Exception:
+            return []
+
+        node_to_community: dict[str, int] = {}
+        for i, members in enumerate(raw_communities):
+            for m in members:
+                node_to_community[m] = i
+
+        # Find nodes with high betweenness that connect multiple communities
+        results: list[BridgeResult] = []
+        for node_id, score in sorted(bc.items(), key=lambda x: -x[1]):
+            if score < 0.001:
+                continue
+            # Which communities do this node's neighbors belong to?
+            neighbor_communities = set()
+            for nbr in undirected.neighbors(node_id):
+                if nbr in node_to_community:
+                    neighbor_communities.add(node_to_community[nbr])
+            own = node_to_community.get(node_id)
+            if own is not None:
+                neighbor_communities.add(own)
+
+            if len(neighbor_communities) >= 2:
+                results.append(BridgeResult(
+                    node=self._node_result(node_id),
+                    communities_connected=sorted(neighbor_communities),
+                    betweenness=round(score, 6),
+                ))
+
+            if len(results) >= top_n:
+                break
+
+        return results

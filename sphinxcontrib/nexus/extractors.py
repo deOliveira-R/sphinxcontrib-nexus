@@ -233,6 +233,26 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             if not reftarget:
                 continue
 
+            # Citations: refdomain="citation", reftype="ref"
+            if refdomain == "citation":
+                target_id = f"citation:{reftarget}"
+                if not graph.has_node(target_id):
+                    graph.add_node(GraphNode(
+                        id=target_id,
+                        type=NodeType.UNRESOLVED,
+                        name=reftarget,
+                        display_name=reftarget,
+                        domain="citation",
+                        docname=docname,
+                    ))
+                graph.add_edge(GraphEdge(
+                    source=source_id,
+                    target=target_id,
+                    type=EdgeType.CITES,
+                    metadata={"reftarget": reftarget},
+                ))
+                continue
+
             edge_type = REFTYPE_EDGE_MAP.get(reftype, EdgeType.REFERENCES)
 
             # Resolve using domain-aware lookup
@@ -275,6 +295,7 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                     "reftarget": reftarget,
                 },
             ))
+
 
 
 def build_graph(env: BuildEnvironment) -> KnowledgeGraph:

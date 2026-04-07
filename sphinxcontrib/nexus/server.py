@@ -374,6 +374,46 @@ def migration_plan(from_dep: str, to_dep: str = "") -> str:
     return json.dumps(_to_dict(result), indent=2)
 
 
+@_mcp.tool()
+def processes(min_length: int = 3) -> str:
+    """Detect execution flows: maximal call chains from entry points.
+
+    Returns named sequences showing how functions call each other
+    from entry point to leaf. Useful for understanding how code executes.
+
+    Args:
+        min_length: Minimum chain length to include (default 3).
+    """
+    q = _get_query()
+    results = q.processes(min_length=min_length)
+    summaries = []
+    for p in results[:20]:
+        summaries.append({
+            "name": p.name,
+            "length": p.length,
+            "steps": [
+                {"step": s.step_number, "node": s.node.id, "calls_next": s.calls_next}
+                for s in p.steps
+            ],
+        })
+    return json.dumps(summaries, indent=2)
+
+
+@_mcp.tool()
+def bridges(top_n: int = 10) -> str:
+    """Find bridge nodes connecting separate communities.
+
+    These are architectural hotspots with high betweenness centrality.
+    Changing them has outsized impact across the codebase.
+
+    Args:
+        top_n: Number of bridges to return (default 10).
+    """
+    q = _get_query()
+    results = q.bridges(top_n=top_n)
+    return json.dumps(_to_dict(results), indent=2)
+
+
 # ------------------------------------------------------------------
 # MCP Resources
 # ------------------------------------------------------------------
