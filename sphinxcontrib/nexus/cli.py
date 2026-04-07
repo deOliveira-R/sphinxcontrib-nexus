@@ -7,6 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
+from sphinxcontrib.nexus import __version__
+
 _DESCRIPTION = """\
 Nexus — unified code + documentation knowledge graph.
 
@@ -32,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-V", "--version",
         action="version",
-        version="sphinxcontrib-nexus 0.1.0",
+        version=f"sphinxcontrib-nexus {__version__}",
     )
     sub = parser.add_subparsers(dest="command")
 
