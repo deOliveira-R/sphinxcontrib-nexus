@@ -1,0 +1,57 @@
+[build-system]
+requires = ["flit_core>=3.7"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "sphinxcontrib-nexus"
+version = "0.1.0"
+description = "Unified code + documentation knowledge graph from Sphinx builds and Python AST analysis"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Rodrigo de Oliveira", email = "deOliveira.R@outlook.com"},
+]
+keywords = [
+    "sphinx", "knowledge-graph", "documentation", "ast", "mcp",
+    "code-analysis", "impact-analysis", "networkx",
+]
+dependencies = [
+    "Sphinx>=7.0",
+    "networkx>=3.0",
+    "mcp>=1.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Sphinx",
+    "Framework :: Sphinx :: Extension",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Documentation :: Sphinx",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/deOliveira-R/sphinxcontrib-nexus"
+Repository = "https://github.com/deOliveira-R/sphinxcontrib-nexus"
+Issues = "https://github.com/deOliveira-R/sphinxcontrib-nexus/issues"
+
+[project.scripts]
+nexus = "sphinxcontrib.nexus.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+dev = ["ruff", "mypy"]
+
+[tool.flit.module]
+name = "sphinxcontrib.nexus"
+
+[tool.flit.sdist]
+include = ["sphinxcontrib/nexus/skills/**/*.md"]
