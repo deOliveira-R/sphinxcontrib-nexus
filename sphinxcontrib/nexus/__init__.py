@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 logger = logging.getLogger(__name__)
 
@@ -139,10 +139,45 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     write_json(graph, json_path)
     logger.info("Knowledge graph (JSON) written to %s", json_path)
 
+    # Generate interactive HTML visualization
+    from sphinxcontrib.nexus.visualize import generate_html
+    html_path = generate_html(db_path, max_nodes=app.config.nexus_max_viz_nodes)
+    logger.info("Knowledge graph (HTML viz) written to %s", html_path)
+
 
 def setup(app: Sphinx) -> dict[str, Any]:
+    from docutils import nodes
+    from sphinx.util.docutils import SphinxDirective
+
+    class NexusGraphDirective(SphinxDirective):
+        """Sphinx directive: ``.. nexus-graph::`` embeds the interactive graph."""
+
+        has_content = False
+        required_arguments = 0
+        optional_arguments = 0
+        option_spec = {
+            "height": lambda x: x,
+        }
+
+        def run(self):
+            height = self.options.get("height", "800px")
+            nexus_output = self.env.config.nexus_output
+            graph_url = f"{nexus_output}/graph.html"
+
+            raw_html = (
+                f'<div style="border:1px solid #333;border-radius:8px;overflow:hidden;margin:20px 0;">'
+                f'<iframe src="{graph_url}" '
+                f'style="width:100%;height:{height};border:none;" '
+                f'loading="lazy"></iframe>'
+                f'</div>'
+            )
+            raw_node = nodes.raw("", raw_html, format="html")
+            return [raw_node]
+
     app.add_config_value("nexus_output", "_nexus", "env")
     app.add_config_value("nexus_ast_analyze", True, "env")
+    app.add_config_value("nexus_max_viz_nodes", 300, "env")
+    app.add_directive("nexus-graph", NexusGraphDirective)
 
     app.connect("env-check-consistency", _on_env_check_consistency)
     app.connect("build-finished", _on_build_finished)

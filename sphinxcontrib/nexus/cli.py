@@ -232,6 +232,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     ingest_cmd.add_argument("-v", "--verbose", action="store_true")
 
+    # --- visualize ---
+    viz_cmd = sub.add_parser(
+        "visualize",
+        help="Open interactive graph explorer in browser (Sigma.js WebGL)",
+    )
+    viz_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    viz_cmd.add_argument(
+        "--output", type=Path, default=None,
+        help="Output HTML file (default: alongside graph.db).",
+    )
+    viz_cmd.add_argument(
+        "--max-nodes", type=int, default=500,
+        help="Maximum nodes to include (default: 500, top by degree).",
+    )
+    viz_cmd.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -252,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         "impact": _run_impact,
         "provenance": _run_provenance,
         "ingest": _run_ingest,
+        "visualize": _run_visualize,
         "coverage": _run_coverage,
         "staleness": _run_staleness,
         "migration": _run_migration,
@@ -560,6 +579,19 @@ def _run_ingest(args: argparse.Namespace) -> int:
     print(f"  Equations:     {result.equations_added}")
     print(f"  Relationships: {result.relationships_added}")
     print(f"  Citations:     {result.citations_added}")
+    return 0
+
+
+def _run_visualize(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus.visualize import serve_visualization
+
+    db_path = args.db.resolve()
+    if not db_path.exists():
+        print(f"Error: {db_path} does not exist", file=sys.stderr)
+        print("Run 'nexus analyze' or 'sphinx-build' first.", file=sys.stderr)
+        return 1
+
+    serve_visualization(db_path, max_nodes=args.max_nodes)
     return 0
 
 

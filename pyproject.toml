@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "sphinxcontrib-nexus"
-version = "0.3.1"
+version = "0.4.0"
 description = "Unified code + documentation knowledge graph from Sphinx builds and Python AST analysis"
 readme = "README.md"
 license = "MIT"
@@ -49,6 +49,7 @@ nexus = "sphinxcontrib.nexus.cli:main"
 [project.optional-dependencies]
 test = ["pytest"]
 dev = ["ruff", "mypy"]
+viz = []  # Sigma.js loaded from CDN, no Python deps needed
 
 [tool.flit.module]
 name = "sphinxcontrib.nexus"
