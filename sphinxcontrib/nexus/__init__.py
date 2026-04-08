@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 logger = logging.getLogger(__name__)
 
@@ -69,25 +69,32 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     from sphinxcontrib.nexus.ast_analyzer import analyze_directory
     from sphinxcontrib.nexus.merge import merge_graphs
 
-    # Determine source directories from sys.path entries that are
-    # under the project root (set by conf.py), excluding venvs and build dirs.
+    # Determine the project root and let ModuleResolver auto-detect
+    # source directories. For projects that add dirs to sys.path in
+    # conf.py, we pass those as explicit sys_path_dirs.
     project_root = Path(app.srcdir).parent
-    _skip = {".venv", "venv", ".tox", "__pycache__", "site-packages", "_build", "node_modules"}
-    source_dirs: list[Path] = []
+    _skip = {".venv", "venv", ".tox", "__pycache__", "site-packages",
+             "_build", "node_modules", "dist", "build", ".git", ".egg-info"}
+
+    # Collect sys.path entries under project root (set by conf.py)
+    conf_sys_paths: list[Path] = []
     for p in sys.path:
         pp = Path(p).resolve()
         if not pp.is_dir() or pp == project_root:
             continue
-        # Skip if any path component is a known non-source directory
         if _skip & set(pp.parts):
             continue
         try:
             pp.relative_to(project_root)
-            source_dirs.append(pp)
+            conf_sys_paths.append(pp)
         except ValueError:
             continue
 
-    if not source_dirs:
+    # If conf.py added directories to sys.path, analyze each one.
+    # Otherwise analyze project_root and let ModuleResolver auto-detect.
+    if conf_sys_paths:
+        source_dirs = conf_sys_paths
+    else:
         source_dirs = [project_root]
 
     for src_dir in source_dirs:

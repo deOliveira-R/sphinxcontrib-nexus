@@ -36,8 +36,18 @@ _SPHINX_ROLE_RE = re.compile(r":(\w+):`~?([^`]+)`")
 class ModuleResolver:
     """Convert file paths to qualified Python module names.
 
-    Handles project layouts where subdirectories are added to sys.path
-    (e.g., ORPHEUS's numbered directories like 01.Discrete.Ordinates/).
+    Handles three common project layouts:
+
+    1. **Standard Python packages**: `myproject/module/file.py`
+       → `module.file` (project_root contains packages with __init__.py)
+    2. **Flat modules**: `src/solver.py` → `solver`
+       (source directories on sys.path)
+    3. **Non-standard layouts**: directories manually added to sys.path
+       (e.g., numbered directories like `01.Solvers/solver.py` → `solver`)
+
+    The resolver tries sys_path_dirs first (if provided), then auto-detects
+    by looking for directories containing .py files, and always falls back
+    to project_root.
     """
 
     def __init__(
@@ -55,11 +65,41 @@ class ModuleResolver:
             self._roots.append(self._project_root)
 
     def _auto_detect_roots(self) -> list[Path]:
-        """Auto-detect sys.path entries: directories starting with a digit."""
+        """Auto-detect source roots under the project.
+
+        Strategy:
+        1. If project has a `src/` directory, use it (src layout)
+        2. If project has directories containing .py files that aren't
+           Python packages (no __init__.py in project root), add them
+           as individual roots (flat layout / non-standard like numbered dirs)
+        3. Otherwise project_root itself is the root (standard package layout)
+        """
         roots: list[Path] = []
+
+        # Check for src layout
+        src_dir = self._project_root / "src"
+        if src_dir.is_dir():
+            roots.append(src_dir)
+            return roots
+
+        # Check for directories containing .py files
+        # These could be packages (have __init__.py) or flat module dirs
         for d in sorted(self._project_root.iterdir()):
-            if d.is_dir() and d.name[0:1].isdigit():
+            if not d.is_dir():
+                continue
+            # Skip common non-source directories
+            if d.name.startswith((".", "_")) or d.name in (
+                "docs", "tests", "test", "venv", "node_modules", "build", "dist",
+            ):
+                continue
+            # If directory has .py files, it's a potential source root
+            has_py = any(d.glob("*.py"))
+            has_init = (d / "__init__.py").exists()
+            if has_py and not has_init:
+                # Flat module directory (no __init__.py) — add as sys.path root
+                # This handles numbered dirs, src-less layouts, etc.
                 roots.append(d)
+
         return roots
 
     def file_to_module(self, filepath: Path) -> str:
