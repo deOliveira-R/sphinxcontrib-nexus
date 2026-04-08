@@ -34,11 +34,32 @@ _mcp = FastMCP("nexus", instructions=(
 _query: GraphQuery | None = None
 _db_path: Path | None = None
 _project_root: Path | None = None
+_db_mtime: float = 0.0
+
+
+def _reload_if_stale() -> None:
+    """Re-read the graph DB if it was modified since last load."""
+    global _query, _db_mtime
+    if _db_path is None:
+        return
+    try:
+        current_mtime = _db_path.stat().st_mtime
+    except OSError:
+        return
+    if current_mtime > _db_mtime:
+        kg = load_sqlite(_db_path)
+        _query = GraphQuery(kg)
+        _db_mtime = current_mtime
+        logger.info(
+            "Reloaded graph: %d nodes, %d edges (db changed on disk)",
+            kg.node_count, kg.edge_count,
+        )
 
 
 def _get_query() -> GraphQuery:
     if _query is None:
         raise RuntimeError("Graph not loaded. Call serve() first.")
+    _reload_if_stale()
     return _query
 
 
@@ -534,13 +555,14 @@ def serve(
     project_root: Path | None = None,
 ) -> None:
     """Load the graph and start the MCP server."""
-    global _query, _db_path, _project_root
+    global _query, _db_path, _project_root, _db_mtime
 
     _db_path = db_path
     _project_root = project_root
 
     kg = load_sqlite(db_path)
     _query = GraphQuery(kg)
+    _db_mtime = db_path.stat().st_mtime
 
     logger.info(
         "Loaded graph: %d nodes, %d edges from %s",
