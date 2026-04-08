@@ -328,27 +328,37 @@ def _run_setup(args: argparse.Namespace) -> int:
     for name in installed:
         print(f"  {name}/SKILL.md")
 
-    # Install .mcp.json for MCP server configuration
-    mcp_json = Path.cwd() / ".mcp.json"
+    # Install MCP server configuration
     nexus_cmd = shutil.which("nexus") or ".venv/bin/nexus"
     db_path = "docs/_build/html/_nexus/graph.db"
-    mcp_config = {
-        "mcpServers": {
-            "nexus": {
-                "command": nexus_cmd,
-                "args": ["serve", "--db", db_path, "--project-root", "."],
-            }
-        }
+    nexus_server_config = {
+        "command": nexus_cmd,
+        "args": ["serve", "--db", db_path, "--project-root", "."],
     }
-    if mcp_json.exists():
-        # Merge with existing .mcp.json
-        existing = json.loads(mcp_json.read_text())
-        existing.setdefault("mcpServers", {})["nexus"] = mcp_config["mcpServers"]["nexus"]
-        mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
-        print(f"\nUpdated {mcp_json} with nexus MCP server")
+
+    if args.global_install:
+        # User-level: add to ~/.claude.json mcpServers
+        claude_json = Path.home() / ".claude.json"
+        if claude_json.exists():
+            data = json.loads(claude_json.read_text())
+            data.setdefault("mcpServers", {})["nexus"] = nexus_server_config
+            claude_json.write_text(json.dumps(data, indent=2) + "\n")
+            print(f"\nAdded nexus MCP server to {claude_json} (user-level, all projects)")
+        else:
+            data = {"mcpServers": {"nexus": nexus_server_config}}
+            claude_json.write_text(json.dumps(data, indent=2) + "\n")
+            print(f"\nCreated {claude_json} with nexus MCP server (user-level)")
     else:
-        mcp_json.write_text(json.dumps(mcp_config, indent=2) + "\n")
-        print(f"\nCreated {mcp_json} with nexus MCP server")
+        # Project-level: add to .mcp.json
+        mcp_json = Path.cwd() / ".mcp.json"
+        if mcp_json.exists():
+            existing = json.loads(mcp_json.read_text())
+            existing.setdefault("mcpServers", {})["nexus"] = nexus_server_config
+            mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+            print(f"\nUpdated {mcp_json} with nexus MCP server (project-level)")
+        else:
+            mcp_json.write_text(json.dumps({"mcpServers": {"nexus": nexus_server_config}}, indent=2) + "\n")
+            print(f"\nCreated {mcp_json} with nexus MCP server (project-level)")
 
     # Install PostToolUse hook for auto-rebuild after git commit
     settings_dir = Path.cwd() / ".claude"

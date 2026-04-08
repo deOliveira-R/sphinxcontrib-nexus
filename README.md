@@ -32,11 +32,23 @@ nexus analyze src/ --db graph.db
 nexus serve --db graph.db --project-root /path/to/project
 ```
 
-### Install Skills for Claude Code
+### Install Skills + MCP Server for Claude Code
 
 ```bash
-nexus setup           # project-local: .claude/skills/
-nexus setup --global  # global: ~/.claude/skills/
+nexus setup           # project-level: .mcp.json + .claude/skills/
+nexus setup --global  # user-level: ~/.claude.json + ~/.claude/skills/ (all projects)
+```
+
+### Ingest a Paper
+
+```bash
+nexus ingest paper.pdf --db graph.db     # extracts concepts, equations, citations via LLM
+```
+
+### Interactive Graph Visualizer
+
+```bash
+nexus visualize --db graph.db            # opens HTML graph explorer in browser
 ```
 
 ## Configuration
@@ -45,6 +57,16 @@ nexus setup --global  # global: ~/.claude/skills/
 |---|---|---|
 | `nexus_output` | `_nexus` | Output directory relative to build output |
 | `nexus_ast_analyze` | `True` | Run AST analysis during Sphinx build |
+| `nexus_max_viz_nodes` | `300` | Max nodes in auto-generated graph.html |
+
+## Supported Project Layouts
+
+Nexus works with any Python project:
+
+- **Standard packages**: `myproject/mypackage/__init__.py` — detected automatically
+- **src layout**: `src/mypackage/` — detected automatically
+- **Flat modules**: directories with `.py` files but no `__init__.py` — detected automatically
+- **Custom sys.path**: projects that add directories to `sys.path` in `conf.py` — picked up from the Sphinx build environment
 
 ## What the Graph Contains
 
@@ -84,7 +106,7 @@ nexus setup --global  # global: ~/.claude/skills/
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (16)
+## MCP Tools (20)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -99,7 +121,9 @@ nexus setup --global  # global: ~/.claude/skills/
 - **`detect_changes`** — map git diff to affected symbols
 - **`rename`** — safe multi-file rename with confidence tagging
 - **`retest`** — minimum set of tests to re-run after changes
-- **`communities`** — detect functional groupings
+- **`communities`** — detect functional groupings with cohesion scores
+- **`graph_query`** — Cypher-like pattern matching (`"function -calls-> function"`)
+- **`bridges`** — find architectural hotspots connecting communities
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability
@@ -108,6 +132,8 @@ nexus setup --global  # global: ~/.claude/skills/
 - **`session_briefing`** — AI agent context restoration
 - **`trace_error`** — trace from failing test to equations on call path
 - **`migration_plan`** — plan dependency migration with phased blast radius
+- **`ingest`** — LLM-powered paper/PDF ingestion into the graph
+- **`processes`** — detect named execution flows through the codebase
 
 ## MCP Resources (4)
 
