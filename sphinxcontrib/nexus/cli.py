@@ -250,6 +250,214 @@ def main(argv: list[str] | None = None) -> int:
     )
     viz_cmd.add_argument("-v", "--verbose", action="store_true")
 
+    # --- briefing ---
+    briefing_cmd = sub.add_parser(
+        "briefing",
+        help="Session briefing: stats, stale docs, coverage gaps, recent changes (JSON)",
+    )
+    briefing_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    briefing_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+    )
+
+    # --- context ---
+    context_cmd = sub.add_parser(
+        "context",
+        help="360-degree view of a node: attributes + all connections (JSON)",
+    )
+    context_cmd.add_argument(
+        "node_id",
+        help="Node ID (e.g., 'py:function:orpheus.sn.solver.solve_sn').",
+    )
+    context_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+
+    # --- neighbors ---
+    neighbors_cmd = sub.add_parser(
+        "neighbors",
+        help="Direct connections of a node (JSON)",
+    )
+    neighbors_cmd.add_argument(
+        "node_id",
+        help="Node ID to query.",
+    )
+    neighbors_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    neighbors_cmd.add_argument(
+        "--direction", default="both",
+        choices=["in", "out", "both"],
+        help="Edge direction: in, out, or both (default: both).",
+    )
+    neighbors_cmd.add_argument(
+        "--edge-types", default="",
+        help="Comma-separated edge types to filter (e.g., 'calls,imports').",
+    )
+
+    # --- trace ---
+    trace_cmd = sub.add_parser(
+        "trace",
+        help="Trace from a failing test to equations on its call path (JSON)",
+    )
+    trace_cmd.add_argument(
+        "test_node_id",
+        help="Node ID of the failing test function.",
+    )
+    trace_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+
+    # --- retest ---
+    retest_cmd = sub.add_parser(
+        "retest",
+        help="Minimum set of tests to re-run after changes (JSON)",
+    )
+    retest_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    retest_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+    )
+    retest_cmd.add_argument(
+        "--scope", default="all",
+        choices=["staged", "unstaged", "all", "branch"],
+        help="Git diff scope (default: all).",
+    )
+
+    # --- changes ---
+    changes_cmd = sub.add_parser(
+        "changes",
+        help="Detect which symbols changed in git and their impact (JSON)",
+    )
+    changes_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    changes_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+    )
+    changes_cmd.add_argument(
+        "--scope", default="all",
+        choices=["staged", "unstaged", "all", "branch"],
+        help="Git diff scope (default: all).",
+    )
+
+    # --- communities ---
+    communities_cmd = sub.add_parser(
+        "communities",
+        help="Detect functional communities of tightly connected symbols (JSON)",
+    )
+    communities_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    communities_cmd.add_argument(
+        "--min-size", type=int, default=3,
+        help="Minimum community size (default: 3).",
+    )
+
+    # --- bridges ---
+    bridges_cmd = sub.add_parser(
+        "bridges",
+        help="Find bridge nodes connecting separate communities (JSON)",
+    )
+    bridges_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    bridges_cmd.add_argument(
+        "--top-n", type=int, default=10,
+        help="Number of bridges to return (default: 10).",
+    )
+
+    # --- god-nodes ---
+    god_cmd = sub.add_parser(
+        "god-nodes",
+        help="Most connected nodes by degree (JSON)",
+    )
+    god_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    god_cmd.add_argument(
+        "--top-n", type=int, default=10,
+        help="Number of nodes to return (default: 10).",
+    )
+
+    # --- processes ---
+    processes_cmd = sub.add_parser(
+        "processes",
+        help="Detect execution flows from entry points (JSON)",
+    )
+    processes_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    processes_cmd.add_argument(
+        "--min-length", type=int, default=3,
+        help="Minimum chain length (default: 3).",
+    )
+
+    # --- shortest-path ---
+    sp_cmd = sub.add_parser(
+        "shortest-path",
+        help="Find shortest path between two nodes (JSON)",
+    )
+    sp_cmd.add_argument(
+        "source",
+        help="Source node ID.",
+    )
+    sp_cmd.add_argument(
+        "target",
+        help="Target node ID.",
+    )
+    sp_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    sp_cmd.add_argument(
+        "--max-hops", type=int, default=8,
+        help="Maximum path length (default: 8).",
+    )
+
+    # --- graph-query ---
+    gq_cmd = sub.add_parser(
+        "graph-query",
+        help="Structured graph traversal query (JSON)",
+    )
+    gq_cmd.add_argument(
+        "pattern",
+        help="Query pattern, e.g. 'function -calls-> function'.",
+    )
+    gq_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    gq_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Maximum results (default: 50).",
+    )
+
+    # --- rename ---
+    rename_cmd = sub.add_parser(
+        "rename",
+        help="Safe rename analysis: find all references (JSON)",
+    )
+    rename_cmd.add_argument(
+        "old_name",
+        help="Current symbol name.",
+    )
+    rename_cmd.add_argument(
+        "new_name",
+        help="New symbol name.",
+    )
+    rename_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    rename_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+    )
+    rename_cmd.add_argument(
+        "--apply", dest="apply_rename", action="store_true",
+        help="Apply the renames (default: dry run).",
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -274,6 +482,19 @@ def main(argv: list[str] | None = None) -> int:
         "coverage": _run_coverage,
         "staleness": _run_staleness,
         "migration": _run_migration,
+        "briefing": _run_briefing,
+        "context": _run_context,
+        "neighbors": _run_neighbors,
+        "trace": _run_trace,
+        "retest": _run_retest,
+        "changes": _run_changes,
+        "communities": _run_communities,
+        "bridges": _run_bridges,
+        "god-nodes": _run_god_nodes,
+        "processes": _run_processes,
+        "shortest-path": _run_shortest_path,
+        "graph-query": _run_graph_query,
+        "rename": _run_rename,
     }
     handler = dispatch.get(args.command)
     if handler:
@@ -603,6 +824,107 @@ def _run_visualize(args: argparse.Namespace) -> int:
 
     serve_visualization(db_path, max_nodes=args.max_nodes)
     return 0
+
+
+# ------------------------------------------------------------------
+# JSON CLI commands — mirror MCP tools for ! injection
+#
+# These use shared assembly functions from _serialize.py so CLI and
+# MCP server produce identical JSON by construction.
+# ------------------------------------------------------------------
+
+
+def _json_out(data) -> int:
+    """Print JSON to stdout and return 0."""
+    from sphinxcontrib.nexus._serialize import to_json
+    print(to_json(data))
+    return 0
+
+
+def _run_briefing(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    project_root = args.project_root or Path.cwd()
+    return _json_out(to_dict(q.session_briefing(project_root)))
+
+
+def _run_context(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_context
+    q = _load_query(args.db)
+    return _json_out(assemble_context(q, args.node_id))
+
+
+def _run_neighbors(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_neighbors
+    q = _load_query(args.db)
+    types = [t.strip() for t in args.edge_types.split(",") if t.strip()] or None
+    return _json_out(assemble_neighbors(q, args.node_id, direction=args.direction, edge_types=types))
+
+
+def _run_trace(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.trace_error(args.test_node_id)))
+
+
+def _run_retest(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    project_root = args.project_root or Path.cwd()
+    return _json_out(to_dict(q.retest(project_root, scope=args.scope)))
+
+
+def _run_changes(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    project_root = args.project_root or Path.cwd()
+    return _json_out(to_dict(q.detect_changes(project_root, scope=args.scope)))
+
+
+def _run_communities(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_communities
+    q = _load_query(args.db)
+    return _json_out(assemble_communities(q, min_size=args.min_size))
+
+
+def _run_bridges(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.bridges(top_n=args.top_n)))
+
+
+def _run_god_nodes(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.god_nodes(top_n=args.top_n)))
+
+
+def _run_processes(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_processes
+    q = _load_query(args.db)
+    return _json_out(assemble_processes(q, min_length=args.min_length))
+
+
+def _run_shortest_path(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_shortest_path
+    q = _load_query(args.db)
+    return _json_out(assemble_shortest_path(q, args.source, args.target, max_hops=args.max_hops))
+
+
+def _run_graph_query(args: argparse.Namespace) -> int:
+    q = _load_query(args.db)
+    return _json_out(q.graph_query(args.pattern, limit=args.limit))
+
+
+def _run_rename(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    project_root = args.project_root or Path.cwd()
+    return _json_out(to_dict(q.rename(
+        args.old_name, args.new_name,
+        project_root=project_root,
+        dry_run=not args.apply_rename,
+    )))
 
 
 if __name__ == "__main__":

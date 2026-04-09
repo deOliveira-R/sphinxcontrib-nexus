@@ -10,14 +10,22 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from sphinxcontrib.nexus._serialize import (
+    assemble_communities,
+    assemble_context,
+    assemble_neighbors,
+    assemble_processes,
+    assemble_shortest_path,
+    assemble_verification_coverage,
+    to_dict,
+    to_json,
+)
 from sphinxcontrib.nexus.export import load_sqlite
 from sphinxcontrib.nexus.graph import KnowledgeGraph
 from sphinxcontrib.nexus.query import GraphQuery
@@ -63,18 +71,6 @@ def _get_query() -> GraphQuery:
     return _query
 
 
-def _to_dict(obj: Any) -> Any:
-    """Convert dataclass results to JSON-safe dicts."""
-    if hasattr(obj, "__dataclass_fields__"):
-        d = asdict(obj)
-        return d
-    if isinstance(obj, list):
-        return [_to_dict(x) for x in obj]
-    if isinstance(obj, tuple):
-        return [_to_dict(x) for x in obj]
-    return obj
-
-
 # ------------------------------------------------------------------
 # MCP Tools
 # ------------------------------------------------------------------
@@ -96,7 +92,7 @@ def query(text: str, node_types: str = "", limit: int = 20) -> str:
     q = _get_query()
     types = [t.strip() for t in node_types.split(",") if t.strip()] or None
     results = q.query(text, node_types=types, limit=limit)
-    return json.dumps(_to_dict(results), indent=2)
+    return to_json(to_dict(results))
 
 
 @_mcp.tool()
@@ -110,27 +106,7 @@ def context(node_id: str) -> str:
         node_id: Node ID (e.g., "py:function:sn_solver.solve_sn").
     """
     q = _get_query()
-    node = q.get_node(node_id)
-    if node is None:
-        return json.dumps({"error": f"Node '{node_id}' not found"})
-
-    neighbors = q.neighbors(node_id, direction="both")
-
-    # Group by edge type and direction
-    outgoing: dict[str, list[dict]] = {}
-    incoming: dict[str, list[dict]] = {}
-    for neighbor, edge in neighbors:
-        entry = {"node": _to_dict(neighbor), "edge": _to_dict(edge)}
-        if edge.source == node_id:
-            outgoing.setdefault(edge.type, []).append(entry)
-        else:
-            incoming.setdefault(edge.type, []).append(entry)
-
-    return json.dumps({
-        "node": _to_dict(node),
-        "outgoing": outgoing,
-        "incoming": incoming,
-    }, indent=2)
+    return to_json(assemble_context(q, node_id))
 
 
 @_mcp.tool()
@@ -158,7 +134,7 @@ def impact(
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
     result = q.impact(target, direction=direction, max_depth=max_depth, edge_types=types)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -174,10 +150,7 @@ def shortest_path(source: str, target: str, max_hops: int = 8) -> str:
         max_hops: Maximum path length (default 8).
     """
     q = _get_query()
-    result = q.shortest_path(source, target, max_hops=max_hops)
-    if result is None:
-        return json.dumps({"error": "No path found", "source": source, "target": target})
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(assemble_shortest_path(q, source, target, max_hops=max_hops))
 
 
 @_mcp.tool()
@@ -195,11 +168,7 @@ def neighbors(
     """
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
-    results = q.neighbors(node_id, direction=direction, edge_types=types)
-    return json.dumps([
-        {"node": _to_dict(n), "edge": _to_dict(e)}
-        for n, e in results
-    ], indent=2)
+    return to_json(assemble_neighbors(q, node_id, direction=direction, edge_types=types))
 
 
 @_mcp.tool()
@@ -213,14 +182,14 @@ def god_nodes(top_n: int = 10) -> str:
     """
     q = _get_query()
     results = q.god_nodes(top_n=top_n)
-    return json.dumps(_to_dict(results), indent=2)
+    return to_json(to_dict(results))
 
 
 @_mcp.tool()
 def stats() -> str:
     """Get graph-level statistics: node/edge counts by type, density, etc."""
     q = _get_query()
-    return json.dumps(_to_dict(q.stats()), indent=2)
+    return to_json(to_dict(q.stats()))
 
 
 @_mcp.tool()
@@ -233,18 +202,7 @@ def communities(min_size: int = 3) -> str:
         min_size: Minimum community size to include (default 3).
     """
     q = _get_query()
-    results = q.communities(min_size=min_size)
-    # Return summary (full member lists can be huge)
-    summaries = []
-    for c in results:
-        top_members = sorted(c.members, key=lambda n: n.degree, reverse=True)[:5]
-        summaries.append({
-            "id": c.id,
-            "label": c.label,
-            "size": c.size,
-            "top_members": _to_dict(top_members),
-        })
-    return json.dumps(summaries, indent=2)
+    return to_json(assemble_communities(q, min_size=min_size))
 
 
 @_mcp.tool()
@@ -258,9 +216,9 @@ def detect_changes(scope: str = "all") -> str:
     """
     q = _get_query()
     if _project_root is None:
-        return json.dumps({"error": "project_root not set"})
+        return to_json({"error": "project_root not set"})
     result = q.detect_changes(_project_root, scope=scope)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -281,7 +239,7 @@ def rename(old_name: str, new_name: str, dry_run: bool = True) -> str:
         project_root=_project_root,
         dry_run=dry_run,
     )
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -296,7 +254,7 @@ def provenance_chain(node_id: str) -> str:
         node_id: Node ID of a code symbol or equation.
     """
     q = _get_query()
-    return json.dumps(_to_dict(q.provenance_chain(node_id)), indent=2)
+    return to_json(to_dict(q.provenance_chain(node_id)))
 
 
 @_mcp.tool()
@@ -312,13 +270,7 @@ def verification_coverage(status_filter: str = "") -> str:
     """
     q = _get_query()
     filt = status_filter if status_filter else None
-    result = q.verification_coverage(status_filter=filt)
-    # Return summary + first 20 entries (full list can be huge)
-    return json.dumps({
-        "summary": result.summary,
-        "entries": _to_dict(result.entries[:20]),
-        "total_entries": len(result.entries),
-    }, indent=2)
+    return to_json(assemble_verification_coverage(q, status_filter=filt))
 
 
 @_mcp.tool()
@@ -330,7 +282,7 @@ def staleness() -> str:
     """
     q = _get_query()
     result = q.staleness(_project_root)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -342,7 +294,7 @@ def session_briefing() -> str:
     """
     q = _get_query()
     result = q.session_briefing(_project_root)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -357,9 +309,9 @@ def retest(scope: str = "all") -> str:
     """
     q = _get_query()
     if _project_root is None:
-        return json.dumps({"error": "project_root not set"})
+        return to_json({"error": "project_root not set"})
     result = q.retest(_project_root, scope=scope)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -375,7 +327,7 @@ def trace_error(test_node_id: str) -> str:
     """
     q = _get_query()
     result = q.trace_error(test_node_id)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -392,7 +344,7 @@ def migration_plan(from_dep: str, to_dep: str = "") -> str:
     """
     q = _get_query()
     result = q.migration_plan(from_dep, to_dep)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.tool()
@@ -406,18 +358,7 @@ def processes(min_length: int = 3) -> str:
         min_length: Minimum chain length to include (default 3).
     """
     q = _get_query()
-    results = q.processes(min_length=min_length)
-    summaries = []
-    for p in results[:20]:
-        summaries.append({
-            "name": p.name,
-            "length": p.length,
-            "steps": [
-                {"step": s.step_number, "node": s.node.id, "calls_next": s.calls_next}
-                for s in p.steps
-            ],
-        })
-    return json.dumps(summaries, indent=2)
+    return to_json(assemble_processes(q, min_length=min_length))
 
 
 @_mcp.tool()
@@ -444,7 +385,7 @@ def graph_query(pattern: str, limit: int = 50) -> str:
     """
     q = _get_query()
     results = q.graph_query(pattern, limit=limit)
-    return json.dumps(results, indent=2)
+    return to_json(results)
 
 
 @_mcp.tool()
@@ -471,13 +412,13 @@ def ingest(file_path: str, llm_command: str = "") -> str:
         p = _project_root / p
 
     result = ingest_file(p, kg, llm_command=llm_command or None)
-    return json.dumps({
+    return to_json({
         "source_file": result.source_file,
         "concepts_added": result.concepts_added,
         "equations_added": result.equations_added,
         "relationships_added": result.relationships_added,
         "citations_added": result.citations_added,
-    }, indent=2)
+    })
 
 
 @_mcp.tool()
@@ -492,7 +433,7 @@ def bridges(top_n: int = 10) -> str:
     """
     q = _get_query()
     results = q.bridges(top_n=top_n)
-    return json.dumps(_to_dict(results), indent=2)
+    return to_json(to_dict(results))
 
 
 # ------------------------------------------------------------------
@@ -504,7 +445,7 @@ def bridges(top_n: int = 10) -> str:
 def resource_stats() -> str:
     """Graph overview: node/edge counts, types, density."""
     q = _get_query()
-    return json.dumps(_to_dict(q.stats()), indent=2)
+    return to_json(to_dict(q.stats()))
 
 
 @_mcp.resource("nexus://graph/communities")
@@ -516,7 +457,7 @@ def resource_communities() -> str:
     for c in results:
         member_names = [m.name for m in sorted(c.members, key=lambda n: n.degree, reverse=True)[:10]]
         summaries.append({"id": c.id, "label": c.label, "size": c.size, "top_members": member_names})
-    return json.dumps(summaries, indent=2)
+    return to_json(summaries)
 
 
 @_mcp.resource("nexus://briefing")
@@ -524,14 +465,14 @@ def resource_briefing() -> str:
     """Session briefing: what you need to know right now."""
     q = _get_query()
     result = q.session_briefing(_project_root)
-    return json.dumps(_to_dict(result), indent=2)
+    return to_json(to_dict(result))
 
 
 @_mcp.resource("nexus://graph/schema")
 def resource_schema() -> str:
     """Graph schema: available node types and edge types."""
     from sphinxcontrib.nexus.graph import EdgeType, NodeType
-    return json.dumps({
+    return to_json({
         "node_types": [t.value for t in NodeType],
         "edge_types": [t.value for t in EdgeType],
         "node_id_format": "<domain>:<type>:<qualified_name>",
@@ -542,7 +483,7 @@ def resource_schema() -> str:
             "document": "doc:theory/discrete_ordinates",
             "external": "py:class:numpy.ndarray",
         },
-    }, indent=2)
+    })
 
 
 # ------------------------------------------------------------------
