@@ -599,12 +599,19 @@ def _run_setup(args: argparse.Namespace) -> int:
             continue
         dest_dir = target / skill_dir.name
         dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(skill_file, dest_dir / "SKILL.md")
+        # Copy all skill files (SKILL.md, reference.md, scripts/)
+        for item in skill_dir.rglob("*"):
+            if item.is_file() and item.name != ".DS_Store":
+                rel = item.relative_to(skill_dir)
+                dest_file = dest_dir / rel
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest_file)
         installed.append(skill_dir.name)
 
     print(f"Installed {len(installed)} skills to {target}/")
     for name in installed:
-        print(f"  {name}/SKILL.md")
+        files = list((target / name).rglob("*.md"))
+        print(f"  {name}/ ({len(files)} files)")
 
     # Install MCP server configuration
     nexus_cmd = shutil.which("nexus") or ".venv/bin/nexus"
