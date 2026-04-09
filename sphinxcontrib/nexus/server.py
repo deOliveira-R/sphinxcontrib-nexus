@@ -436,6 +436,54 @@ def bridges(top_n: int = 10) -> str:
     return to_json(to_dict(results))
 
 
+@_mcp.tool()
+def callers(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
+    """Get functions that call this symbol.
+
+    Returns a clean list of caller nodes. Set transitive=True to walk
+    the call graph up to max_depth.
+
+    Args:
+        node_id: Node ID of the function to query.
+        transitive: If True, include indirect callers (depth 2+).
+        max_depth: Maximum depth for transitive search (default 3).
+    """
+    q = _get_query()
+    return to_json(to_dict(q.callers(node_id, transitive=transitive, max_depth=max_depth)))
+
+
+@_mcp.tool()
+def callees(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
+    """Get functions that this symbol calls.
+
+    Returns a clean list of callee nodes. Set transitive=True to walk
+    the call graph down to max_depth.
+
+    Args:
+        node_id: Node ID of the function to query.
+        transitive: If True, include indirect callees (depth 2+).
+        max_depth: Maximum depth for transitive search (default 3).
+    """
+    q = _get_query()
+    return to_json(to_dict(q.callees(node_id, transitive=transitive, max_depth=max_depth)))
+
+
+@_mcp.tool()
+def verification_audit() -> str:
+    """Complete V&V audit in a single call.
+
+    Combines verification_coverage + staleness into one actionable report.
+    Returns: summary counts by status, prioritized gap list (equations
+    without full verification chain), stale documentation pages.
+
+    Gaps are sorted by closure difficulty: "implemented" first (just need
+    a test), then "documented" (need code implementation).
+    """
+    q = _get_query()
+    result = q.verification_audit(_project_root)
+    return to_json(to_dict(result))
+
+
 # ------------------------------------------------------------------
 # MCP Resources
 # ------------------------------------------------------------------

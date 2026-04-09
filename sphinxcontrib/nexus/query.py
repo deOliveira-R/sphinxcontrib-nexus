@@ -263,6 +263,38 @@ class MigrationResult:
     total_functions: int
 
 
+@dataclass
+class CallersResult:
+    """Callers (or callees) of a function."""
+
+    target: str
+    direction: str  # "callers" or "callees"
+    nodes: list[NodeResult]
+    total: int
+
+
+@dataclass
+class AuditGap:
+    """A single V&V gap with actionable context."""
+
+    equation_id: str
+    status: str
+    theory_page: str
+    implementing_code: list[str]
+    nearest_tests: list[str]
+    is_stale: bool
+
+
+@dataclass
+class VerificationAuditResult:
+    """Complete V&V audit in a single call."""
+
+    summary: dict[str, int]
+    gaps: list[AuditGap]
+    stale_pages: list[StalenessEntry]
+    total_equations: int
+
+
 class GraphQuery:
     """Query interface over a KnowledgeGraph or raw nx.MultiDiGraph.
 
@@ -336,6 +368,85 @@ class GraphQuery:
                 ))
 
         return results
+
+    def callers(
+        self,
+        node_id: str,
+        transitive: bool = False,
+        max_depth: int = 3,
+    ) -> CallersResult:
+        """Functions that call this symbol, optionally transitive.
+
+        Returns a deduplicated list of caller nodes. If transitive=True,
+        walks the call graph up to max_depth.
+        """
+        if node_id not in self._g:
+            return CallersResult(target=node_id, direction="callers", nodes=[], total=0)
+
+        if not transitive:
+            seen: set[str] = set()
+            nodes: list[NodeResult] = []
+            for src, _tgt, _key, data in self._g.in_edges(node_id, keys=True, data=True):
+                if data.get("type") == "calls" and src not in seen:
+                    seen.add(src)
+                    nodes.append(self._node_result(src))
+            return CallersResult(
+                target=node_id, direction="callers", nodes=nodes, total=len(nodes),
+            )
+
+        # Transitive: BFS on calls edges only
+        def edge_filter(u: str, v: str, k: str | int) -> bool:
+            return self._g.edges[u, v, k].get("type") == "calls"
+        view = nx.subgraph_view(self._g, filter_edge=edge_filter)
+
+        all_nodes: list[NodeResult] = []
+        for depth, layer in enumerate(nx.bfs_layers(view.reverse(copy=False), [node_id])):
+            if depth == 0:
+                continue
+            if depth > max_depth:
+                break
+            all_nodes.extend(self._node_result(n) for n in layer)
+
+        return CallersResult(
+            target=node_id, direction="callers", nodes=all_nodes, total=len(all_nodes),
+        )
+
+    def callees(
+        self,
+        node_id: str,
+        transitive: bool = False,
+        max_depth: int = 3,
+    ) -> CallersResult:
+        """Functions that this symbol calls, optionally transitive."""
+        if node_id not in self._g:
+            return CallersResult(target=node_id, direction="callees", nodes=[], total=0)
+
+        if not transitive:
+            seen: set[str] = set()
+            nodes: list[NodeResult] = []
+            for _src, tgt, _key, data in self._g.out_edges(node_id, keys=True, data=True):
+                if data.get("type") == "calls" and tgt not in seen:
+                    seen.add(tgt)
+                    nodes.append(self._node_result(tgt))
+            return CallersResult(
+                target=node_id, direction="callees", nodes=nodes, total=len(nodes),
+            )
+
+        def edge_filter(u: str, v: str, k: str | int) -> bool:
+            return self._g.edges[u, v, k].get("type") == "calls"
+        view = nx.subgraph_view(self._g, filter_edge=edge_filter)
+
+        all_nodes: list[NodeResult] = []
+        for depth, layer in enumerate(nx.bfs_layers(view, [node_id])):
+            if depth == 0:
+                continue
+            if depth > max_depth:
+                break
+            all_nodes.extend(self._node_result(n) for n in layer)
+
+        return CallersResult(
+            target=node_id, direction="callees", nodes=all_nodes, total=len(all_nodes),
+        )
 
     def impact(
         self,
@@ -897,6 +1008,53 @@ class GraphQuery:
                 summary[status] += 1
 
         return CoverageResult(entries=entries, summary=dict(summary))
+
+    def verification_audit(
+        self, project_root: Path | str | None = None,
+    ) -> VerificationAuditResult:
+        """Complete V&V audit in a single call.
+
+        Combines verification_coverage + staleness into one actionable
+        report with gaps prioritized by closure difficulty.
+        """
+        coverage = self.verification_coverage()
+        stale = self.staleness(project_root)
+
+        # Build stale page set for cross-referencing
+        stale_docnames = {e.doc_node.docname for e in stale.stale_docs}
+
+        # Build gaps: every equation that is NOT verified
+        gaps: list[AuditGap] = []
+        for entry in coverage.entries:
+            if entry.status == "verified":
+                continue
+            if entry.status in ("tested", "orphan_code"):
+                continue  # these are code-level, not equation-level
+
+            # Find the theory page this equation lives on
+            theory_page = entry.node.docname or ""
+
+            gaps.append(AuditGap(
+                equation_id=entry.node.id,
+                status=entry.status,
+                theory_page=theory_page,
+                implementing_code=[c.id for c in entry.implementing_code],
+                nearest_tests=[t.id for t in entry.tests],
+                is_stale=theory_page in stale_docnames,
+            ))
+
+        # Sort: implemented first (easiest to close), then documented
+        priority = {"implemented": 0, "documented": 1}
+        gaps.sort(key=lambda g: priority.get(g.status, 99))
+
+        return VerificationAuditResult(
+            summary=coverage.summary,
+            gaps=gaps,
+            stale_pages=stale.stale_docs,
+            total_equations=sum(
+                1 for _, a in self._g.nodes(data=True) if a.get("type") == "equation"
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Feature 3: Staleness Detector

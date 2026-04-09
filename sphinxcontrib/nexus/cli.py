@@ -458,6 +458,60 @@ def main(argv: list[str] | None = None) -> int:
         help="Apply the renames (default: dry run).",
     )
 
+    # --- callers ---
+    callers_cmd = sub.add_parser(
+        "callers",
+        help="Functions that call this symbol (JSON)",
+    )
+    callers_cmd.add_argument(
+        "node_id",
+        help="Node ID of the function.",
+    )
+    callers_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    callers_cmd.add_argument(
+        "--transitive", action="store_true",
+        help="Include indirect callers (depth 2+).",
+    )
+    callers_cmd.add_argument(
+        "--max-depth", type=int, default=3,
+        help="Max depth for transitive search (default: 3).",
+    )
+
+    # --- callees ---
+    callees_cmd = sub.add_parser(
+        "callees",
+        help="Functions that this symbol calls (JSON)",
+    )
+    callees_cmd.add_argument(
+        "node_id",
+        help="Node ID of the function.",
+    )
+    callees_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    callees_cmd.add_argument(
+        "--transitive", action="store_true",
+        help="Include indirect callees (depth 2+).",
+    )
+    callees_cmd.add_argument(
+        "--max-depth", type=int, default=3,
+        help="Max depth for transitive search (default: 3).",
+    )
+
+    # --- audit ---
+    audit_cmd = sub.add_parser(
+        "audit",
+        help="Complete V&V audit: coverage + staleness + gaps (JSON)",
+    )
+    audit_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    audit_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -495,6 +549,9 @@ def main(argv: list[str] | None = None) -> int:
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
         "rename": _run_rename,
+        "callers": _run_callers,
+        "callees": _run_callees,
+        "audit": _run_audit,
     }
     handler = dispatch.get(args.command)
     if handler:
@@ -925,6 +982,29 @@ def _run_rename(args: argparse.Namespace) -> int:
         project_root=project_root,
         dry_run=not args.apply_rename,
     )))
+
+
+def _run_callers(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.callers(
+        args.node_id, transitive=args.transitive, max_depth=args.max_depth,
+    )))
+
+
+def _run_callees(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.callees(
+        args.node_id, transitive=args.transitive, max_depth=args.max_depth,
+    )))
+
+
+def _run_audit(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    project_root = args.project_root or Path.cwd()
+    return _json_out(to_dict(q.verification_audit(project_root)))
 
 
 if __name__ == "__main__":
