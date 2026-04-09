@@ -97,12 +97,30 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     else:
         source_dirs = [project_root]
 
+    # Scan main source directories (excluding tests/ and docs/)
     for src_dir in source_dirs:
         ast_graph = analyze_directory(
             source_dir=src_dir,
             project_root=project_root,
             sys_path_dirs=source_dirs,
             exclude_patterns=["tests/*", "docs/*", ".venv/*", "__pycache__/*"],
+        )
+        merge_graphs(graph, ast_graph)
+
+    # Scan extra directories (e.g. tests/) — no tests/* exclusion since
+    # these are explicitly requested by the user via nexus_extra_source_dirs
+    all_sys_paths = source_dirs[:]
+    for extra in app.config.nexus_extra_source_dirs:
+        extra_path = (project_root / extra).resolve()
+        if not extra_path.is_dir():
+            logger.warning("nexus_extra_source_dirs: %s not found, skipping", extra)
+            continue
+        all_sys_paths.append(extra_path)
+        ast_graph = analyze_directory(
+            source_dir=extra_path,
+            project_root=project_root,
+            sys_path_dirs=all_sys_paths,
+            exclude_patterns=["docs/*", ".venv/*", "__pycache__/*"],
         )
         merge_graphs(graph, ast_graph)
 
@@ -183,6 +201,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
 
     app.add_config_value("nexus_output", "_nexus", "env")
     app.add_config_value("nexus_ast_analyze", True, "env")
+    app.add_config_value("nexus_extra_source_dirs", [], "env")
     app.add_config_value("nexus_max_viz_nodes", 300, "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
 
