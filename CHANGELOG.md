@@ -2,6 +2,56 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.8.1 — 2026-04-13
+
+Two bug fixes caught by ORPHEUS cross-validation of 0.8.0.
+
+### Fixed
+
+- **nexus#7**: explicit-source edge dedup. Every write-time pass
+  (``merge.write_verifies_edges``, ``directives.apply_pending_edges``,
+  ``registry._apply_verifications`` / ``_apply_implementations``)
+  previously only skipped duplication against its **own** source.
+  A ``(test, equation)`` pair declared by both a
+  ``@pytest.mark.verifies`` decorator AND a matching registry
+  entry therefore produced two parallel ``tests`` edges, inflating
+  per-equation test counts by one (the exact 86 → 87 regression
+  reported from the ORPHEUS ``matrix-eigenvalue`` equation).
+
+  All four passes now skip if ANY edge of the same type has a
+  non-inference source already present. ``source="inferred"``
+  edges remain weak and can still coexist with explicit assertions.
+
+- **Query-time dedup layer** in ``verification_coverage`` tracks
+  seen ``(src, tgt)`` pairs per edge-type so each ``(code,
+  equation)`` or ``(test, equation)`` relationship contributes at
+  most one entry to the result. This is defense-in-depth for
+  graphs loaded from older nexus versions that may still carry
+  duplicate edges.
+
+- **nexus#8**: module/class-level ``pytest.mark.*`` propagation
+  now requires the target function to qualify as a test. Previously
+  a module ``pytestmark = pytest.mark.verifies("eq-1")`` tagged
+  **every** function in the file — including private helpers like
+  ``_build_homogeneous_mesh`` — and ``write_verifies_edges`` then
+  wrote spurious ``tests`` edges from those helpers to the
+  equation. ORPHEUS's declared coverage inflated by ~5-10% because
+  of this. Inherited markers are now gated on ``is_test=True``
+  (name matches ``test``/``test_*`` AND the file matches the
+  project's test-pattern globs). Function-level decorators still
+  apply unconditionally.
+
+### Notes
+
+- 272 → 281 tests (+9). New assertions split across
+  ``test_registry.py`` (+4 write-time dedup), ``test_query.py``
+  (+2 query-time dedup), and ``test_ast_analyzer.py`` (+3
+  helper-propagation regressions).
+- No API or schema changes. Drop-in upgrade from 0.8.0.
+- The ``_visit_source`` helper in ``tests/test_ast_analyzer.py``
+  gains an ``is_test_file`` parameter so Session 2 propagation
+  tests can keep exercising their contract under the tighter gate.
+
 ## 0.8.0 — 2026-04-13
 
 Session 3 of the ORPHEUS V&V integration: non-LLM verification
