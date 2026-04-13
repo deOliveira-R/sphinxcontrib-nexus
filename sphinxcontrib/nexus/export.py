@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,23 @@ from typing import Any
 import networkx as nx
 
 from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+logger = logging.getLogger(__name__)
+
+
+#: Current SQLite schema version. Bump only on incompatible schema
+#: changes — a version that a released nexus build cannot load at
+#: all. Additive ``node_attrs``/``edge_attrs`` changes don't need
+#: a bump. Loading a DB whose schema_version exceeds this raises
+#: ``SchemaVersionError`` so downgrading consumers fail loud
+#: instead of silently corrupting queries.
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """Raised when a SQLite graph was written by a future nexus
+    version that this build cannot read. Rebuild the docs with
+    the matching nexus version or upgrade this install."""
 
 # ---------------------------------------------------------------------------
 # JSON export/import (kept for debugging and interop)
@@ -97,6 +115,34 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');
 _NODE_CORE_FIELDS = {"id", "type", "name", "display_name", "domain", "docname", "anchor"}
 
 
+def _check_schema_version(metadata: dict, path: Path) -> None:
+    """Validate ``metadata["schema_version"]`` against
+    ``SCHEMA_VERSION`` and raise ``SchemaVersionError`` on a
+    future-version DB. Missing key is tolerated (pre-schema_version
+    databases are treated as v1)."""
+    raw = metadata.get("schema_version")
+    if raw is None:
+        logger.debug(
+            "No schema_version in %s metadata; treating as v1", path,
+        )
+        return
+    try:
+        version = int(raw)
+    except (TypeError, ValueError):
+        raise SchemaVersionError(
+            f"{path}: schema_version {raw!r} is not an integer; "
+            f"the database is either corrupt or written by an "
+            f"incompatible nexus release."
+        )
+    if version > SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"{path}: schema_version {version} exceeds the "
+            f"maximum this nexus build can read ({SCHEMA_VERSION}). "
+            f"Rebuild the docs with an older nexus release or "
+            f"upgrade this install."
+        )
+
+
 def write_sqlite(graph: KnowledgeGraph, path: Path) -> None:
     """Write graph to a SQLite database with indexes and FTS."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,8 +153,20 @@ def write_sqlite(graph: KnowledgeGraph, path: Path) -> None:
     try:
         conn.executescript(_SCHEMA)
 
+        # Schema version — always written so older nexus builds
+        # can detect and reject a DB they can't parse, and newer
+        # builds can recognize an upgrade target.
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?, ?)",
+            ("schema_version", json.dumps(SCHEMA_VERSION)),
+        )
+
         # Metadata
         for key, value in graph.metadata.items():
+            if key == "schema_version":
+                # Never let graph.metadata override the authoritative
+                # schema_version written above.
+                continue
             conn.execute(
                 "INSERT INTO metadata (key, value) VALUES (?, ?)",
                 (key, json.dumps(value, default=str)),
@@ -161,7 +219,13 @@ def write_sqlite(graph: KnowledgeGraph, path: Path) -> None:
 
 
 def load_sqlite(path: Path) -> KnowledgeGraph:
-    """Load graph from a SQLite database into a KnowledgeGraph."""
+    """Load graph from a SQLite database into a KnowledgeGraph.
+
+    Rejects databases whose ``metadata.schema_version`` exceeds
+    ``SCHEMA_VERSION``. A missing version key is tolerated (for
+    databases written by nexus releases before schema_version
+    existed) and treated as version 1.
+    """
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     try:
@@ -170,6 +234,8 @@ def load_sqlite(path: Path) -> KnowledgeGraph:
         # Metadata
         for row in conn.execute("SELECT key, value FROM metadata"):
             kg.metadata[row["key"]] = json.loads(row["value"])
+
+        _check_schema_version(kg.metadata, path)
 
         g = kg.nxgraph
 

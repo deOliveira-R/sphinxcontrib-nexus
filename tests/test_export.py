@@ -217,3 +217,120 @@ def test_sqlite_indexed_neighbors(tmp_path):
     targets = {r[0] for r in rows}
     assert "py:function:foo" in targets
     assert "math:equation:euler" in targets
+
+
+# ---------------------------------------------------------------------------
+# Schema version enforcement (Session 4.1)
+# ---------------------------------------------------------------------------
+
+
+def test_write_sqlite_sets_schema_version(tmp_path):
+    import json as _json
+    import sqlite3
+
+    from sphinxcontrib.nexus.export import SCHEMA_VERSION
+
+    kg = _make_graph()
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+
+    conn = sqlite3.connect(str(path))
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()
+    conn.close()
+    assert row is not None, "schema_version missing from metadata table"
+    assert _json.loads(row[0]) == SCHEMA_VERSION
+
+
+def test_load_sqlite_accepts_current_schema_version(tmp_path):
+    kg = _make_graph()
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+    # Must not raise.
+    reloaded = load_sqlite(path)
+    assert reloaded.node_count == kg.node_count
+
+
+def test_load_sqlite_accepts_missing_schema_version(tmp_path):
+    """Databases written by pre-schema_version nexus releases have
+    no ``schema_version`` key in ``metadata``. The loader tolerates
+    that and treats the DB as v1."""
+    import sqlite3
+
+    kg = _make_graph()
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+    # Strip the schema_version row.
+    conn = sqlite3.connect(str(path))
+    conn.execute("DELETE FROM metadata WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+    # Load must not raise.
+    reloaded = load_sqlite(path)
+    assert reloaded.node_count == kg.node_count
+
+
+def test_load_sqlite_rejects_future_schema_version(tmp_path):
+    import json as _json
+    import sqlite3
+
+    from sphinxcontrib.nexus.export import SchemaVersionError
+
+    kg = _make_graph()
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+    # Force a future version into the DB.
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
+        (_json.dumps(999),),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionError, match="999"):
+        load_sqlite(path)
+
+
+def test_load_sqlite_rejects_non_integer_schema_version(tmp_path):
+    import json as _json
+    import sqlite3
+
+    from sphinxcontrib.nexus.export import SchemaVersionError
+
+    kg = _make_graph()
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
+        (_json.dumps("not-a-number"),),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionError):
+        load_sqlite(path)
+
+
+def test_graph_metadata_cannot_override_schema_version(tmp_path):
+    """A user that stuffs a bogus ``schema_version`` into
+    ``graph.metadata`` should not be able to clobber the
+    authoritative version written by ``write_sqlite``."""
+    import json as _json
+    import sqlite3
+
+    from sphinxcontrib.nexus.export import SCHEMA_VERSION
+
+    kg = _make_graph()
+    kg.metadata["schema_version"] = 999
+    path = tmp_path / "graph.db"
+    write_sqlite(kg, path)
+
+    conn = sqlite3.connect(str(path))
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()
+    conn.close()
+    assert _json.loads(row[0]) == SCHEMA_VERSION
