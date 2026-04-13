@@ -170,6 +170,29 @@ class ProvenanceResult:
 
 
 @dataclass
+class TestReference:
+    """A test that verifies some target, tagged with its provenance.
+
+    ``source`` distinguishes tiers:
+
+    - ``"declared"``     — a ``tests`` edge written from
+                           ``@pytest.mark.verifies`` / registry /
+                           directive. Confidence 1.0.
+    - ``"heuristic-1hop"`` — inferred: ``is_test=True`` function
+                             directly ``calls`` the implementing
+                             code. Confidence 0.7.
+    - ``"heuristic-multihop"`` — inferred: ``is_test=True`` function
+                                 reaches the implementing code through
+                                 a helper chain. Confidence 0.5.
+    """
+
+    id: str
+    source: str = "declared"
+    confidence: float = 1.0
+    display_name: str = ""
+
+
+@dataclass
 class CoverageEntry:
     """Verification coverage status of one equation or function."""
 
@@ -177,7 +200,7 @@ class CoverageEntry:
     status: str  # "verified", "tested", "implemented", "documented", "orphan_code"
     equation: NodeResult | None = None
     implementing_code: list[NodeResult] = field(default_factory=list)
-    tests: list[NodeResult] = field(default_factory=list)
+    tests: list[TestReference] = field(default_factory=list)
 
 
 @dataclass
@@ -931,43 +954,129 @@ class GraphQuery:
     ) -> CoverageResult:
         """Map verification coverage: equation → code → test chain.
 
+        Test evidence is collected in three tiers:
+
+        1. **Declared** — a ``tests`` edge written by
+           ``@pytest.mark.verifies`` / registry / directive. Any
+           equation with a declared test is ``verified`` regardless
+           of whether intermediate implementing code is tracked.
+        2. **Heuristic 1-hop** — an ``is_test=True`` function directly
+           ``calls`` the implementing code. Only consulted when no
+           declared tests exist for the equation.
+        3. **Heuristic multi-hop** — BFS up the ``calls`` graph from
+           each implementing code node (max depth 3) finds an
+           ancestor marked ``is_test=True``. Consulted after the
+           1-hop tier, deduped against it.
+
         Status values:
-        - "verified": equation + code + test
-        - "tested": code + test, no equation link
-        - "implemented": equation + code, no test
-        - "documented": equation only, no implementing code
-        - "orphan_code": code with no equation
+
+        - ``"verified"``    — equation has at least one test (any tier).
+        - ``"implemented"`` — equation has implementing code, no test.
+        - ``"documented"``  — equation only, no implementing code.
+        - ``"tested"``      — code with test, no equation link (orphan code).
+        - ``"orphan_code"`` — code with no equation and no test.
         """
         code_types = {"function", "method", "class"}
         entries: list[CoverageEntry] = []
         summary: Counter[str] = Counter()
 
-        # Build equation → implementing code mapping
+        # Index 1: equation → implementing code via IMPLEMENTS edges.
         eq_to_code: dict[str, list[str]] = {}
         code_to_eq: dict[str, list[str]] = {}
+        # Index 2: equation → declared tests via TESTS edges.
+        declared_tests: dict[str, list[TestReference]] = {}
+        # Index 3: code → direct test callers (1-hop heuristic).
+        code_to_1hop_tests: dict[str, list[str]] = {}
+
         for src, tgt, data in self._g.edges(data=True):
-            if data.get("type") == "implements":
+            etype = data.get("type", "")
+            if etype == "implements":
                 eq_to_code.setdefault(tgt, []).append(src)
                 code_to_eq.setdefault(src, []).append(tgt)
+            elif etype == "tests":
+                declared_tests.setdefault(tgt, []).append(
+                    TestReference(
+                        id=src,
+                        source="declared",
+                        confidence=float(data.get("confidence", 1.0)),
+                        display_name=self._g.nodes.get(src, {}).get(
+                            "display_name", ""
+                        ),
+                    )
+                )
+            elif etype == "calls":
+                if self._g.nodes.get(src, {}).get("is_test"):
+                    code_to_1hop_tests.setdefault(tgt, []).append(src)
 
-        # Build code → test mapping (tests are functions with is_test=True that call code)
-        code_to_tests: dict[str, list[str]] = {}
-        for src, tgt, data in self._g.edges(data=True):
-            if data.get("type") == "calls":
-                src_attrs = self._g.nodes.get(src, {})
-                if src_attrs.get("is_test"):
-                    code_to_tests.setdefault(tgt, []).append(src)
+        def _multihop_tests(code_node: str, max_depth: int = 3) -> list[str]:
+            """BFS up the ``calls`` graph from ``code_node`` until an
+            ``is_test=True`` predecessor is found, bounded to
+            ``max_depth`` hops. Returns the collected test node ids."""
+            seen: set[str] = {code_node}
+            frontier: set[str] = {code_node}
+            found: list[str] = []
+            for _ in range(max_depth):
+                if not frontier:
+                    break
+                next_frontier: set[str] = set()
+                for node in frontier:
+                    for pred in self._g.predecessors(node):
+                        if pred in seen:
+                            continue
+                        ed = self._g.get_edge_data(pred, node) or {}
+                        if not any(
+                            d.get("type") == "calls" for d in ed.values()
+                        ):
+                            continue
+                        seen.add(pred)
+                        if self._g.nodes.get(pred, {}).get("is_test"):
+                            found.append(pred)
+                        else:
+                            next_frontier.add(pred)
+                frontier = next_frontier
+            return found
 
         # Classify equations
         for node_id, attrs in self._g.nodes(data=True):
             if attrs.get("type") != "equation":
                 continue
             implementing = eq_to_code.get(node_id, [])
+            tests: list[TestReference] = list(declared_tests.get(node_id, []))
+            seen_test_ids: set[str] = {t.id for t in tests}
+
+            if not tests:
+                # No declared tests — fall back to heuristics. 1-hop
+                # first, then multi-hop, deduped by id.
+                for c in implementing:
+                    for t in code_to_1hop_tests.get(c, []):
+                        if t in seen_test_ids:
+                            continue
+                        seen_test_ids.add(t)
+                        tests.append(TestReference(
+                            id=t,
+                            source="heuristic-1hop",
+                            confidence=0.7,
+                            display_name=self._g.nodes.get(t, {}).get(
+                                "display_name", ""
+                            ),
+                        ))
+                for c in implementing:
+                    for t in _multihop_tests(c):
+                        if t in seen_test_ids:
+                            continue
+                        seen_test_ids.add(t)
+                        tests.append(TestReference(
+                            id=t,
+                            source="heuristic-multihop",
+                            confidence=0.5,
+                            display_name=self._g.nodes.get(t, {}).get(
+                                "display_name", ""
+                            ),
+                        ))
+
             has_code = len(implementing) > 0
-            has_test = any(
-                code_to_tests.get(c) for c in implementing
-            )
-            if has_code and has_test:
+            has_test = len(tests) > 0
+            if has_test:
                 status = "verified"
             elif has_code:
                 status = "implemented"
@@ -977,10 +1086,6 @@ class GraphQuery:
             if status_filter and status != status_filter:
                 continue
 
-            tests = []
-            for c in implementing:
-                tests.extend(self._node_result(t) for t in code_to_tests.get(c, []))
-
             entries.append(CoverageEntry(
                 node=self._node_result(node_id),
                 status=status,
@@ -989,21 +1094,32 @@ class GraphQuery:
             ))
             summary[status] += 1
 
-        # Classify code symbols with no equation
+        # Classify orphan / tested code symbols that don't link to any equation.
         if status_filter in (None, "tested", "orphan_code"):
             for node_id, attrs in self._g.nodes(data=True):
                 if attrs.get("type") not in code_types:
                     continue
                 if node_id in code_to_eq:
                     continue  # already covered via equation
-                has_test = bool(code_to_tests.get(node_id))
+                direct_tests = code_to_1hop_tests.get(node_id, [])
+                has_test = bool(direct_tests)
                 status = "tested" if has_test else "orphan_code"
                 if status_filter and status != status_filter:
                     continue
                 entries.append(CoverageEntry(
                     node=self._node_result(node_id),
                     status=status,
-                    tests=[self._node_result(t) for t in code_to_tests.get(node_id, [])],
+                    tests=[
+                        TestReference(
+                            id=t,
+                            source="heuristic-1hop",
+                            confidence=0.7,
+                            display_name=self._g.nodes.get(t, {}).get(
+                                "display_name", ""
+                            ),
+                        )
+                        for t in direct_tests
+                    ],
                 ))
                 summary[status] += 1
 

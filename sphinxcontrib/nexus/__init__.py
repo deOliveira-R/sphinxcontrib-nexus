@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +162,16 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         )
         merge_graphs(graph, ast_graph)
 
-    # Infer IMPLEMENTS edges once, after all AST merges complete
-    from sphinxcontrib.nexus.merge import _infer_implements
-    _infer_implements(graph.nxgraph)
+    # Write declared TESTS edges (from @pytest.mark.verifies) first,
+    # so _infer_implements can honor them as "already-known" links
+    # and skip redundant token-intersection matches.
+    from sphinxcontrib.nexus.merge import (
+        _infer_implements,
+        write_verifies_edges,
+    )
+    write_verifies_edges(graph.nxgraph)
+    if getattr(app.config, "nexus_infer_implements", True):
+        _infer_implements(graph.nxgraph)
 
     logger.info(
         "After AST merge: %d nodes, %d edges",
@@ -245,6 +252,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
     app.add_config_value(
         "nexus_test_patterns", list(DEFAULT_TEST_PATTERNS), "env"
     )
+    app.add_config_value("nexus_infer_implements", True, "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
 
     app.connect("env-check-consistency", _on_env_check_consistency)

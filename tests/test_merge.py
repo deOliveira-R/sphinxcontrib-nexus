@@ -9,7 +9,11 @@ from sphinxcontrib.nexus.graph import (
     KnowledgeGraph,
     NodeType,
 )
-from sphinxcontrib.nexus.merge import merge_graphs
+from sphinxcontrib.nexus.merge import (
+    _infer_implements,
+    merge_graphs,
+    write_verifies_edges,
+)
 
 
 def _make_sphinx_graph() -> KnowledgeGraph:
@@ -138,3 +142,182 @@ def test_merge_adds_ast_edges():
         if d.get("type") == "calls"
     ]
     assert ("py:function:solver.solve", "py:function:solver._helper") in calls
+
+
+# ---------------------------------------------------------------------------
+# write_verifies_edges
+# ---------------------------------------------------------------------------
+
+
+def _graph_with_equation_and_test(verifies: tuple[str, ...]) -> KnowledgeGraph:
+    """Build a minimal KG with one equation node and one test function
+    tagged ``@pytest.mark.verifies(<labels>)``."""
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(
+        id="math:equation:eq-1",
+        type=NodeType.EQUATION,
+        name="eq-1",
+        display_name="eq-1",
+        domain="math",
+        metadata={"docname": "theory/solver"},
+    ))
+    kg.add_node(GraphNode(
+        id="py:function:tests.test_solver.test_attenuation",
+        type=NodeType.FUNCTION,
+        name="tests.test_solver.test_attenuation",
+        display_name="test_attenuation",
+        domain="py",
+        metadata={"is_test": True, "verifies": verifies, "vv_level": "L0"},
+    ))
+    return kg
+
+
+def test_write_verifies_edges_writes_tests_edge():
+    kg = _graph_with_equation_and_test(("eq-1",))
+    count = write_verifies_edges(kg.nxgraph)
+    assert count == 1
+    edges = [
+        (s, t, d.get("source"))
+        for s, t, d in kg.nxgraph.edges(data=True)
+        if d.get("type") == EdgeType.TESTS.value
+    ]
+    assert (
+        "py:function:tests.test_solver.test_attenuation",
+        "math:equation:eq-1",
+        "pytest.mark.verifies",
+    ) in edges
+
+
+def test_write_verifies_edges_skips_missing_equation(caplog):
+    kg = _graph_with_equation_and_test(("eq-missing",))
+    count = write_verifies_edges(kg.nxgraph)
+    assert count == 0
+    # No phantom equation node gets created.
+    assert "math:equation:eq-missing" not in kg.nxgraph
+
+
+def test_write_verifies_edges_is_idempotent():
+    kg = _graph_with_equation_and_test(("eq-1",))
+    first = write_verifies_edges(kg.nxgraph)
+    second = write_verifies_edges(kg.nxgraph)
+    assert first == 1
+    assert second == 0  # no duplicates on re-run
+    tests_edges = [
+        (s, t)
+        for s, t, d in kg.nxgraph.edges(data=True)
+        if d.get("type") == EdgeType.TESTS.value
+    ]
+    assert len(tests_edges) == 1
+
+
+# ---------------------------------------------------------------------------
+# _infer_implements guard against duplication
+# ---------------------------------------------------------------------------
+
+
+def test_infer_implements_skips_explicit_tests_edge():
+    """Given a pre-existing ``pytest.mark.verifies``-sourced TESTS
+    edge, the token-intersection heuristic must NOT add a duplicate
+    inferred IMPLEMENTS edge for the same (code, equation) pair."""
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(
+        id="doc:theory/transport",
+        type=NodeType.FILE,
+        name="theory/transport",
+        domain="std",
+        docname="theory/transport",
+    ))
+    kg.add_node(GraphNode(
+        id="math:equation:transport-cartesian",
+        type=NodeType.EQUATION,
+        name="transport-cartesian",
+        display_name="transport-cartesian",
+        domain="math",
+        metadata={"docname": "theory/transport"},
+    ))
+    kg.add_node(GraphNode(
+        id="py:function:solver.solve_transport_cartesian",
+        type=NodeType.FUNCTION,
+        name="solver.solve_transport_cartesian",
+        display_name="solve_transport_cartesian",
+        domain="py",
+    ))
+    # Doc contains the equation and documents the function — this is
+    # what would otherwise trigger the inferred implements edge.
+    kg.add_edge(GraphEdge(
+        source="doc:theory/transport",
+        target="math:equation:transport-cartesian",
+        type=EdgeType.CONTAINS,
+    ))
+    kg.add_edge(GraphEdge(
+        source="doc:theory/transport",
+        target="py:function:solver.solve_transport_cartesian",
+        type=EdgeType.DOCUMENTS,
+    ))
+    # Pre-existing explicit TESTS edge (as if from a different test
+    # node, or from write_verifies_edges — the guard should not care).
+    kg.nxgraph.add_edge(
+        "py:function:solver.solve_transport_cartesian",
+        "math:equation:transport-cartesian",
+        type="tests",
+        source="pytest.mark.verifies",
+        confidence=1.0,
+    )
+
+    _infer_implements(kg.nxgraph)
+
+    edges_between = kg.nxgraph.get_edge_data(
+        "py:function:solver.solve_transport_cartesian",
+        "math:equation:transport-cartesian",
+    )
+    types = [d.get("type") for d in edges_between.values()]
+    # The TESTS edge must still be there…
+    assert "tests" in types
+    # …and no duplicate inferred IMPLEMENTS edge should have been added.
+    assert "implements" not in types
+
+
+def test_infer_implements_still_fires_without_explicit_edge():
+    """Sanity check: the guard must not break the normal flow."""
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(
+        id="doc:theory/transport",
+        type=NodeType.FILE,
+        name="theory/transport",
+        domain="std",
+        docname="theory/transport",
+    ))
+    kg.add_node(GraphNode(
+        id="math:equation:transport-cartesian",
+        type=NodeType.EQUATION,
+        name="transport-cartesian",
+        display_name="transport-cartesian",
+        domain="math",
+        metadata={"docname": "theory/transport"},
+    ))
+    kg.add_node(GraphNode(
+        id="py:function:solver.solve_transport_cartesian",
+        type=NodeType.FUNCTION,
+        name="solver.solve_transport_cartesian",
+        display_name="solve_transport_cartesian",
+        domain="py",
+    ))
+    kg.add_edge(GraphEdge(
+        source="doc:theory/transport",
+        target="math:equation:transport-cartesian",
+        type=EdgeType.CONTAINS,
+    ))
+    kg.add_edge(GraphEdge(
+        source="doc:theory/transport",
+        target="py:function:solver.solve_transport_cartesian",
+        type=EdgeType.DOCUMENTS,
+    ))
+
+    _infer_implements(kg.nxgraph)
+
+    edges = kg.nxgraph.get_edge_data(
+        "py:function:solver.solve_transport_cartesian",
+        "math:equation:transport-cartesian",
+    )
+    types = [d.get("type") for d in edges.values()]
+    assert "implements" in types

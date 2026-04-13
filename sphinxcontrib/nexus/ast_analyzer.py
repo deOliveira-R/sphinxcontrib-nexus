@@ -30,6 +30,160 @@ _SPHINX_ROLE_RE = re.compile(r":(\w+):`~?([^`]+)`")
 
 
 # ---------------------------------------------------------------------------
+# Decorator parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_decorator(node: ast.expr) -> str:
+    """Serialize a decorator AST node to its source-like string.
+
+    Handles bare names (``@foo``), attribute chains (``@pytest.mark.l0``),
+    calls with positional args (``@verifies("label-1", "label-2")``),
+    and keyword args (``@verify.l0(catches=["ERR-003"])``). Falls back
+    to ``<unparseable>`` for anything ``ast.unparse`` can't handle.
+    """
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return "<unparseable>"
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Reconstruct a dotted identifier like ``pytest.mark.l0`` from an
+    ``Attribute`` / ``Name`` chain. Returns ``None`` if the chain
+    contains anything else (calls, subscripts, etc.)."""
+    parts: list[str] = []
+    curr: ast.expr = node
+    while isinstance(curr, ast.Attribute):
+        parts.append(curr.attr)
+        curr = curr.value
+    if not isinstance(curr, ast.Name):
+        return None
+    parts.append(curr.id)
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
+    """Extract a tuple of string literals from a ``Constant(str)``, a
+    list/tuple literal of string constants, or return ``None`` if the
+    expression contains anything else. Used so we never evaluate
+    arbitrary expressions in decorator arguments."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value,)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        out: list[str] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                out.append(elt.value)
+            else:
+                return None
+        return tuple(out)
+    return None
+
+
+_PYTEST_LEVELS = frozenset({"l0", "l1", "l2", "l3"})
+
+
+def _parse_pytest_markers(
+    decorators: list[ast.expr],
+) -> dict[str, object]:
+    """Extract structured pytest-marker metadata from a decorator list.
+
+    Returns a dict with any of these keys present when recognized:
+
+    - ``vv_level``: ``"L0" / "L1" / "L2" / "L3"`` — from
+      ``@pytest.mark.lN`` or ``@verify.lN(...)``.
+    - ``verifies``: ``tuple[str, ...]`` — string args from
+      ``@pytest.mark.verifies(...)`` or ``equations=[...]`` kwarg
+      in ``@verify.lN(...)``.
+    - ``catches``: ``tuple[str, ...]`` — same, but from
+      ``@pytest.mark.catches(...)`` or ``catches=[...]`` kwarg.
+    - ``slow``: ``True`` if ``@pytest.mark.slow`` is present.
+
+    Only extracts constant-string literals (bare or in list/tuple/set
+    literals). Unrecognized decorators are silently ignored here; they
+    still appear in the flat ``decorators`` metadata emitted by
+    ``_render_decorator``.
+    """
+    meta: dict[str, object] = {}
+    verifies: list[str] = []
+    catches: list[str] = []
+
+    for dec in decorators:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        dotted = _dotted_name(target)
+        if dotted is None:
+            continue
+
+        parts = dotted.split(".")
+
+        # ``pytest.mark.*`` family
+        if len(parts) >= 3 and parts[0] == "pytest" and parts[1] == "mark":
+            mark = parts[2]
+            if mark in _PYTEST_LEVELS:
+                meta["vv_level"] = mark.upper()
+            elif mark == "slow":
+                meta["slow"] = True
+            elif mark == "verifies" and isinstance(dec, ast.Call):
+                for arg in dec.args:
+                    lits = _literal_strings(arg)
+                    if lits:
+                        verifies.extend(lits)
+            elif mark == "catches" and isinstance(dec, ast.Call):
+                for arg in dec.args:
+                    lits = _literal_strings(arg)
+                    if lits:
+                        catches.extend(lits)
+            continue
+
+        # ``verify.lN(...)`` sugar
+        if len(parts) >= 2 and parts[0] == "verify" and parts[1] in _PYTEST_LEVELS:
+            meta["vv_level"] = parts[1].upper()
+            if isinstance(dec, ast.Call):
+                for kw in dec.keywords:
+                    if kw.arg == "equations":
+                        lits = _literal_strings(kw.value)
+                        if lits:
+                            verifies.extend(lits)
+                    elif kw.arg == "catches":
+                        lits = _literal_strings(kw.value)
+                        if lits:
+                            catches.extend(lits)
+            continue
+
+    if verifies:
+        meta["verifies"] = tuple(verifies)
+    if catches:
+        meta["catches"] = tuple(catches)
+    return meta
+
+
+def _collect_pytestmark_assignments(
+    body: list[ast.stmt],
+) -> dict[str, object]:
+    """Find ``pytestmark = ...`` at the given scope and parse its value
+    as if it were a decorator. Supports single-mark and list-of-marks
+    forms (``pytestmark = pytest.mark.l0`` and
+    ``pytestmark = [pytest.mark.l0, pytest.mark.slow]``)."""
+    for stmt in body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        if len(stmt.targets) != 1:
+            continue
+        tgt = stmt.targets[0]
+        if not isinstance(tgt, ast.Name) or tgt.id != "pytestmark":
+            continue
+        value = stmt.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            marks = list(value.elts)
+        else:
+            marks = [value]
+        return _parse_pytest_markers(marks)
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # ModuleResolver — file path → qualified module name
 # ---------------------------------------------------------------------------
 
@@ -286,6 +440,11 @@ class CodeVisitor(ast.NodeVisitor):
         self._imports = ImportTracker(module_name)
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
+        # Pytest-marker metadata stashed at module and class scope.
+        # When a function is visited, these layer underneath its own
+        # decorator metadata (module lowest, function highest precedence).
+        self._module_pytest_meta: dict[str, object] = {}
+        self._current_class_pytest_meta: dict[str, object] = {}
 
         # Create module node
         self.nodes.append(GraphNode(
@@ -311,7 +470,14 @@ class CodeVisitor(ast.NodeVisitor):
         return None
 
     def visit_Module(self, node: ast.Module) -> None:
-        """Visit only direct body statements of the module."""
+        """Visit only direct body statements of the module.
+
+        Before walking, scan for a top-level ``pytestmark = ...``
+        assignment and stash its parsed markers as the module-level
+        default. Contained functions and methods layer this underneath
+        their own markers (module < class < function).
+        """
+        self._module_pytest_meta = _collect_pytestmark_assignments(node.body)
         for child in node.body:
             self.visit(child)
 
@@ -396,18 +562,34 @@ class CodeVisitor(ast.NodeVisitor):
         qname = self._qualified_name
         class_id = self._node_id("class", qname)
 
+        class_meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": node.lineno,
+            "end_lineno": node.end_lineno,
+            "source": "ast",
+        }
+        if node.decorator_list:
+            class_meta["decorators"] = tuple(
+                _render_decorator(dec) for dec in node.decorator_list
+            )
+
+        # Stash class-level pytest markers so contained methods pick
+        # them up as defaults (function-level markers still win per the
+        # precedence rule in ``_visit_function``). Save/restore the
+        # previous value so nested classes don't leak state upward.
+        prev_class_meta = self._current_class_pytest_meta
+        cls_markers = _parse_pytest_markers(node.decorator_list)
+        # Also honor a ``pytestmark`` assignment at class scope.
+        cls_markers.update(_collect_pytestmark_assignments(node.body))
+        self._current_class_pytest_meta = cls_markers
+
         self.nodes.append(GraphNode(
             id=class_id,
             type=NodeType.CLASS,
             name=qname,
             display_name=node.name,
             domain="py",
-            metadata={
-                "file_path": self._file_path,
-                "lineno": node.lineno,
-                "end_lineno": node.end_lineno,
-                "source": "ast",
-            },
+            metadata=class_meta,
         ))
 
         # CONTAINS from parent scope
@@ -443,6 +625,7 @@ class CodeVisitor(ast.NodeVisitor):
         for child in node.body:
             self.visit(child)
         self._scope.pop()
+        self._current_class_pytest_meta = prev_class_meta
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -468,19 +651,37 @@ class CodeVisitor(ast.NodeVisitor):
         _name = node.name
         _name_looks_like_test = _name == "test" or _name.startswith("test_")
         is_test = self._is_test_file and _name_looks_like_test
+
+        # Decorator metadata: raw serialized forms plus structured
+        # pytest-marker fields. Function-level markers win over any
+        # class- or module-level pytestmark stashed in the scope, so we
+        # layer them: module (lowest) → class → function (highest).
+        meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": node.lineno,
+            "end_lineno": node.end_lineno,
+            "source": "ast",
+        }
+        if is_test:
+            meta["is_test"] = True
+
+        if self._module_pytest_meta:
+            meta.update(self._module_pytest_meta)
+        if self._current_class_pytest_meta:
+            meta.update(self._current_class_pytest_meta)
+        if node.decorator_list:
+            meta["decorators"] = tuple(
+                _render_decorator(dec) for dec in node.decorator_list
+            )
+            meta.update(_parse_pytest_markers(node.decorator_list))
+
         self.nodes.append(GraphNode(
             id=func_id,
             type=node_type,
             name=qname,
             display_name=node.name,
             domain="py",
-            metadata={
-                "file_path": self._file_path,
-                "lineno": node.lineno,
-                "end_lineno": node.end_lineno,
-                "source": "ast",
-                **({"is_test": True} if is_test else {}),
-            },
+            metadata=meta,
         ))
 
         # CONTAINS from parent scope
