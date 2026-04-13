@@ -159,6 +159,30 @@ def _parse_pytest_markers(
     return meta
 
 
+def _collect_pytestmark_assignments(
+    body: list[ast.stmt],
+) -> dict[str, object]:
+    """Find ``pytestmark = ...`` at the given scope and parse its value
+    as if it were a decorator. Supports single-mark and list-of-marks
+    forms (``pytestmark = pytest.mark.l0`` and
+    ``pytestmark = [pytest.mark.l0, pytest.mark.slow]``)."""
+    for stmt in body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        if len(stmt.targets) != 1:
+            continue
+        tgt = stmt.targets[0]
+        if not isinstance(tgt, ast.Name) or tgt.id != "pytestmark":
+            continue
+        value = stmt.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            marks = list(value.elts)
+        else:
+            marks = [value]
+        return _parse_pytest_markers(marks)
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # ModuleResolver — file path → qualified module name
 # ---------------------------------------------------------------------------
@@ -446,7 +470,14 @@ class CodeVisitor(ast.NodeVisitor):
         return None
 
     def visit_Module(self, node: ast.Module) -> None:
-        """Visit only direct body statements of the module."""
+        """Visit only direct body statements of the module.
+
+        Before walking, scan for a top-level ``pytestmark = ...``
+        assignment and stash its parsed markers as the module-level
+        default. Contained functions and methods layer this underneath
+        their own markers (module < class < function).
+        """
+        self._module_pytest_meta = _collect_pytestmark_assignments(node.body)
         for child in node.body:
             self.visit(child)
 
@@ -531,18 +562,34 @@ class CodeVisitor(ast.NodeVisitor):
         qname = self._qualified_name
         class_id = self._node_id("class", qname)
 
+        class_meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": node.lineno,
+            "end_lineno": node.end_lineno,
+            "source": "ast",
+        }
+        if node.decorator_list:
+            class_meta["decorators"] = tuple(
+                _render_decorator(dec) for dec in node.decorator_list
+            )
+
+        # Stash class-level pytest markers so contained methods pick
+        # them up as defaults (function-level markers still win per the
+        # precedence rule in ``_visit_function``). Save/restore the
+        # previous value so nested classes don't leak state upward.
+        prev_class_meta = self._current_class_pytest_meta
+        cls_markers = _parse_pytest_markers(node.decorator_list)
+        # Also honor a ``pytestmark`` assignment at class scope.
+        cls_markers.update(_collect_pytestmark_assignments(node.body))
+        self._current_class_pytest_meta = cls_markers
+
         self.nodes.append(GraphNode(
             id=class_id,
             type=NodeType.CLASS,
             name=qname,
             display_name=node.name,
             domain="py",
-            metadata={
-                "file_path": self._file_path,
-                "lineno": node.lineno,
-                "end_lineno": node.end_lineno,
-                "source": "ast",
-            },
+            metadata=class_meta,
         ))
 
         # CONTAINS from parent scope
@@ -578,6 +625,7 @@ class CodeVisitor(ast.NodeVisitor):
         for child in node.body:
             self.visit(child)
         self._scope.pop()
+        self._current_class_pytest_meta = prev_class_meta
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
