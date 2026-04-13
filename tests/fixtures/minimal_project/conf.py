@@ -12,9 +12,23 @@ _here = Path(__file__).parent
 sys.path.insert(0, str(_here))
 
 project = "nexus-fixture"
-extensions = ["sphinx.ext.mathjax", "sphinxcontrib.nexus"]
+extensions = [
+    "sphinx.ext.mathjax",
+    "sphinx.ext.autodoc",
+    "sphinxcontrib.nexus",
+]
 master_doc = "index"
 exclude_patterns = ["_build"]
+
+# Expose the toy solver package to autodoc so its classes (Mesh in
+# particular) enter the Sphinx graph via ``extract_domain_objects``
+# — this is the pipeline path where the nexus#3 round-2 type
+# demotion bug lives. Without autodoc, the Sphinx side never sees
+# the class and the merge layer has nothing to collide with.
+autodoc_default_options = {
+    "members": True,
+    "undoc-members": True,
+}
 
 nexus_output = "_nexus"
 nexus_ast_analyze = True

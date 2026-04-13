@@ -205,6 +205,130 @@ def test_phantom_with_ambiguous_leaf_is_not_folded(tmp_path):
     assert "py:class:b.Widget" in widgets
 
 
+def test_canonical_with_unresolved_type_but_file_path_is_foldable_target(tmp_path):
+    """Regression for nexus#3 round 2 (ORPHEUS 0.8.2 validation).
+
+    When the Sphinx-side graph has ``py:class:pkg.sub.mod.Thing``
+    as an auto-created phantom (``type=unresolved``) AND the AST
+    side has enriched the same id with ``file_path=...`` and
+    ``lineno=...``, the merged node still reads as type=unresolved
+    because ``merge_graphs`` doesn't upgrade types. The fold then
+    refuses to use it as a canonical candidate for leaf-name
+    matching, leaving ``py:function:pkg.sub.Thing`` phantoms
+    floating with type=external/unresolved.
+
+    The fix must treat any node whose ID prefix is
+    ``py:class:``/``py:function:``/``py:method:`` AND carries a
+    ``file_path`` attribute as canonical regardless of the
+    current ``type`` attr.
+
+    This test simulates the ORPHEUS shape by directly patching
+    the canonical's type to unresolved after analysis, then
+    asserts the fold still collapses the mistyped phantom.
+    """
+    import networkx as nx
+
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    g = nx.MultiDiGraph()
+    # Canonical class — id says "class" and file_path is set, but
+    # type attr has been overwritten to "unresolved" (simulating
+    # what Sphinx's placeholder extraction does).
+    g.add_node(
+        "py:class:pkg.sub.mod.Thing",
+        type="unresolved",
+        name="pkg.sub.mod.Thing",
+        display_name="Thing",
+        domain="py",
+        file_path="/project/pkg/sub/mod.py",
+        lineno=31,
+        source="both",
+    )
+    # Mis-typed phantom from a call site: ``Thing()`` resolved to
+    # ``pkg.sub.Thing`` (re-export path).
+    g.add_node(
+        "py:function:pkg.sub.Thing",
+        type="unresolved",
+        name="pkg.sub.Thing",
+        display_name="Thing",
+        domain="py",
+        source="ast_inferred",
+    )
+    # A caller with a real edge to the mis-typed phantom.
+    g.add_node(
+        "py:function:pkg.user.use",
+        type="function",
+        name="pkg.user.use",
+        display_name="use",
+        domain="py",
+    )
+    g.add_edge(
+        "py:function:pkg.user.use",
+        "py:function:pkg.sub.Thing",
+        type="calls",
+    )
+
+    kg = KnowledgeGraph()
+    kg._graph = g
+    _canonicalize_phantoms(kg)
+
+    # After the fold, exactly one Thing node remains — the canonical.
+    thing_nodes = [nid for nid in g.nodes if nid.endswith(".Thing")]
+    assert thing_nodes == ["py:class:pkg.sub.mod.Thing"], thing_nodes
+    # And the canonical now carries a concrete type.
+    assert g.nodes["py:class:pkg.sub.mod.Thing"]["type"] == "class"
+    # The original caller's edge was retargeted.
+    calls = [
+        t for _, t, d in g.out_edges("py:function:pkg.user.use", data=True)
+        if d.get("type") == "calls"
+    ]
+    assert "py:class:pkg.sub.mod.Thing" in calls
+
+
+def test_bare_name_phantom_folds_to_unique_canonical():
+    """A bare-name phantom (``py:function:Thing`` with name=``Thing``,
+    no dots) should fold into the unique leaf-matched canonical when
+    exactly one exists. Without this fold, references to unqualified
+    names that appear in a graph from cross-module imports or
+    Sphinx pending_xref resolution stay as orphan phantoms."""
+    import networkx as nx
+
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    g = nx.MultiDiGraph()
+    g.add_node(
+        "py:class:pkg.mod.Thing",
+        type="class",
+        name="pkg.mod.Thing",
+        display_name="Thing",
+        domain="py",
+        file_path="/project/pkg/mod.py",
+        lineno=10,
+    )
+    g.add_node(
+        "py:function:Thing",
+        type="unresolved",
+        name="Thing",
+        display_name="Thing",
+        domain="py",
+    )
+    g.add_node("py:function:user.use", type="function", name="user.use", domain="py")
+    g.add_edge("py:function:user.use", "py:function:Thing", type="calls")
+
+    kg = KnowledgeGraph()
+    kg._graph = g
+    _canonicalize_phantoms(kg)
+
+    assert "py:function:Thing" not in g.nodes
+    calls = [
+        t for _, t, d in g.out_edges("py:function:user.use", data=True)
+        if d.get("type") == "calls"
+    ]
+    assert "py:class:pkg.mod.Thing" in calls
+
+
 def test_external_leaf_match_is_not_folded(tmp_path):
     """A reference like ``numpy.ndarray`` from a disjoint import
     path must not be folded into a project-local class that

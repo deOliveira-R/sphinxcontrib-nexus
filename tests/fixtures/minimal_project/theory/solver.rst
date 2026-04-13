@@ -1,6 +1,12 @@
 Solver theory
 =============
 
+.. autoclass:: solver_pkg.helpers.Mesh
+
+.. autofunction:: solver_pkg.solver.solve_attenuation
+
+.. autofunction:: solver_pkg.solver.build_mesh
+
 Attenuation
 -----------
 

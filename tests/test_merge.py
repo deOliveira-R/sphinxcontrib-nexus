@@ -277,6 +277,80 @@ def test_infer_implements_skips_explicit_tests_edge():
     assert "implements" not in types
 
 
+def test_merge_upgrades_placeholder_type_from_ast():
+    """Regression for nexus#3 round 2 (0.8.2 cross-validation).
+
+    When the Sphinx side has a placeholder ``py:class:pkg.mod.Thing``
+    with ``type=unresolved`` (created by a pending_xref that
+    couldn't resolve at parse time, or by NetworkX auto-creating
+    the target of an edge before domain extraction ran) and the
+    AST side has the same id typed as ``class`` with a
+    ``file_path`` and ``lineno``, the merge step must upgrade the
+    merged node's type from ``unresolved`` to ``class``.
+
+    Before this fix the merged node kept ``type=unresolved``,
+    which broke downstream type filters and made
+    ``_canonicalize_phantoms`` refuse to treat the canonical as a
+    fold target — the leaf_index skipped any phantom-typed node.
+    """
+    sphinx = KnowledgeGraph()
+    # Sphinx-side placeholder — the bug shape.
+    sphinx.add_node(GraphNode(
+        id="py:class:pkg.mod.Thing",
+        type=NodeType.UNRESOLVED,
+        name="pkg.mod.Thing",
+        display_name="Thing",
+        domain="py",
+    ))
+    ast_g = KnowledgeGraph()
+    ast_g.add_node(GraphNode(
+        id="py:class:pkg.mod.Thing",
+        type=NodeType.CLASS,
+        name="pkg.mod.Thing",
+        display_name="Thing",
+        domain="py",
+        metadata={
+            "file_path": "/project/pkg/mod.py",
+            "lineno": 42,
+            "end_lineno": 50,
+        },
+    ))
+
+    merged = merge_graphs(sphinx, ast_g)
+    node = merged.nxgraph.nodes["py:class:pkg.mod.Thing"]
+    assert node["type"] == "class", node
+    assert node["file_path"] == "/project/pkg/mod.py"
+    assert node["lineno"] == 42
+    assert node["source"] == "both"
+
+
+def test_merge_does_not_downgrade_concrete_type():
+    """Inverse test: when the Sphinx side already has a concrete
+    type (``class`` from autodoc) and the AST side happens to
+    report a weaker type (shouldn't happen in practice, but guard
+    against it), the merge must NOT regress the type."""
+    sphinx = KnowledgeGraph()
+    sphinx.add_node(GraphNode(
+        id="py:class:pkg.mod.Thing",
+        type=NodeType.CLASS,
+        name="pkg.mod.Thing",
+        display_name="Thing",
+        domain="py",
+        docname="api/mod",
+    ))
+    ast_g = KnowledgeGraph()
+    ast_g.add_node(GraphNode(
+        id="py:class:pkg.mod.Thing",
+        type=NodeType.UNRESOLVED,
+        name="pkg.mod.Thing",
+        display_name="Thing",
+        domain="py",
+    ))
+
+    merged = merge_graphs(sphinx, ast_g)
+    assert merged.nxgraph.nodes["py:class:pkg.mod.Thing"]["type"] == "class"
+
+
 def test_infer_implements_still_fires_without_explicit_edge():
     """Sanity check: the guard must not break the normal flow."""
     kg = KnowledgeGraph()
