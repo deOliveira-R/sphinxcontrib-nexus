@@ -340,6 +340,39 @@ def test_docstring_math_role_skips_braced_latex():
     assert not any(t.startswith("math:equation:") for t in targets)
 
 
+def test_is_test_requires_test_file_and_conventional_name(tmp_path):
+    """``is_test`` must be True only for functions in a test file whose
+    name is ``test`` or starts with ``test_``. Production modules with
+    incidental names like ``tested_value`` or ``testify`` must not be
+    flagged, even if they happen to start with ``test``."""
+    src = tmp_path / "mymod.py"
+    src.write_text(
+        "def tested_value(): return 1\n"
+        "def testify(): return 2\n"
+        "def test_actual_unit(): pass\n"
+    )
+    test_file = tmp_path / "tests" / "test_unit.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "def test_something(): pass\n"
+        "def _helper(): pass\n"
+        "def fixture_setup(): pass\n"
+    )
+    graph = analyze_directory(tmp_path, exclude_patterns=[])
+    nodes = {n: d for n, d in graph.nxgraph.nodes(data=True)}
+
+    # Production module: no function should be flagged is_test, even
+    # though two of them start with "test".
+    assert nodes["py:function:mymod.tested_value"].get("is_test") is not True
+    assert nodes["py:function:mymod.testify"].get("is_test") is not True
+    assert nodes["py:function:mymod.test_actual_unit"].get("is_test") is not True
+
+    # Test file: test_something is a real test; helpers are not.
+    assert nodes["py:function:tests.test_unit.test_something"].get("is_test") is True
+    assert nodes["py:function:tests.test_unit._helper"].get("is_test") is not True
+    assert nodes["py:function:tests.test_unit.fixture_setup"].get("is_test") is not True
+
+
 def test_docstring_all_python_roles_stay_in_py_namespace():
     src = (
         'def f():\n'

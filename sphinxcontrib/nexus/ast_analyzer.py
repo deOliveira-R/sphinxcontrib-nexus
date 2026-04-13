@@ -273,9 +273,15 @@ def _resolve_call_target(node: ast.Call, imports: ImportTracker) -> str | None:
 class CodeVisitor(ast.NodeVisitor):
     """Walk a Python file's AST and extract nodes and edges."""
 
-    def __init__(self, module_name: str, file_path: str) -> None:
+    def __init__(
+        self,
+        module_name: str,
+        file_path: str,
+        is_test_file: bool = False,
+    ) -> None:
         self._module_name = module_name
         self._file_path = file_path
+        self._is_test_file = is_test_file
         self._scope: list[str] = [module_name]
         self._imports = ImportTracker(module_name)
         self.nodes: list[GraphNode] = []
@@ -454,7 +460,14 @@ class CodeVisitor(ast.NodeVisitor):
         type_str = "method" if is_method else "function"
         func_id = self._node_id(type_str, qname)
 
-        is_test = node.name.startswith("test_") or node.name.startswith("test")
+        # A function is a test only when both the name follows the
+        # unittest/pytest convention AND it lives in a file that matches
+        # the project's test-module patterns. The second condition keeps
+        # production helpers like ``tested_value`` or ``testify`` from
+        # being mistaken for tests.
+        _name = node.name
+        _name_looks_like_test = _name == "test" or _name.startswith("test_")
+        is_test = self._is_test_file and _name_looks_like_test
         self.nodes.append(GraphNode(
             id=func_id,
             type=node_type,
@@ -555,11 +568,24 @@ class CodeVisitor(ast.NodeVisitor):
 # ---------------------------------------------------------------------------
 
 
+#: Default glob patterns used to recognize Python test modules when
+#: callers don't supply their own. These match the same POSIX-style
+#: semantics as ``exclude_patterns`` and are shared by ``CodeVisitor``
+#: to decide whether a function's ``is_test`` flag can be set.
+DEFAULT_TEST_PATTERNS: tuple[str, ...] = (
+    "tests/*",
+    "*/tests/*",
+    "test_*.py",
+    "*/test_*.py",
+)
+
+
 def analyze_directory(
     source_dir: Path,
     project_root: Path | None = None,
     sys_path_dirs: list[Path] | None = None,
     exclude_patterns: list[str] | None = None,
+    test_patterns: list[str] | None = None,
 ) -> KnowledgeGraph:
     """Analyze all Python files in a directory and return a KnowledgeGraph.
 
@@ -567,12 +593,18 @@ def analyze_directory(
         source_dir: Directory to scan for .py files.
         project_root: Root for module name resolution. Defaults to source_dir.
         sys_path_dirs: Extra directories on the Python path.
-        exclude_patterns: Glob patterns to exclude (default: tests, docs, venv).
+        exclude_patterns: Glob patterns to exclude (default: docs, venv).
+        test_patterns: Glob patterns that identify test modules. Files
+            matching these are still analyzed (unless separately excluded)
+            but functions inside them are eligible for the ``is_test``
+            flag.
     """
     if project_root is None:
         project_root = source_dir
     if exclude_patterns is None:
         exclude_patterns = ["docs/*", ".venv/*", "__pycache__/*"]
+    if test_patterns is None:
+        test_patterns = list(DEFAULT_TEST_PATTERNS)
 
     resolver = ModuleResolver(project_root, sys_path_dirs)
     graph = KnowledgeGraph()
@@ -599,7 +631,8 @@ def analyze_directory(
             continue
 
         module_name = resolver.file_to_module(filepath)
-        visitor = CodeVisitor(module_name, str(filepath))
+        is_test_file = any(fnmatch(rel, pat) for pat in test_patterns)
+        visitor = CodeVisitor(module_name, str(filepath), is_test_file=is_test_file)
         visitor.visit(tree)
 
         for node in visitor.nodes:
