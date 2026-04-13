@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # then apply any non-LLM verification registries. Both paths run
     # BEFORE ``_infer_implements`` so the token-intersection heuristic
     # honors every explicit edge as "already-known".
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
     from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
@@ -175,6 +176,14 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         RegistryError,
         load_registry,
     )
+
+    # Re-run canonicalization on the merged graph so Sphinx-side
+    # phantoms that only ``analyze_directory``'s per-directory pass
+    # couldn't see get collapsed into their AST-derived canonicals.
+    # This is the "post-merge" pass that catches the ORPHEUS
+    # re-export shape where both sides contribute half of the bug.
+    _canonicalize_phantoms(graph)
+
     write_verifies_edges(graph.nxgraph)
     apply_pending_edges(app.env, graph.nxgraph)
 

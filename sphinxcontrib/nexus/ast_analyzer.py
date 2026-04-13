@@ -852,11 +852,319 @@ def analyze_directory(
     # These are external functions/modules (numpy.array, scipy.integrate.quad, etc.)
     _classify_phantom_nodes(graph)
 
+    # Fold re-export phantoms into their canonical AST counterpart.
+    # A call site like ``Thing()`` inside ``pkg.user`` that imports
+    # ``Thing`` via ``pkg.__init__`` / ``pkg.geometry.__init__`` emits
+    # a ``py:function:pkg.geometry.Thing`` phantom (because the call
+    # resolver hardcodes a ``py:function:`` prefix regardless of type).
+    # ``_canonicalize_phantoms`` detects those by leaf-name match
+    # against typed class/function/method nodes and retargets their
+    # edges onto the canonical.
+    _canonicalize_phantoms(graph)
+
     logger.info(
         "AST analysis: %d nodes, %d edges from %d files",
         graph.node_count, graph.edge_count, len(py_files),
     )
     return graph
+
+
+#: Node types that count as "concrete" for canonicalization purposes —
+#: phantoms fold INTO these, never the other way around.
+_CANONICAL_TYPES: frozenset[str] = frozenset({
+    NodeType.CLASS.value,
+    NodeType.FUNCTION.value,
+    NodeType.METHOD.value,
+    NodeType.MODULE.value,
+    NodeType.EXCEPTION.value,
+    NodeType.TYPE.value,
+})
+
+#: Node types that MAY be folded into a canonical by
+#: ``_canonicalize_phantoms``. External / unresolved / empty-typed
+#: nodes are folded; anything with a concrete type stays put.
+_PHANTOM_TYPES: frozenset[str] = frozenset({
+    NodeType.UNRESOLVED.value,
+    NodeType.EXTERNAL.value,
+    "",
+})
+
+#: Map the ``py:<kind>:`` ID prefix to the corresponding concrete
+#: node type. Used by ``_upgrade_types_from_signals`` to rescue a
+#: node whose ID says it's a class/function/method but whose type
+#: attribute is still ``unresolved`` because an earlier stage
+#: (Sphinx pending_xref placeholder, NetworkX auto-creation from an
+#: add_edge target, etc.) never upgraded it.
+_ID_PREFIX_TO_TYPE: dict[str, str] = {
+    "py:class:": NodeType.CLASS.value,
+    "py:function:": NodeType.FUNCTION.value,
+    "py:method:": NodeType.METHOD.value,
+    "py:module:": NodeType.MODULE.value,
+    "py:attribute:": NodeType.ATTRIBUTE.value,
+    "py:exception:": NodeType.EXCEPTION.value,
+    "py:type:": NodeType.TYPE.value,
+    "py:data:": NodeType.DATA.value,
+}
+
+#: Concreteness ranking used when a leaf-name fold has multiple
+#: canonical candidates. Lower rank = more concrete — the fold
+#: picks the winner with the lowest rank and ties break on
+#: ``file_path``-bearing nodes. ``class`` beats ``function`` beats
+#: everything else so mistyped class constructors land on the
+#: class, not on a same-leaf function from a different module.
+_TYPE_RANK: dict[str, int] = {
+    NodeType.CLASS.value: 0,
+    NodeType.EXCEPTION.value: 1,
+    NodeType.METHOD.value: 2,
+    NodeType.FUNCTION.value: 3,
+    NodeType.TYPE.value: 4,
+    NodeType.ATTRIBUTE.value: 5,
+    NodeType.DATA.value: 6,
+    NodeType.MODULE.value: 7,
+    NodeType.EQUATION.value: 8,
+    NodeType.SECTION.value: 9,
+    NodeType.TERM.value: 10,
+    NodeType.FILE.value: 11,
+    NodeType.EXTERNAL.value: 12,
+    NodeType.UNRESOLVED.value: 13,
+    "": 14,
+}
+
+
+def _upgrade_types_from_signals(graph: KnowledgeGraph) -> int:
+    """Rescue nodes whose ID and ``file_path`` prove a concrete type.
+
+    Pattern: Sphinx creates a placeholder ``py:class:pkg.mod.Thing``
+    node when a pending_xref can't be resolved and marks it
+    ``unresolved``. Then the AST layer merges ``file_path`` and
+    ``lineno`` from a ``ClassDef`` walk but ``merge_graphs`` does
+    not copy the type. The final merged node looks like
+    ``type=unresolved`` even though every signal
+    (``py:class:`` ID prefix, real file/line) says it's a class.
+
+    This pass walks every node and upgrades its type when the ID
+    prefix is an authoritative concrete-type marker AND a
+    ``file_path`` is set — that combination can only come from a
+    real AST class/function/method definition. Runs idempotently;
+    nodes already typed as the right concrete type are untouched.
+
+    Returns the number of nodes upgraded.
+    """
+    g = graph.nxgraph
+    upgraded = 0
+    for nid in list(g.nodes):
+        attrs = g.nodes[nid]
+        if not attrs.get("file_path"):
+            continue
+        current = attrs.get("type", "")
+        if current in _CANONICAL_TYPES:
+            continue
+        for prefix, concrete in _ID_PREFIX_TO_TYPE.items():
+            if nid.startswith(prefix):
+                attrs["type"] = concrete
+                upgraded += 1
+                break
+    if upgraded:
+        logger.info(
+            "Upgraded %d node types from id-prefix+file_path signals", upgraded,
+        )
+    return upgraded
+
+
+def _module_paths_overlap(phantom_name: str, canonical_name: str) -> bool:
+    """Return True if ``phantom_name`` and ``canonical_name`` could
+    plausibly refer to the same symbol by virtue of their module
+    paths overlapping.
+
+    Given two dotted names that share the same LEAF, the module
+    path is the dotted prefix (everything before the leaf). Overlap
+    holds when either of these module paths is a prefix or suffix
+    of the other. Examples::
+
+        pkg.geometry.Thing       vs  pkg.geometry.mesh.Thing   → True
+            (``pkg.geometry`` is a prefix of ``pkg.geometry.mesh``)
+
+        geometry.mesh.Thing      vs  pkg.geometry.mesh.Thing   → True
+            (``geometry.mesh`` is a suffix of ``pkg.geometry.mesh``)
+
+        numpy.ndarray            vs  local.ndarray             → False
+            (``numpy`` neither prefix nor suffix of ``local``)
+
+    The leaf-name fold uses this to distinguish same-symbol reshapes
+    (re-exports, short-import paths) from genuine leaf-name
+    collisions across unrelated modules.
+    """
+    def _prefix(name: str) -> str:
+        return name.rsplit(".", 1)[0] if "." in name else ""
+
+    p = _prefix(phantom_name)
+    c = _prefix(canonical_name)
+    if not p or not c:
+        return False
+    if p == c:
+        return True
+    # Prefix check: every dotted-segment of p is the head of c, or vice versa.
+    p_parts = p.split(".")
+    c_parts = c.split(".")
+    if len(p_parts) <= len(c_parts) and c_parts[: len(p_parts)] == p_parts:
+        return True
+    if len(c_parts) <= len(p_parts) and p_parts[: len(c_parts)] == c_parts:
+        return True
+    # Suffix check: p_parts == tail of c_parts, or vice versa.
+    if len(p_parts) <= len(c_parts) and c_parts[-len(p_parts):] == p_parts:
+        return True
+    if len(c_parts) <= len(p_parts) and p_parts[-len(c_parts):] == c_parts:
+        return True
+    return False
+
+
+def _canonical_rank_key(
+    cid: str, cname: str, attrs: dict,
+) -> tuple[int, int, str]:
+    """Sort key for canonical-candidate tie-breaking.
+
+    Lower sorts first (= winner). The composite is:
+
+    1. ``_TYPE_RANK[type]`` — most-concrete-type wins. Class beats
+       method beats function beats external beats unresolved.
+    2. ``0`` if the node has ``file_path`` set, else ``1`` —
+       file-backed nodes win over bare references.
+    3. The node id as a final tiebreaker, so the sort is
+       deterministic when all other signals are equal.
+    """
+    type_rank = _TYPE_RANK.get(attrs.get("type") or "", 99)
+    has_file = 0 if attrs.get("file_path") else 1
+    return (type_rank, has_file, cid)
+
+
+def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
+    """Fold re-export and mis-typed phantoms into canonical AST nodes.
+
+    Pattern: a call site like ``Thing()`` inside ``pkg.user`` emits a
+    ``py:function:pkg.geometry.Thing`` target (hardcoded prefix in
+    ``_resolve_call_target``), even when ``Thing`` is actually a
+    class that lives at ``py:class:pkg.geometry.mesh.Thing``. The
+    phantom classifier marks the target ``unresolved`` because
+    ``pkg`` is project-internal, and the merge-time full-name
+    reconciler misses it because the dotted names differ.
+
+    This pass walks every phantom (``unresolved`` / ``external`` /
+    untyped node) and, when a unique same-leaf canonical exists in
+    the same module-path neighborhood, retargets every incoming and
+    outgoing edge onto the canonical and drops the phantom.
+
+    **Canonical selection** uses a concreteness ranking — class >
+    method > function > external > unresolved — tie-broken by
+    whether the candidate has a ``file_path``. This matters when
+    both a real class and a same-leaf call-site phantom are
+    leaf-matched: the class always wins the fold even if it was
+    entered into ``leaf_index`` via the lower-priority code path.
+
+    **Canonical recognition** accepts both genuinely typed concrete
+    nodes AND nodes whose ID prefix + ``file_path`` signal a
+    concrete type even if the ``type`` attr is stale (e.g. a
+    ``py:class:pkg.mod.Thing`` with ``type=unresolved`` because a
+    Sphinx pending_xref placeholder was never upgraded post-merge).
+    ``_upgrade_types_from_signals`` normalises this up front so the
+    leaf index picks everything up.
+
+    **Bare-name phantoms** (name has no dots, e.g. ``Thing`` from a
+    ``Mesh1D(...)`` call where the imported name wasn't
+    qualified) fold into the unique same-leaf canonical without
+    the module-path-overlap check, since there's no module path
+    to compare.
+
+    The module-path-overlap guard is what prevents a legitimate
+    reference like ``numpy.ndarray`` from being folded into a
+    local project class that happens to share the ``ndarray``
+    leaf name. ``numpy`` is neither a prefix nor a suffix of
+    ``local``, so the pair doesn't match.
+
+    Returns the number of phantom nodes removed.
+    """
+    g = graph.nxgraph
+
+    # Up-front type rescue: a node whose id prefix is py:class:/
+    # py:function:/py:method: and whose file_path is set is
+    # canonical by definition, even if the type attr is stale.
+    _upgrade_types_from_signals(graph)
+
+    # Build leaf-name → list of (canonical_id, canonical_name) pairs.
+    leaf_index: dict[str, list[tuple[str, str]]] = {}
+    for nid, attrs in g.nodes(data=True):
+        if attrs.get("type") not in _CANONICAL_TYPES:
+            continue
+        name = attrs.get("name") or ""
+        if not name:
+            continue
+        leaf = name.rsplit(".", 1)[-1]
+        leaf_index.setdefault(leaf, []).append((nid, name))
+
+    removed = 0
+    for nid in list(g.nodes):
+        attrs = g.nodes[nid]
+        ntype = attrs.get("type", "")
+        if ntype not in _PHANTOM_TYPES:
+            continue
+        name = attrs.get("name") or ""
+        if not name:
+            continue
+
+        leaf = name.rsplit(".", 1)[-1]
+        all_candidates = [
+            (cid, cname)
+            for cid, cname in leaf_index.get(leaf, [])
+            if cid != nid
+        ]
+
+        if "." in name:
+            # Qualified phantom — filter by module-path overlap so
+            # cross-module same-leaf collisions don't collapse.
+            matched = [
+                (cid, cname)
+                for cid, cname in all_candidates
+                if _module_paths_overlap(name, cname)
+            ]
+        else:
+            # Bare-name phantom — the phantom has no module path, so
+            # fall back to "unique leaf match across the whole graph".
+            matched = list(all_candidates)
+
+        if not matched:
+            continue
+
+        # Pick the best canonical by type-rank + file_path.
+        matched.sort(key=lambda pair: _canonical_rank_key(
+            pair[0], pair[1], g.nodes[pair[0]],
+        ))
+        # If multiple candidates share the best rank AND file_path
+        # status, the leaf is ambiguous — skip rather than guess.
+        best_key = _canonical_rank_key(
+            matched[0][0], matched[0][1], g.nodes[matched[0][0]],
+        )
+        tied = [
+            pair for pair in matched
+            if _canonical_rank_key(pair[0], pair[1], g.nodes[pair[0]])[:2]
+            == best_key[:2]
+        ]
+        if len(tied) > 1:
+            continue
+
+        canonical, _canonical_name = matched[0]
+        for src, _, key, data in list(g.in_edges(nid, keys=True, data=True)):
+            g.add_edge(src, canonical, **data)
+            g.remove_edge(src, nid, key=key)
+        for _, tgt, key, data in list(g.out_edges(nid, keys=True, data=True)):
+            g.add_edge(canonical, tgt, **data)
+            g.remove_edge(nid, tgt, key=key)
+        g.remove_node(nid)
+        removed += 1
+
+    if removed:
+        logger.info(
+            "Canonicalized %d re-export / mis-typed phantom nodes", removed,
+        )
+    return removed
 
 
 def _classify_phantom_nodes(graph: KnowledgeGraph) -> None:

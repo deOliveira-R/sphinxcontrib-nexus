@@ -2,6 +2,146 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.8.2 — 2026-04-13
+
+Fixes nexus#3 — re-exported classes appearing as multiple parallel
+graph nodes. Two-round fix after the first-round implementation
+was flagged by ORPHEUS cross-validation as regressing the
+canonical class type. ORPHEUS reported ``Mesh1D`` showing up as four
+distinct nodes in the 0.6.0 graph (two ``py:class:``, one
+``py:function:``, one unresolved phantom). This release collapses
+all four bug shapes into a single canonical class via a new
+leaf-name-plus-path-overlap fold pass.
+
+### Fixed
+
+- **nexus#3** — ``analyze_directory`` now runs a new
+  ``_canonicalize_phantoms`` pass after ``_classify_phantom_nodes``
+  that folds re-export and mis-typed phantoms into their canonical
+  AST counterparts. The pass:
+
+  1. Builds a leaf-name index over every concrete
+     class/function/method node.
+  2. For each phantom (``unresolved``/``external``/untyped with a
+     dotted name), looks up the leaf name and filters candidates
+     to those whose module path overlaps the phantom's via a
+     prefix OR suffix relationship.
+  3. If exactly one candidate survives, retargets all incoming
+     and outgoing edges onto the canonical and drops the phantom.
+
+  The module-path-overlap guard is what distinguishes "re-export
+  or short-import of the same symbol" from "genuine external
+  leaf-name collision". A reference like ``numpy.ndarray`` does
+  NOT fold into a project-local ``local.ndarray`` because
+  ``numpy`` is neither a prefix nor a suffix of ``local``; but
+  ``pkg.geometry.Thing`` DOES fold into
+  ``pkg.geometry.mesh.Thing`` because the former's module path
+  is a prefix of the latter's.
+
+  All four ORPHEUS bug shapes are handled by the single pass:
+
+  - ``py:class:orpheus.geometry.Mesh1D`` (re-export via __init__)
+    — folded via prefix overlap.
+  - ``py:function:orpheus.geometry.Mesh1D`` (class called as
+    Call, hardcoded ``py:function:`` prefix) — folded via prefix
+    overlap.
+  - ``py:class:geometry.mesh.Mesh1D`` (short-import phantom from
+    test files that put the project root on ``sys.path``) —
+    folded via suffix overlap.
+  - ``py:class:orpheus.geometry.mesh.Mesh1D`` (canonical) —
+    untouched; remains the single surviving node.
+
+### Scope note
+
+The handoff listed an optional ``nexus_package_aliases`` config
+for projects with weird import layouts. The leaf-name-plus-
+overlap rule already handles every bug shape the ORPHEUS repro
+exhibited (including the short-import case via the suffix-match
+branch), so the config isn't needed. Leaves the API smaller; can
+be added later if a real project hits a case this pass can't
+resolve.
+
+### Round 2 — type upgrade during merge and type-ranked fold
+
+ORPHEUS cross-validation of the first-round fix found three
+interacting bugs:
+
+1. **``merge_graphs`` didn't upgrade types.** When Sphinx had a
+   placeholder ``py:class:pkg.mod.Thing`` with
+   ``type=unresolved`` (from a pending_xref that couldn't
+   resolve at parse time, or from NetworkX auto-creating an
+   edge target before domain extraction ran) AND the AST side
+   had the same id typed as ``class`` with ``file_path``, the
+   merged node kept ``type=unresolved``. Downstream type
+   filters broke and the canonicalization leaf-index skipped
+   the canonical.
+2. **The fold's canonical recognition was too strict.** Even
+   after merge was fixed, a node whose ID prefix and
+   ``file_path`` proved a concrete type could still be
+   bypassed if some earlier classification step had stamped
+   its type attr as ``unresolved``. The leaf-index only looked
+   at the type attr, so such nodes weren't considered canonical.
+3. **Bare-name phantoms and same-leaf ambiguity.** Phantoms
+   with a bare leaf name (e.g. ``py:function:Mesh1D`` from a
+   ``from pkg import Mesh1D`` call site) had no module path to
+   feed into the overlap filter and were always skipped. And
+   when multiple canonical candidates shared a leaf, the fold
+   picked by iteration order instead of by concreteness.
+
+Round-2 fixes:
+
+- ``merge_graphs`` step 1 consults a ``_MERGE_TYPE_RANK`` table
+  and upgrades the type whenever AST's type is more concrete
+  than Sphinx's. ``class > exception > method > function >
+  type > attribute > data > module > external > unresolved``.
+  Downgrades are explicitly protected against.
+- ``_canonicalize_phantoms`` runs a new
+  ``_upgrade_types_from_signals`` pre-pass that inspects every
+  node whose ID prefix (``py:class:``, ``py:function:``,
+  ``py:method:``, …) plus ``file_path`` signals an
+  authoritative concrete type, and upgrades the type attr in
+  place. Bare phantoms without ``file_path`` are untouched.
+- The fold's canonical-selection step now picks by concreteness
+  rank tie-broken on ``file_path`` presence. Genuinely
+  ambiguous leaves (two candidates tied on both signals) are
+  left alone — no auto-collapse.
+- Bare-name phantoms (no dots in name) now fold into the unique
+  leaf-matched canonical across the whole graph without the
+  module-path-overlap filter.
+- ``_run_ast_analysis`` invokes ``_canonicalize_phantoms`` a
+  second time after the last ``merge_graphs`` call, so Sphinx-
+  side phantoms that the per-directory AST pass couldn't see
+  get collapsed against their merged canonicals. The pass is
+  idempotent.
+
+### Fixture expansion
+
+``tests/fixtures/minimal_project/conf.py`` now enables
+``sphinx.ext.autodoc`` and ``theory/solver.rst`` runs
+``.. autoclass:: solver_pkg.helpers.Mesh`` plus
+``.. autofunction::`` blocks for the solver functions. This
+ensures the e2e harness exercises the full Sphinx
+domain-objects → AST merge → canonicalization pipeline that the
+ORPHEUS build runs through, not just the AST-only path.
+
+### Tests
+
+281 → 294 (+13). New regression coverage split across:
+
+- ``test_reexport.py`` (8 assertions total) — pins every bug
+  shape from both round 1 and round 2 in isolation:
+  - round 1: synthetic 3-level re-export project
+  - round 2: ``test_canonical_with_unresolved_type_but_file_path_is_foldable_target``
+    simulates the ORPHEUS shape A, ``test_bare_name_phantom_folds_to_unique_canonical``
+    pins shape C1.
+- ``test_merge.py`` (+2 assertions) —
+  ``test_merge_upgrades_placeholder_type_from_ast`` pins the
+  merge-layer type upgrade, ``test_merge_does_not_downgrade_concrete_type``
+  guards the inverse.
+- ``test_fixture_e2e.py`` (+3 assertions from round 1) — pins
+  the round-1 re-export shape end-to-end through a real
+  ``sphinx-build``.
+
 ## 0.8.1 — 2026-04-13
 
 Two bug fixes caught by ORPHEUS cross-validation of 0.8.0.

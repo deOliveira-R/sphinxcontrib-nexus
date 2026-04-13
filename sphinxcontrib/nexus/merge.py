@@ -13,6 +13,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Same ranking used in ``ast_analyzer._canonicalize_phantoms`` —
+#: lower is more concrete. ``merge_graphs`` consults it when both
+#: the Sphinx and AST sides have the same node id but disagree on
+#: the type: the more concrete winner takes precedence so a
+#: Sphinx placeholder ``py:class:pkg.mod.Thing`` (type=unresolved
+#: from a pending_xref that couldn't resolve at parse time)
+#: upgrades to ``type=class`` when the AST layer has the
+#: corresponding ``ClassDef`` with ``file_path`` + ``lineno``.
+_MERGE_TYPE_RANK: dict[str, int] = {
+    NodeType.CLASS.value: 0,
+    NodeType.EXCEPTION.value: 1,
+    NodeType.METHOD.value: 2,
+    NodeType.FUNCTION.value: 3,
+    NodeType.TYPE.value: 4,
+    NodeType.ATTRIBUTE.value: 5,
+    NodeType.DATA.value: 6,
+    NodeType.MODULE.value: 7,
+    NodeType.EQUATION.value: 8,
+    NodeType.SECTION.value: 9,
+    NodeType.TERM.value: 10,
+    NodeType.FILE.value: 11,
+    NodeType.EXTERNAL.value: 12,
+    NodeType.UNRESOLVED.value: 13,
+    "": 14,
+}
+
+
 def merge_graphs(
     sphinx_kg: KnowledgeGraph,
     ast_kg: KnowledgeGraph,
@@ -32,11 +59,27 @@ def merge_graphs(
     # Step 1 & 2: merge nodes
     for node_id, ast_attrs in ag.nodes(data=True):
         if node_id in sg:
-            # Enrich existing Sphinx node with AST metadata
+            # Enrich existing Sphinx node with AST metadata.
             for key in ("file_path", "lineno", "end_lineno"):
                 if key in ast_attrs:
                     sg.nodes[node_id][key] = ast_attrs[key]
             sg.nodes[node_id]["source"] = "both"
+            # Upgrade type when AST has a more concrete one. This
+            # rescues Sphinx-side placeholders from ``extract_references``
+            # / NetworkX auto-creation, which leave nodes as
+            # ``unresolved`` even though the AST layer has them as
+            # ``class`` / ``function`` / ``method``. Before this pass
+            # the canonical ``py:class:pkg.mod.Thing`` could end up
+            # with ``type=unresolved`` after merge, which broke
+            # downstream type filters and the canonicalization leaf
+            # index.
+            ast_type = ast_attrs.get("type", "")
+            if ast_type:
+                sphinx_type = sg.nodes[node_id].get("type", "")
+                ast_rank = _MERGE_TYPE_RANK.get(ast_type, 99)
+                sphinx_rank = _MERGE_TYPE_RANK.get(sphinx_type, 99)
+                if ast_rank < sphinx_rank:
+                    sg.nodes[node_id]["type"] = ast_type
         else:
             # AST-only node — add it
             attrs = dict(ast_attrs)
