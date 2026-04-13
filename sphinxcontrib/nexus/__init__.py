@@ -163,13 +163,43 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         merge_graphs(graph, ast_graph)
 
     # Write declared TESTS edges (from @pytest.mark.verifies) first,
-    # so _infer_implements can honor them as "already-known" links
-    # and skip redundant token-intersection matches.
+    # then apply any non-LLM verification registries. Both paths run
+    # BEFORE ``_infer_implements`` so the token-intersection heuristic
+    # honors every explicit edge as "already-known".
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
         write_verifies_edges,
     )
+    from sphinxcontrib.nexus.registry import (
+        RegistryError,
+        load_registry,
+    )
     write_verifies_edges(graph.nxgraph)
+
+    registry_paths = list(
+        getattr(app.config, "nexus_verification_registry", []) or []
+    )
+    for entry in registry_paths:
+        rpath = (project_root / entry).resolve()
+        if not rpath.is_file():
+            logger.warning(
+                "nexus_verification_registry: %s not found, skipping",
+                rpath,
+            )
+            continue
+        try:
+            written = load_registry(rpath, graph.nxgraph)
+        except RegistryError as err:
+            logger.warning(
+                "nexus_verification_registry: %s failed to load: %s",
+                rpath, err,
+            )
+            continue
+        logger.info(
+            "nexus_verification_registry: loaded %d edges from %s",
+            written, rpath,
+        )
+
     if getattr(app.config, "nexus_infer_implements", True):
         _infer_implements(graph.nxgraph)
 
@@ -253,6 +283,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
         "nexus_test_patterns", list(DEFAULT_TEST_PATTERNS), "env"
     )
     app.add_config_value("nexus_infer_implements", True, "env")
+    app.add_config_value("nexus_verification_registry", [], "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
 
     app.connect("env-check-consistency", _on_env_check_consistency)
