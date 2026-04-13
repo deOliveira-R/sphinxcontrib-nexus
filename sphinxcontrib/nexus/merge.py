@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from sphinxcontrib.nexus.graph import KnowledgeGraph, NodeType
+from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 logger = logging.getLogger(__name__)
 
@@ -158,15 +162,78 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
                 if not shared:
                     continue
                 pair = (code_id, eq_id)
-                if pair not in seen:
+                if pair in seen:
+                    continue
+                # Skip if any explicit TESTS or IMPLEMENTS edge already
+                # links these two nodes. An edge is "explicit" when its
+                # source is NOT the string "inferred" — covers
+                # registry-sourced, directive-sourced, and
+                # pytest.mark.verifies-sourced edges alike.
+                existing = g.get_edge_data(code_id, eq_id, default={})
+                if any(
+                    d.get("type") in ("implements", "tests")
+                    and d.get("source") != "inferred"
+                    for d in existing.values()
+                ):
                     seen.add(pair)
-                    g.add_edge(
-                        code_id, eq_id,
-                        type="implements", source="inferred",
-                        confidence=0.7,
-                        shared_tokens=sorted(shared),
-                    )
-                    count += 1
+                    continue
+                seen.add(pair)
+                g.add_edge(
+                    code_id, eq_id,
+                    type="implements", source="inferred",
+                    confidence=0.7,
+                    shared_tokens=sorted(shared),
+                )
+                count += 1
 
     if count:
         logger.info("Inferred %d IMPLEMENTS edges (code → equation)", count)
+
+
+def write_verifies_edges(g: "nx.MultiDiGraph") -> int:
+    """Write ``EdgeType.TESTS`` edges from ``@pytest.mark.verifies`` metadata.
+
+    Walks every function/method node with a ``verifies`` tuple in its
+    metadata (populated by ``ast_analyzer._parse_pytest_markers``). For
+    each label in that tuple, looks up the ``math:equation:<label>``
+    node in the graph. When found, adds a ``tests`` edge with
+    confidence 1.0 and ``source="pytest.mark.verifies"``. When the
+    equation node does not exist, logs a warning and skips — we do
+    not create phantom equation nodes here.
+
+    Returns the number of edges written.
+    """
+    count = 0
+    for node_id, attrs in list(g.nodes(data=True)):
+        labels = attrs.get("verifies")
+        if not labels:
+            continue
+        for label in labels:
+            eq_id = f"math:equation:{label}"
+            if eq_id not in g:
+                logger.warning(
+                    "pytest.mark.verifies(%r) on %s has no matching "
+                    "equation node %s — skipping",
+                    label, node_id, eq_id,
+                )
+                continue
+            # Skip if this exact declared edge already exists (rebuilds
+            # on a pre-populated graph should be idempotent).
+            existing = g.get_edge_data(node_id, eq_id, default={})
+            if any(
+                d.get("type") == EdgeType.TESTS.value
+                and d.get("source") == "pytest.mark.verifies"
+                for d in existing.values()
+            ):
+                continue
+            g.add_edge(
+                node_id,
+                eq_id,
+                type=EdgeType.TESTS.value,
+                source="pytest.mark.verifies",
+                confidence=1.0,
+            )
+            count += 1
+    if count:
+        logger.info("Wrote %d TESTS edges from @pytest.mark.verifies", count)
+    return count
