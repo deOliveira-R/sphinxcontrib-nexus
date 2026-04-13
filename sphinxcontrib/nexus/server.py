@@ -258,7 +258,11 @@ def provenance_chain(node_id: str) -> str:
 
 
 @_mcp.tool()
-def verification_coverage(status_filter: str = "") -> str:
+def verification_coverage(
+    status_filter: str = "",
+    limit: int = 0,
+    offset: int = 0,
+) -> str:
     """Map verification coverage: equation → code → test chains.
 
     Shows which equations are verified (have code + tests), which are
@@ -267,10 +271,21 @@ def verification_coverage(status_filter: str = "") -> str:
     Args:
         status_filter: Filter by status: "verified", "tested", "implemented",
                       "documented", "orphan_code". Empty = all.
+        limit: Max number of entries to return. ``0`` (default) means
+            no limit — return every matching entry. Use with ``offset``
+            to page through very large result sets.
+        offset: Number of entries to skip from the start of the list.
     """
     q = _get_query()
     filt = status_filter if status_filter else None
-    return to_json(assemble_verification_coverage(q, status_filter=filt))
+    return to_json(
+        assemble_verification_coverage(
+            q,
+            status_filter=filt,
+            limit=limit if limit > 0 else None,
+            offset=offset,
+        )
+    )
 
 
 @_mcp.tool()
@@ -348,7 +363,11 @@ def migration_plan(from_dep: str, to_dep: str = "") -> str:
 
 
 @_mcp.tool()
-def processes(min_length: int = 3) -> str:
+def processes(
+    min_length: int = 3,
+    limit: int = 0,
+    offset: int = 0,
+) -> str:
     """Detect execution flows: maximal call chains from entry points.
 
     Returns named sequences showing how functions call each other
@@ -356,9 +375,19 @@ def processes(min_length: int = 3) -> str:
 
     Args:
         min_length: Minimum chain length to include (default 3).
+        limit: Max number of chains to return. ``0`` (default) means
+            no limit — return every chain meeting ``min_length``.
+        offset: Number of chains to skip from the start of the list.
     """
     q = _get_query()
-    return to_json(assemble_processes(q, min_length=min_length))
+    return to_json(
+        assemble_processes(
+            q,
+            min_length=min_length,
+            limit=limit if limit > 0 else None,
+            offset=offset,
+        )
+    )
 
 
 @_mcp.tool()

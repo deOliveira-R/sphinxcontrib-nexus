@@ -86,32 +86,70 @@ def assemble_communities(q: GraphQuery, min_size: int = 3) -> list[dict]:
     return summaries
 
 
-def assemble_processes(q: GraphQuery, min_length: int = 3) -> list[dict]:
-    """Execution flows capped at 20 chains."""
+def _slice(items: list, limit: int | None, offset: int) -> list:
+    """Apply optional offset/limit to a list; ``limit=None`` returns all."""
+    if offset < 0:
+        offset = 0
+    if limit is None:
+        return items[offset:]
+    return items[offset : offset + max(limit, 0)]
+
+
+def assemble_processes(
+    q: GraphQuery,
+    min_length: int = 3,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
+    """Execution flows.
+
+    Returns a dict with ``total``, ``offset``, ``limit`` metadata and a
+    ``processes`` list. ``limit=None`` (the default) returns every
+    process — callers opt in to pagination explicitly.
+    """
     results = q.processes(min_length=min_length)
-    summaries = []
-    for p in results[:20]:
-        summaries.append({
+    window = _slice(results, limit, offset)
+    summaries = [
+        {
             "name": p.name,
             "length": p.length,
             "steps": [
                 {"step": s.step_number, "node": s.node.id, "calls_next": s.calls_next}
                 for s in p.steps
             ],
-        })
-    return summaries
+        }
+        for p in window
+    ]
+    return {
+        "processes": summaries,
+        "total": len(results),
+        "offset": offset,
+        "limit": limit,
+        "returned": len(summaries),
+    }
 
 
 def assemble_verification_coverage(
     q: GraphQuery,
     status_filter: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict:
-    """Coverage summary + first 20 entries."""
+    """Coverage summary plus the entries slice.
+
+    ``limit=None`` (the default) returns every entry; pass an integer
+    to opt in to pagination. ``total_entries`` is always the
+    unfiltered count so clients can detect truncation.
+    """
     result = q.verification_coverage(status_filter=status_filter)
+    window = _slice(result.entries, limit, offset)
     return {
         "summary": result.summary,
-        "entries": to_dict(result.entries[:20]),
+        "entries": to_dict(window),
         "total_entries": len(result.entries),
+        "offset": offset,
+        "limit": limit,
+        "returned": len(window),
     }
 
 

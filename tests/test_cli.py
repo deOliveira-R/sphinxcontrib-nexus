@@ -165,7 +165,13 @@ class TestJsonCli:
             ["processes", "--db", str(small_graph), "--min-length", "2"],
             capsys,
         )
-        assert isinstance(data, list)
+        # ``assemble_processes`` now returns a dict with pagination
+        # metadata plus a ``processes`` list (see tests/test_serialize.py).
+        assert isinstance(data, dict)
+        assert "processes" in data
+        assert isinstance(data["processes"], list)
+        assert data["limit"] is None
+        assert data["returned"] == data["total"]
 
     def test_graph_query(self, small_graph, capsys):
         data = _cli_json(

@@ -184,6 +184,14 @@ def main(argv: list[str] | None = None) -> int:
         "--status", default="",
         help="Filter: verified, tested, implemented, documented, orphan_code.",
     )
+    cov_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Max entries to print in the human listing. 0 = unlimited.",
+    )
+    cov_cmd.add_argument(
+        "--offset", type=int, default=0,
+        help="Skip this many entries from the start of the list.",
+    )
 
     # --- staleness ---
     stale_cmd = sub.add_parser(
@@ -394,6 +402,14 @@ def main(argv: list[str] | None = None) -> int:
     processes_cmd.add_argument(
         "--min-length", type=int, default=3,
         help="Minimum chain length (default: 3).",
+    )
+    processes_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Max chains to return. 0 = unlimited.",
+    )
+    processes_cmd.add_argument(
+        "--offset", type=int, default=0,
+        help="Skip this many chains from the start of the list.",
     )
 
     # --- shortest-path ---
@@ -802,11 +818,16 @@ def _run_coverage(args: argparse.Namespace) -> int:
         print(f"  {status:20s} {count}")
     print()
     if result.entries:
-        shown = result.entries[:30]
+        offset = max(args.offset, 0)
+        if args.limit > 0:
+            shown = result.entries[offset : offset + args.limit]
+        else:
+            shown = result.entries[offset:]
         for e in shown:
             print(f"  [{e.status:12s}] {e.node.id}")
-        if len(result.entries) > 30:
-            print(f"  ... ({len(result.entries)} total)")
+        total = len(result.entries)
+        if len(shown) < total - offset or offset > 0:
+            print(f"  ... ({len(shown)} shown / {total} total)")
     return 0
 
 
@@ -966,7 +987,14 @@ def _run_god_nodes(args: argparse.Namespace) -> int:
 def _run_processes(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_processes
     q = _load_query(args.db)
-    return _json_out(assemble_processes(q, min_length=args.min_length))
+    return _json_out(
+        assemble_processes(
+            q,
+            min_length=args.min_length,
+            limit=args.limit if args.limit > 0 else None,
+            offset=args.offset,
+        )
+    )
 
 
 def _run_shortest_path(args: argparse.Namespace) -> int:
