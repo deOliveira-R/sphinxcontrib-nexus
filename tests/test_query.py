@@ -233,3 +233,185 @@ def test_stats(sample_graph):
     assert s.edges_by_type["documents"] == 1
     assert s.connected_components == 1
     assert s.density > 0
+
+
+# ---------------------------------------------------------------------------
+# verification_coverage: tiered test-source resolution
+# ---------------------------------------------------------------------------
+
+
+def _coverage_graph(build_fn) -> nx.MultiDiGraph:
+    """Helper that builds a minimal verification-coverage graph. The
+    caller passes a function that receives an empty ``MultiDiGraph``
+    and populates it."""
+    g = nx.MultiDiGraph()
+    build_fn(g)
+    return g
+
+
+def _find_entry(cov, node_id: str):
+    for entry in cov.entries:
+        if entry.node.id == node_id:
+            return entry
+    raise AssertionError(f"{node_id} not in coverage entries")
+
+
+def test_coverage_declared_tier_wins_over_heuristic():
+    """An equation with a declared TESTS edge is verified; the
+    ``code_to_1hop`` heuristic must NOT produce competing entries."""
+
+    def build(g):
+        g.add_node("math:equation:eq-1", type="equation", name="eq-1",
+                   display_name="(1)", domain="math", docname="theory")
+        g.add_node("py:function:impl", type="function", name="impl",
+                   display_name="impl", domain="py")
+        g.add_node("py:function:test_declared", type="function",
+                   name="test_declared", display_name="test_declared",
+                   domain="py", is_test=True)
+        g.add_node("py:function:test_indirect", type="function",
+                   name="test_indirect", display_name="test_indirect",
+                   domain="py", is_test=True)
+        # impl implements eq
+        g.add_edge("py:function:impl", "math:equation:eq-1", type="implements")
+        # declared: direct TESTS edge from test_declared
+        g.add_edge("py:function:test_declared", "math:equation:eq-1",
+                   type="tests", source="pytest.mark.verifies", confidence=1.0)
+        # heuristic 1-hop: test_indirect calls impl
+        g.add_edge("py:function:test_indirect", "py:function:impl",
+                   type="calls")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-1")
+    assert entry.status == "verified"
+    # Only the declared test should be in the list.
+    assert len(entry.tests) == 1
+    assert entry.tests[0].id == "py:function:test_declared"
+    assert entry.tests[0].source == "declared"
+    assert entry.tests[0].confidence == 1.0
+
+
+def test_coverage_heuristic_1hop_when_no_declared():
+    def build(g):
+        g.add_node("math:equation:eq-2", type="equation", name="eq-2",
+                   display_name="(2)", domain="math", docname="theory")
+        g.add_node("py:function:impl", type="function", name="impl",
+                   display_name="impl", domain="py")
+        g.add_node("py:function:test_caller", type="function",
+                   name="test_caller", display_name="test_caller",
+                   domain="py", is_test=True)
+        g.add_edge("py:function:impl", "math:equation:eq-2", type="implements")
+        g.add_edge("py:function:test_caller", "py:function:impl", type="calls")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-2")
+    assert entry.status == "verified"
+    assert len(entry.tests) == 1
+    assert entry.tests[0].source == "heuristic-1hop"
+    assert entry.tests[0].confidence == 0.7
+
+
+def test_coverage_heuristic_multihop_finds_via_helper_chain():
+    """Graph: test → helper → impl → equation.
+
+    The classical 1-hop scan sees ``helper`` as the caller of ``impl``,
+    which is not ``is_test``, so it misses the test entirely. The
+    multi-hop BFS must walk back from ``impl`` until it reaches
+    ``test_end_to_end`` at depth 2."""
+
+    def build(g):
+        g.add_node("math:equation:eq-3", type="equation", name="eq-3",
+                   display_name="(3)", domain="math", docname="theory")
+        g.add_node("py:function:impl", type="function", name="impl",
+                   display_name="impl", domain="py")
+        g.add_node("py:function:helper", type="function", name="helper",
+                   display_name="helper", domain="py")
+        g.add_node("py:function:test_end_to_end", type="function",
+                   name="test_end_to_end", display_name="test_end_to_end",
+                   domain="py", is_test=True)
+        g.add_edge("py:function:impl", "math:equation:eq-3", type="implements")
+        g.add_edge("py:function:helper", "py:function:impl", type="calls")
+        g.add_edge("py:function:test_end_to_end", "py:function:helper",
+                   type="calls")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-3")
+    assert entry.status == "verified"
+    assert any(t.source == "heuristic-multihop" for t in entry.tests), entry.tests
+
+
+def test_coverage_multihop_depth_limit_excludes_deep_chains():
+    """A chain longer than ``max_depth=3`` must not contribute."""
+
+    def build(g):
+        g.add_node("math:equation:eq-deep", type="equation", name="eq-deep",
+                   display_name="(deep)", domain="math", docname="theory")
+        # chain: test → h1 → h2 → h3 → h4 → impl  (5 hops)
+        for name in ("impl", "h1", "h2", "h3", "h4"):
+            g.add_node(f"py:function:{name}", type="function", name=name,
+                       display_name=name, domain="py")
+        g.add_node("py:function:test_deep", type="function", name="test_deep",
+                   display_name="test_deep", domain="py", is_test=True)
+        g.add_edge("py:function:impl", "math:equation:eq-deep", type="implements")
+        g.add_edge("py:function:h4", "py:function:impl", type="calls")
+        g.add_edge("py:function:h3", "py:function:h4", type="calls")
+        g.add_edge("py:function:h2", "py:function:h3", type="calls")
+        g.add_edge("py:function:h1", "py:function:h2", type="calls")
+        g.add_edge("py:function:test_deep", "py:function:h1", type="calls")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-deep")
+    # impl→h4→h3→h2 reaches depth 3; test_deep is at depth 5. Not found.
+    assert entry.status == "implemented"
+    assert entry.tests == []
+
+
+def test_coverage_declared_without_implementing_code_is_verified():
+    """A declared TESTS edge directly to an equation that has no
+    IMPLEMENTS links is still verified — the test claims it."""
+
+    def build(g):
+        g.add_node("math:equation:eq-direct", type="equation",
+                   name="eq-direct", display_name="(direct)", domain="math",
+                   docname="theory")
+        g.add_node("py:function:test_direct", type="function",
+                   name="test_direct", display_name="test_direct",
+                   domain="py", is_test=True)
+        g.add_edge("py:function:test_direct", "math:equation:eq-direct",
+                   type="tests", source="pytest.mark.verifies", confidence=1.0)
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-direct")
+    assert entry.status == "verified"
+    assert entry.implementing_code == []
+    assert entry.tests[0].source == "declared"
+
+
+def test_coverage_documented_when_no_code_no_tests():
+    def build(g):
+        g.add_node("math:equation:eq-orphan", type="equation",
+                   name="eq-orphan", display_name="(orphan)", domain="math",
+                   docname="theory")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-orphan")
+    assert entry.status == "documented"
+
+
+def test_coverage_implemented_when_code_but_no_tests():
+    def build(g):
+        g.add_node("math:equation:eq-5", type="equation", name="eq-5",
+                   display_name="(5)", domain="math", docname="theory")
+        g.add_node("py:function:impl", type="function", name="impl",
+                   display_name="impl", domain="py")
+        g.add_edge("py:function:impl", "math:equation:eq-5", type="implements")
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-5")
+    assert entry.status == "implemented"
