@@ -74,6 +74,15 @@ declared TESTS edges, and multi-tier verification coverage.
   ``test_merge.py``, ``test_query.py``, and ``test_fixture_e2e.py``.
 - No schema change. The new metadata fields ride on
   ``node_attrs`` which is already key-value-typed.
+- **Incremental-build gotcha.** Sphinx caches AST analysis per-file,
+  so adding a ``@pytest.mark.verifies(...)`` marker to an existing
+  test file and re-running ``sphinx-build`` may leave the graph
+  looking unchanged — the visitor doesn't re-parse files whose
+  source hash hasn't moved relative to Sphinx's own tracking. A
+  clean ``rm -rf docs/_build && sphinx-build`` picks up the new
+  markers reliably. If you're validating a decorator change end-to-
+  end and the graph doesn't show what you expect, rebuild from
+  scratch before debugging the visitor.
 
 ## 0.6.0 — 2026-04-13
 
