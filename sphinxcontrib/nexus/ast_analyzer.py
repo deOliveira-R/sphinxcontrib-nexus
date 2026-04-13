@@ -416,6 +416,11 @@ class CodeVisitor(ast.NodeVisitor):
         self._imports = ImportTracker(module_name)
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
+        # Pytest-marker metadata stashed at module and class scope.
+        # When a function is visited, these layer underneath its own
+        # decorator metadata (module lowest, function highest precedence).
+        self._module_pytest_meta: dict[str, object] = {}
+        self._current_class_pytest_meta: dict[str, object] = {}
 
         # Create module node
         self.nodes.append(GraphNode(
@@ -598,19 +603,37 @@ class CodeVisitor(ast.NodeVisitor):
         _name = node.name
         _name_looks_like_test = _name == "test" or _name.startswith("test_")
         is_test = self._is_test_file and _name_looks_like_test
+
+        # Decorator metadata: raw serialized forms plus structured
+        # pytest-marker fields. Function-level markers win over any
+        # class- or module-level pytestmark stashed in the scope, so we
+        # layer them: module (lowest) → class → function (highest).
+        meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": node.lineno,
+            "end_lineno": node.end_lineno,
+            "source": "ast",
+        }
+        if is_test:
+            meta["is_test"] = True
+
+        if self._module_pytest_meta:
+            meta.update(self._module_pytest_meta)
+        if self._current_class_pytest_meta:
+            meta.update(self._current_class_pytest_meta)
+        if node.decorator_list:
+            meta["decorators"] = tuple(
+                _render_decorator(dec) for dec in node.decorator_list
+            )
+            meta.update(_parse_pytest_markers(node.decorator_list))
+
         self.nodes.append(GraphNode(
             id=func_id,
             type=node_type,
             name=qname,
             display_name=node.name,
             domain="py",
-            metadata={
-                "file_path": self._file_path,
-                "lineno": node.lineno,
-                "end_lineno": node.end_lineno,
-                "source": "ast",
-                **({"is_test": True} if is_test else {}),
-            },
+            metadata=meta,
         ))
 
         # CONTAINS from parent scope

@@ -373,6 +373,68 @@ def test_is_test_requires_test_file_and_conventional_name(tmp_path):
     assert nodes["py:function:tests.test_unit.fixture_setup"].get("is_test") is not True
 
 
+def _find_node(visitor: CodeVisitor, node_id: str):
+    for n in visitor.nodes:
+        if n.id == node_id:
+            return n
+    raise AssertionError(f"{node_id} not in visitor.nodes")
+
+
+def test_function_level_decorators_captured():
+    src = (
+        "import pytest\n"
+        "\n"
+        "@pytest.mark.l0\n"
+        '@pytest.mark.verifies("eq-1")\n'
+        '@pytest.mark.catches("FM-07")\n'
+        "def test_attenuation():\n"
+        "    pass\n"
+    )
+    v = _visit_source(src)
+    node = _find_node(v, "py:function:testmod.test_attenuation")
+    assert node.metadata["vv_level"] == "L0"
+    assert node.metadata["verifies"] == ("eq-1",)
+    assert node.metadata["catches"] == ("FM-07",)
+    # ``decorators`` records the raw serialized form of every decorator.
+    decs = node.metadata["decorators"]
+    assert len(decs) == 3
+    assert "pytest.mark.l0" in decs
+    assert any("verifies" in d for d in decs)
+
+
+def test_decorator_metadata_absent_when_no_decorators():
+    v = _visit_source("def plain(): pass\n")
+    node = _find_node(v, "py:function:testmod.plain")
+    assert "decorators" not in node.metadata
+    assert "vv_level" not in node.metadata
+
+
+def test_decorator_on_method():
+    src = (
+        "import pytest\n"
+        "class Foo:\n"
+        "    @pytest.mark.slow\n"
+        "    def test_it(self): pass\n"
+    )
+    v = _visit_source(src)
+    node = _find_node(v, "py:method:testmod.Foo.test_it")
+    assert node.metadata.get("slow") is True
+
+
+def test_verify_sugar_decorator_on_function():
+    src = (
+        "from tests._harness import verify\n"
+        "\n"
+        "@verify.l1(equations=['fixture-attenuation'], catches=['FM-01'])\n"
+        "def test_vacuum(): pass\n"
+    )
+    v = _visit_source(src)
+    node = _find_node(v, "py:function:testmod.test_vacuum")
+    assert node.metadata["vv_level"] == "L1"
+    assert node.metadata["verifies"] == ("fixture-attenuation",)
+    assert node.metadata["catches"] == ("FM-01",)
+
+
 def test_docstring_all_python_roles_stay_in_py_namespace():
     src = (
         'def f():\n'
