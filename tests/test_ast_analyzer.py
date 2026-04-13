@@ -293,6 +293,83 @@ def test_docstring_tilde_role():
     assert "py:function:mymod.compute" in targets
 
 
+def test_role_target_parse_plain():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    assert _parse_role_target("foo") == "foo"
+    assert _parse_role_target("pkg.mod.foo") == "pkg.mod.foo"
+
+
+def test_role_target_parse_tilde_hint():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    assert _parse_role_target("~pkg.mod.foo") == "pkg.mod.foo"
+
+
+def test_role_target_parse_title_target_form():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    assert _parse_role_target("display name <pkg.mod.actual>") == "pkg.mod.actual"
+    assert _parse_role_target("Widget <pkg.mod.Widget>") == "pkg.mod.Widget"
+
+
+def test_role_target_parse_tilde_inside_title_target():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    # Sphinx accepts title <~target> where the tilde inside should
+    # strip the module prefix for display, but we just resolve the
+    # target.
+    assert _parse_role_target("compute <~pkg.mod.compute>") == "pkg.mod.compute"
+
+
+def test_role_target_parse_suppress_link():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    assert _parse_role_target("!foo") is None
+    assert _parse_role_target("!pkg.mod.foo") is None
+
+
+def test_role_target_parse_empty_is_none():
+    from sphinxcontrib.nexus.ast_analyzer import _parse_role_target
+    assert _parse_role_target("") is None
+    assert _parse_role_target("   ") is None
+
+
+def test_docstring_role_title_target_form_resolves():
+    """End-to-end: a ``:func:`display <pkg.mod.actual>``` role in
+    a docstring must produce a REFERENCES edge to the actual
+    target, not to the display title."""
+    v = _visit_source(
+        'def foo():\n'
+        '    """See :func:`compute fn <mymod.compute>` for details."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert "py:function:mymod.compute" in targets
+    # Display title must NOT leak into the target id.
+    assert not any("compute fn" in t for t in targets)
+
+
+def test_docstring_role_suppress_link_emits_nothing():
+    """``:func:`!foo``` is a suppression form — no edge."""
+    v = _visit_source(
+        'def foo():\n'
+        '    """Do not link :func:`!noref` here."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert "py:function:noref" not in targets
+
+
+def test_docstring_math_role_math_title_target_form():
+    """The ``title <target>`` form works for :math:/:eq: too."""
+    v = _visit_source(
+        'def solve():\n'
+        '    """Implements :math:`Eq. 3 <transport-cartesian>`."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert "math:equation:transport-cartesian" in targets
+
+
 def test_docstring_math_role_targets_equation_namespace():
     """`:math:` in a docstring refers to a Sphinx math equation label,
     not a Python object. Target ID must be math:equation:<label>."""
