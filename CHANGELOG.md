@@ -2,6 +2,75 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.8.2 — 2026-04-13
+
+Fixes nexus#3 — re-exported classes appearing as multiple parallel
+graph nodes. ORPHEUS reported ``Mesh1D`` showing up as four
+distinct nodes in the 0.6.0 graph (two ``py:class:``, one
+``py:function:``, one unresolved phantom). This release collapses
+all four bug shapes into a single canonical class via a new
+leaf-name-plus-path-overlap fold pass.
+
+### Fixed
+
+- **nexus#3** — ``analyze_directory`` now runs a new
+  ``_canonicalize_phantoms`` pass after ``_classify_phantom_nodes``
+  that folds re-export and mis-typed phantoms into their canonical
+  AST counterparts. The pass:
+
+  1. Builds a leaf-name index over every concrete
+     class/function/method node.
+  2. For each phantom (``unresolved``/``external``/untyped with a
+     dotted name), looks up the leaf name and filters candidates
+     to those whose module path overlaps the phantom's via a
+     prefix OR suffix relationship.
+  3. If exactly one candidate survives, retargets all incoming
+     and outgoing edges onto the canonical and drops the phantom.
+
+  The module-path-overlap guard is what distinguishes "re-export
+  or short-import of the same symbol" from "genuine external
+  leaf-name collision". A reference like ``numpy.ndarray`` does
+  NOT fold into a project-local ``local.ndarray`` because
+  ``numpy`` is neither a prefix nor a suffix of ``local``; but
+  ``pkg.geometry.Thing`` DOES fold into
+  ``pkg.geometry.mesh.Thing`` because the former's module path
+  is a prefix of the latter's.
+
+  All four ORPHEUS bug shapes are handled by the single pass:
+
+  - ``py:class:orpheus.geometry.Mesh1D`` (re-export via __init__)
+    — folded via prefix overlap.
+  - ``py:function:orpheus.geometry.Mesh1D`` (class called as
+    Call, hardcoded ``py:function:`` prefix) — folded via prefix
+    overlap.
+  - ``py:class:geometry.mesh.Mesh1D`` (short-import phantom from
+    test files that put the project root on ``sys.path``) —
+    folded via suffix overlap.
+  - ``py:class:orpheus.geometry.mesh.Mesh1D`` (canonical) —
+    untouched; remains the single surviving node.
+
+### Scope note
+
+The handoff listed an optional ``nexus_package_aliases`` config
+for projects with weird import layouts. The leaf-name-plus-
+overlap rule already handles every bug shape the ORPHEUS repro
+exhibited (including the short-import case via the suffix-match
+branch), so the config isn't needed. Leaves the API smaller; can
+be added later if a real project hits a case this pass can't
+resolve.
+
+### Tests
+
+281 → 290 (+9). New regression coverage split across:
+
+- ``test_reexport.py`` (new, 6 assertions) — pins every bug shape
+  in isolation against a synthetic 3-level re-export project.
+- ``test_fixture_e2e.py`` (+3 assertions) — pins the same shapes
+  end-to-end through a real ``sphinx-build`` by adding a ``Mesh``
+  class to ``solver_pkg.helpers``, re-exporting it via
+  ``solver_pkg.__init__``, and having ``solver.build_mesh`` call
+  it through the re-export path.
+
 ## 0.8.1 — 2026-04-13
 
 Two bug fixes caught by ORPHEUS cross-validation of 0.8.0.
