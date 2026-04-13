@@ -169,12 +169,98 @@ Installed via `nexus setup`. Each skill triggers on natural language:
 | `nexus-cli` | "Analyze the codebase", "Start the server" |
 | `behavioral-auto-regression` | "Agent is using Grep instead of Nexus", "Tool selection is wrong" |
 
+## V&V Integration
+
+Nexus turns pytest markers, RST directives, and repository-level YAML into typed verification edges in the graph, so audit tools can answer "which equations are actually verified, and by which tests, at what V&V level?" without hand-wiring.
+
+### From pytest markers (zero config)
+
+Add standard pytest markers to your tests and they flow through to the graph automatically:
+
+```python
+import pytest
+
+@pytest.mark.l0
+@pytest.mark.verifies("transport-cartesian")
+@pytest.mark.catches("FM-07")
+def test_attenuation_vacuum_source():
+    ...
+```
+
+After the next Sphinx build, the corresponding test node carries `vv_level="L0"`, `verifies=("transport-cartesian",)`, and `catches=("FM-07",)` in its metadata. A `merge.write_verifies_edges` pass then walks every function with a `verifies` tuple and emits real `EdgeType.TESTS` edges from the test to `math:equation:transport-cartesian`. Class-level and module-level `pytestmark` declarations propagate to contained test methods (gated on `is_test=True` — private helpers don't inherit).
+
+The `@verify.l0(equations=[...], catches=[...])` sugar form is also recognized.
+
+### From RST directives
+
+Declare verification edges directly in theory prose:
+
+```rst
+.. math::
+   :label: transport-cartesian
+
+   \dots
+
+.. implements:: transport-cartesian
+   :by: orpheus.sn.solve_sn
+
+.. verifies:: transport-cartesian
+   :by: tests.test_sn.test_transport
+```
+
+Both directives accept an explicit `:by:` option naming the Python symbol. When omitted, they fall back to inspecting `env.ref_context` so usage nested inside `.. py:function::` / `.. autofunction::` blocks picks up the enclosing signature automatically. Directive edges are tagged `source="directive"` and survive incremental builds via a docname-keyed pending queue with an `env-purge-doc` handler.
+
+### From a registry YAML
+
+For bulk declarative facts that live with the repo rather than the tests, drop a `verification.yaml` somewhere and point `nexus_verification_registry` at it:
+
+```yaml
+version: 1
+
+verifications:
+  - test: py:function:tests.test_solver.test_attenuation
+    verifies: [transport-cartesian]
+    level: L0
+    catches: [FM-07]
+
+implementations:
+  - function: py:function:orpheus.sn.solve_sn
+    implements: [transport-cartesian]
+    confidence: 1.0
+```
+
+Schema errors raise `RegistryError` at build time with a path-and-field context. Missing nodes (test / function / equation) are logged and skipped — the registry can name symbols that don't exist yet without breaking the build.
+
+### Querying the result
+
+Every path above produces the same `EdgeType.TESTS` / `EdgeType.IMPLEMENTS` edges, so the audit tools don't care which source they came from. The `source` attribute distinguishes `pytest.mark.verifies`, `directive`, `registry`, and the fallback `inferred` heuristic.
+
+```python
+from sphinxcontrib.nexus.query import GraphQuery
+from sphinxcontrib.nexus.export import load_sqlite
+
+q = GraphQuery(load_sqlite("docs/_build/html/_nexus/graph.db"))
+
+# Full audit bucketed by V&V level
+audit = q.verification_audit(group_by="level", include_tests=True)
+for level, gaps in audit.grouped.items():
+    print(f"{level}: {len(gaps)} unverified equations")
+print(f"declared: {audit.summary['tests_declared']}  heuristic: {audit.summary['tests_inferred']}")
+
+# Gap hunt
+gaps = q.verification_gaps(module="orpheus.sn", level="L0")
+print(f"untagged tests in orpheus.sn: {len(gaps.untagged_tests)}")
+print(f"unverified L0 equations:     {len(gaps.unverified_equations)}")
+```
+
+Same surface on the MCP side (`verification_audit`, `verification_gaps`) and the CLI (`nexus audit`, `nexus gaps`).
+
 ## Storage
 
 The graph is stored in two formats:
 
-- **SQLite** (primary) — indexed queries, FTS5 full-text search, 0.05ms neighbor lookups
-- **JSON** (secondary) — human-readable, NetworkX node-link format
+- **SQLite** (primary) — indexed queries, FTS5 full-text search, 0.05ms neighbor lookups. Written with a `schema_version` row in the `metadata` table. `load_sqlite` rejects databases written by a future nexus release with `SchemaVersionError`, so downgrading consumers fail loud instead of silently misreading.
+- **JSON** (secondary) — human-readable, NetworkX node-link format.
 
 ## Python API
 

@@ -2,6 +2,76 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.9.0 — 2026-04-13
+
+Session 4 of the ORPHEUS V&V integration: infrastructure hardening.
+No blocking workflow changes — this is QoL, correctness, and
+operator-debuggability work built on top of the v0.8.x behavior.
+Drop-in upgrade from 0.8.2.
+
+### Added
+
+- **SQLite schema version field** (``SCHEMA_VERSION = 1``) written
+  on every ``write_sqlite`` call into the ``metadata`` table.
+  ``load_sqlite`` validates it via ``_check_schema_version`` and
+  raises ``SchemaVersionError`` when the stored version exceeds
+  this build's ``SCHEMA_VERSION``. Missing key is tolerated (pre-
+  schema_version databases are treated as v1). A user-supplied
+  ``schema_version`` in ``graph.metadata`` cannot override the
+  authoritative value.
+- **V&V integration docs** in the README walk through the full
+  declarative-verification pipeline end-to-end: pytest markers →
+  AST metadata → TESTS/IMPLEMENTS edges → audit/gaps queries.
+  Includes copy-paste examples for each of the four declaration
+  paths (markers, directives, registry YAML, query consumption).
+- **Parallel-build regression test**:
+  ``test_parallel_build_matches_serial`` in the fixture harness
+  runs a ``sphinx-build -j 2`` against ``minimal_project`` and
+  pins that it produces the same node set, edge count, and edge-
+  type distribution as a serial build. The extension has always
+  declared ``parallel_write_safe=True`` but the claim was never
+  load-bearing on a test until now.
+
+### Changed
+
+- **``_SPHINX_ROLE_RE`` / docstring-role parser hardened.**
+  Introduces ``_parse_role_target`` that normalizes the raw
+  backtick content into the resolvable target, handling four
+  cases the old parser missed:
+
+  1. ``:role:`!foo``` (suppress-link convention) → returns
+     ``None``, no edge emitted.
+  2. ``:role:`title <target>``` → returns ``target`` (display
+     title is presentation noise).
+  3. ``:role:`~pkg.mod.foo``` → strips the tilde and returns the
+     dotted name. The tilde inside a title-target form is also
+     handled.
+  4. Plain ``:role:`foo``` → returned as-is.
+
+  Before this change, ``:func:`compute fn <pkg.mod.compute>``
+  produced a target id of ``py:function:compute fn <pkg.mod.compute>``
+  — unresolvable garbage — and ``:func:`!noref`` created a
+  ``py:function:noref`` edge despite the suppression intent.
+
+- **``_reload_if_stale`` is now thread-safe and failure-tolerant.**
+  Wraps the ``load_sqlite`` call in a try/except so a corrupt
+  DB, schema-version rejection, or mid-write race keeps the
+  previous in-memory snapshot serving instead of crashing the
+  MCP tool dispatch. A module-level ``threading.Lock`` serializes
+  concurrent reload attempts; a double-check of the mtime under
+  the lock avoids redundant loads. Failure cases log at WARNING
+  level with the DB path and raised exception.
+
+### Notes
+
+- 294 → 316 tests (+22). Split across:
+  - ``test_export.py`` (+6 schema version)
+  - ``test_ast_analyzer.py`` (+9 role-target parse + end-to-end)
+  - ``test_fixture_e2e.py`` (+1 parallel-build equivalence)
+  - ``test_reload.py`` (new file, 6 reload failure / lock tests)
+- No API or schema changes. Session 4 is pure hardening on top
+  of 0.8.2 behavior.
+
 ## 0.8.2 — 2026-04-13
 
 Fixes nexus#3 — re-exported classes appearing as multiple parallel

@@ -25,8 +25,62 @@ from sphinxcontrib.nexus.graph import (
 
 logger = logging.getLogger(__name__)
 
-# Regex for Sphinx cross-reference roles in docstrings
-_SPHINX_ROLE_RE = re.compile(r":(\w+):`~?([^`]+)`")
+# Regex for Sphinx cross-reference roles in docstrings.
+# Captures the role name and the raw content between backticks; the
+# content is parsed further by ``_parse_role_target`` to handle the
+# ``title <target>`` form, leading ``~`` (strip-module display
+# hint), and leading ``!`` (suppress-link convention).
+_SPHINX_ROLE_RE = re.compile(r":(\w+):`([^`]+)`")
+
+# ``title <target>`` form: Sphinx allows a cross-reference role to
+# declare a display title distinct from the target, like
+# ``:func:`display name <pkg.mod.actual>```. The target inside the
+# angle brackets is what we want for graph resolution; the title is
+# presentation noise.
+_ROLE_TITLE_TARGET_RE = re.compile(r"^.*?<(?P<target>[^>]+)>\s*$")
+
+
+def _parse_role_target(raw: str) -> str | None:
+    """Extract the resolvable target from a role-body string.
+
+    ``raw`` is whatever sat between the backticks of a
+    ``:role:`...``` reference. This function normalizes it into
+    the actual target the graph should resolve, or returns
+    ``None`` when the role should be skipped entirely (e.g. the
+    ``!`` suppression form).
+
+    Handles, in order:
+
+    1. ``!foo``   — suppressed link; Sphinx renders it as ``foo``
+       but creates no cross-reference. Return ``None``.
+    2. ``title <target>`` — display-title form; return ``target``.
+    3. ``~pkg.mod.foo`` — strip-module display hint; return
+       ``pkg.mod.foo`` (with the leading ``~`` removed).
+    4. Plain ``foo`` — return as-is.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return None
+
+    # ``!foo`` — suppress-link convention. Sphinx renders the text
+    # but emits no pending_xref, so there's nothing for the graph
+    # to resolve. Drop.
+    if stripped.startswith("!"):
+        return None
+
+    # ``display title <target>`` — dig out the actual target.
+    m = _ROLE_TITLE_TARGET_RE.match(stripped)
+    if m:
+        inner = m.group("target").strip()
+        # The inner target can still carry a ``~`` hint.
+        if inner.startswith("~"):
+            inner = inner[1:]
+        return inner or None
+
+    # Plain target, possibly with a leading ``~`` display hint.
+    if stripped.startswith("~"):
+        return stripped[1:] or None
+    return stripped
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +557,12 @@ class CodeVisitor(ast.NodeVisitor):
             "exc": "exception", "obj": "function",
         }
         for match in _SPHINX_ROLE_RE.finditer(docstring):
-            role, target = match.group(1), match.group(2)
-            target = target.lstrip("~")  # remove tilde prefix
+            role, raw = match.group(1), match.group(2)
+            target = _parse_role_target(raw)
+            if target is None:
+                # ``!foo`` suppression, empty body, or otherwise
+                # unresolvable — skip.
+                continue
 
             if role in ("math", "eq"):
                 # `:math:` and `:eq:` both name an equation label. Skip

@@ -38,25 +38,67 @@ _mcp = FastMCP("nexus", instructions=(
     "theory pages, and external dependencies."
 ))
 
+import threading
+
 # Module-level state set by serve()
 _query: GraphQuery | None = None
 _db_path: Path | None = None
 _project_root: Path | None = None
 _db_mtime: float = 0.0
 
+# Reload coordination: FastMCP may dispatch tool calls concurrently,
+# and the mid-reload state (new ``_query`` assigned but ``_db_mtime``
+# not yet updated) is short but real. The lock serializes the
+# reload path so a second concurrent caller sees the finalized
+# swap, not a torn read.
+_reload_lock = threading.Lock()
+
 
 def _reload_if_stale() -> None:
-    """Re-read the graph DB if it was modified since last load."""
+    """Re-read the graph DB if it was modified since last load.
+
+    Failure-tolerant: if the DB has vanished, become read-errored,
+    or is mid-write at the moment we try to load it (SQLite
+    corruption, schema-version rejection, disk flake), keep the
+    previous in-memory snapshot serving rather than dropping
+    ``_query`` on the floor. Warnings are logged at WARNING level
+    so operators can see something went wrong without the MCP
+    tool calls crashing.
+
+    Thread-safe: a module-level lock serializes the mtime check
+    and the atomic ``_query`` / ``_db_mtime`` swap so concurrent
+    FastMCP tool dispatches can't observe a half-updated state.
+    """
     global _query, _db_mtime
     if _db_path is None:
         return
     try:
         current_mtime = _db_path.stat().st_mtime
-    except OSError:
+    except OSError as e:
+        # DB file missing or inaccessible — keep serving the
+        # previous snapshot. No reload means no change; no warning
+        # on every tool call, just on the reload we couldn't do.
+        logger.debug("Stat failed for %s: %s — skipping reload", _db_path, e)
         return
-    if current_mtime > _db_mtime:
-        kg = load_sqlite(_db_path)
-        _query = GraphQuery(kg)
+    if current_mtime <= _db_mtime:
+        return
+
+    with _reload_lock:
+        # Re-check under the lock: another thread may have already
+        # reloaded to the same mtime.
+        if current_mtime <= _db_mtime:
+            return
+        try:
+            kg = load_sqlite(_db_path)
+            new_query = GraphQuery(kg)
+        except Exception as e:
+            logger.warning(
+                "Nexus reload failed, keeping previous snapshot "
+                "(db=%s, mtime=%s): %s",
+                _db_path, current_mtime, e,
+            )
+            return
+        _query = new_query
         _db_mtime = current_mtime
         logger.info(
             "Reloaded graph: %d nodes, %d edges (db changed on disk)",

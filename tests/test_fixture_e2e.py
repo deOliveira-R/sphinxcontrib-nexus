@@ -404,3 +404,48 @@ def test_no_function_typed_mesh_phantom(fixture_graph):
         if nid.startswith("py:function:") and nid.endswith(".Mesh")
     ]
     assert function_mesh == [], function_mesh
+
+
+# ---------------------------------------------------------------------------
+# Session 4.3 — parallel-build equivalence
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_build_matches_serial(tmp_path_factory):
+    """The extension declares ``parallel_write_safe=True``. This
+    test pins that the declaration is honest: a ``sphinx-build
+    -j 2`` run against the fixture must produce the same node set,
+    edge count, and edge-type distribution as a serial build."""
+    serial_build = tmp_path_factory.mktemp("serial-build")
+    parallel_build = tmp_path_factory.mktemp("parallel-build")
+
+    subprocess.run(
+        [sys.executable, "-m", "sphinx", "-q", "-E",
+         str(FIXTURE), str(serial_build)],
+        check=True,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "sphinx", "-q", "-E", "-j", "2",
+         str(FIXTURE), str(parallel_build)],
+        check=True,
+    )
+
+    serial = load_sqlite(serial_build / "_nexus" / "graph.db").nxgraph
+    parallel = load_sqlite(parallel_build / "_nexus" / "graph.db").nxgraph
+
+    # Same node set.
+    assert set(serial.nodes) == set(parallel.nodes)
+
+    # Same edge-type distribution.
+    from collections import Counter
+
+    def _edge_types(g):
+        return Counter(d.get("type", "") for _, _, d in g.edges(data=True))
+
+    assert _edge_types(serial) == _edge_types(parallel)
+
+    # Same total edge count (the multigraph may have separate
+    # parallel edges with identical types; the counter check above
+    # already covers this, but this gives a cleaner failure
+    # message).
+    assert len(serial.edges) == len(parallel.edges)
