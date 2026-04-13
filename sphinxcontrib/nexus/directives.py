@@ -243,10 +243,15 @@ def apply_pending_edges(
                 else EdgeType.IMPLEMENTS.value
             )
 
-            # Idempotent: skip if an equivalent directive edge already exists.
+            # Skip if ANY explicit edge already links this pair on
+            # the same edge type — registry, marker, a prior replay,
+            # or any future explicit source. Inference-sourced edges
+            # (``source="inferred"``) are weak and don't block the
+            # directive's deterministic assertion from joining them.
             existing = graph.get_edge_data(resolved, eq_id, default={})
             if any(
-                d.get("type") == edge_type and d.get("source") == "directive"
+                d.get("type") == edge_type
+                and d.get("source") not in (None, "inferred")
                 for d in existing.values()
             ):
                 continue

@@ -217,12 +217,18 @@ def write_verifies_edges(g: "nx.MultiDiGraph") -> int:
                     label, node_id, eq_id,
                 )
                 continue
-            # Skip if this exact declared edge already exists (rebuilds
-            # on a pre-populated graph should be idempotent).
+            # Skip if ANY explicit TESTS edge already links this
+            # (test, equation) pair — registry, directive, a prior
+            # run of this pass, or any future explicit source. A
+            # ``source="inferred"`` edge is weak and is allowed to
+            # coexist with the marker-declared edge. This guard
+            # makes the pipeline pass-order irrelevant: whichever
+            # explicit source runs first wins, the later ones are
+            # no-ops.
             existing = g.get_edge_data(node_id, eq_id, default={})
             if any(
                 d.get("type") == EdgeType.TESTS.value
-                and d.get("source") == "pytest.mark.verifies"
+                and d.get("source") not in (None, "inferred")
                 for d in existing.values()
             ):
                 continue

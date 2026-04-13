@@ -656,6 +656,14 @@ class CodeVisitor(ast.NodeVisitor):
         # pytest-marker fields. Function-level markers win over any
         # class- or module-level pytestmark stashed in the scope, so we
         # layer them: module (lowest) → class → function (highest).
+        #
+        # Inherited markers (module and class scope) only propagate to
+        # functions that qualify as tests. A helper like
+        # ``_build_homogeneous_mesh`` living in a test module must NOT
+        # pick up the module's ``pytestmark = pytest.mark.verifies(...)``
+        # — inheriting it would write spurious TESTS edges from the
+        # helper and inflate declared coverage. Function-level
+        # decorators are always respected because they're explicit.
         meta: dict[str, object] = {
             "file_path": self._file_path,
             "lineno": node.lineno,
@@ -664,11 +672,10 @@ class CodeVisitor(ast.NodeVisitor):
         }
         if is_test:
             meta["is_test"] = True
-
-        if self._module_pytest_meta:
-            meta.update(self._module_pytest_meta)
-        if self._current_class_pytest_meta:
-            meta.update(self._current_class_pytest_meta)
+            if self._module_pytest_meta:
+                meta.update(self._module_pytest_meta)
+            if self._current_class_pytest_meta:
+                meta.update(self._current_class_pytest_meta)
         if node.decorator_list:
             meta["decorators"] = tuple(
                 _render_decorator(dec) for dec in node.decorator_list

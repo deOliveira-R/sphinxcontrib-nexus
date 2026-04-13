@@ -178,12 +178,16 @@ def _apply_verifications(
                     item_ctx, label, eq_id,
                 )
                 continue
-            # Idempotent: skip if an equivalent registry edge already
-            # exists for this (test, equation) pair.
+            # Skip if ANY explicit TESTS edge already links this
+            # (test, equation) pair — registry, marker, directive,
+            # or any future "explicit" source. An edge counts as
+            # explicit when its ``source`` is set and is not the
+            # string ``"inferred"``. Inference-sourced edges are
+            # weaker and the registry deliberately overrides them.
             existing = g.get_edge_data(test_id, eq_id, default={})
             if any(
                 d.get("type") == EdgeType.TESTS.value
-                and d.get("source") == "registry"
+                and d.get("source") not in (None, "inferred")
                 for d in existing.values()
             ):
                 continue
@@ -241,10 +245,15 @@ def _apply_implementations(
                     item_ctx, label, eq_id,
                 )
                 continue
+            # Skip if ANY explicit IMPLEMENTS edge already links the
+            # pair — registry re-runs, directive-sourced edges, or
+            # future sources are all honored. Inference-sourced edges
+            # (``source="inferred"``) are weak and the registry's
+            # deterministic assertion is allowed to coexist with them.
             existing = g.get_edge_data(fn_id, eq_id, default={})
             if any(
                 d.get("type") == EdgeType.IMPLEMENTS.value
-                and d.get("source") == "registry"
+                and d.get("source") not in (None, "inferred")
                 for d in existing.values()
             ):
                 continue

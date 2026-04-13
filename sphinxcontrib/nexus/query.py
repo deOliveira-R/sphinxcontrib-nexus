@@ -1021,12 +1021,28 @@ class GraphQuery:
         # Index 3: code → direct test callers (1-hop heuristic).
         code_to_1hop_tests: dict[str, list[str]] = {}
 
+        # Query-time dedup: multiple explicit edges can link the same
+        # ``(source, target)`` pair — e.g. a registry entry that was
+        # written before write-time dedup was hardened, or a graph
+        # loaded from an older nexus version. Track seen pairs per
+        # edge-type so each (code, equation) or (test, equation)
+        # relationship contributes at most one entry to the coverage
+        # result.
+        _implements_seen: set[tuple[str, str]] = set()
+        _declared_seen: set[tuple[str, str]] = set()
+
         for src, tgt, data in self._g.edges(data=True):
             etype = data.get("type", "")
             if etype == "implements":
+                if (src, tgt) in _implements_seen:
+                    continue
+                _implements_seen.add((src, tgt))
                 eq_to_code.setdefault(tgt, []).append(src)
                 code_to_eq.setdefault(src, []).append(tgt)
             elif etype == "tests":
+                if (src, tgt) in _declared_seen:
+                    continue
+                _declared_seen.add((src, tgt))
                 declared_tests.setdefault(tgt, []).append(
                     TestReference(
                         id=src,

@@ -150,9 +150,13 @@ def test_init_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _visit_source(source: str, module_name: str = "testmod") -> CodeVisitor:
+def _visit_source(
+    source: str,
+    module_name: str = "testmod",
+    is_test_file: bool = False,
+) -> CodeVisitor:
     tree = ast.parse(source)
-    visitor = CodeVisitor(module_name, "test.py")
+    visitor = CodeVisitor(module_name, "test.py", is_test_file=is_test_file)
     visitor.visit(tree)
     return visitor
 
@@ -429,7 +433,7 @@ def test_class_level_decorator_propagates_to_methods():
         "class TestBalance:\n"
         "    def test_zero_residual(self): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     node = _find_node(
         v, "py:method:testmod.TestBalance.test_zero_residual"
     )
@@ -446,7 +450,7 @@ def test_method_level_decorator_overrides_class():
         "    def test_integration(self): pass\n"
         "    def test_inherits(self): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     overridden = _find_node(
         v, "py:method:testmod.TestBalance.test_integration"
     )
@@ -465,7 +469,7 @@ def test_class_pytestmark_assignment_propagates():
         "    pytestmark = pytest.mark.l2\n"
         "    def test_one(self): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     node = _find_node(v, "py:method:testmod.TestStuff.test_one")
     assert node.metadata["vv_level"] == "L2"
 
@@ -478,7 +482,7 @@ def test_module_pytestmark_propagates():
         "def test_one(): pass\n"
         "def test_two(): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     for name in ("test_one", "test_two"):
         node = _find_node(v, f"py:function:testmod.{name}")
         assert node.metadata["vv_level"] == "L2", name
@@ -491,7 +495,7 @@ def test_module_pytestmark_list_form():
         "\n"
         "def test_one(): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     node = _find_node(v, "py:function:testmod.test_one")
     assert node.metadata["vv_level"] == "L1"
     assert node.metadata["slow"] is True
@@ -505,9 +509,99 @@ def test_function_marker_beats_module_pytestmark():
         "@pytest.mark.l3\n"
         "def test_strict(): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     node = _find_node(v, "py:function:testmod.test_strict")
     assert node.metadata["vv_level"] == "L3"
+
+
+def test_module_pytestmark_does_not_propagate_to_helpers(tmp_path):
+    """Regression for nexus#8.
+
+    Module-level ``pytestmark = pytest.mark.verifies("eq-1")`` must
+    ONLY tag test functions (``is_test=True``). Private helpers
+    like ``_build_homogeneous_mesh`` that happen to live in the same
+    file must not inherit ``verifies`` metadata — otherwise
+    ``write_verifies_edges`` writes spurious TESTS edges and the
+    declared-coverage count inflates.
+
+    We run this through ``analyze_directory`` (not ``_visit_source``
+    alone) so the ``is_test_file`` detection fires correctly via
+    ``nexus_test_patterns``.
+    """
+    test_file = tmp_path / "tests" / "test_solver.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "import pytest\n"
+        "pytestmark = pytest.mark.verifies('eq-transport')\n"
+        "\n"
+        "def _build_homogeneous_mesh():\n"
+        "    return object()\n"
+        "\n"
+        "def test_transport():\n"
+        "    mesh = _build_homogeneous_mesh()\n"
+        "    assert mesh is not None\n"
+    )
+    graph = analyze_directory(tmp_path, exclude_patterns=[])
+    nodes = dict(graph.nxgraph.nodes(data=True))
+
+    test_node = nodes["py:function:tests.test_solver.test_transport"]
+    helper_node = nodes["py:function:tests.test_solver._build_homogeneous_mesh"]
+
+    # The real test inherits the module-level mark.
+    assert test_node.get("verifies") == ("eq-transport",)
+    # The helper MUST NOT — it's is_test=False.
+    assert "verifies" not in helper_node, (
+        f"helper function inherited module pytestmark: {helper_node}"
+    )
+    assert helper_node.get("is_test") is not True
+
+
+def test_module_pytestmark_vv_level_does_not_propagate_to_helpers(tmp_path):
+    test_file = tmp_path / "tests" / "test_solver.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "import pytest\n"
+        "pytestmark = pytest.mark.l1\n"
+        "\n"
+        "def _shared_setup():\n"
+        "    pass\n"
+        "\n"
+        "def test_it():\n"
+        "    _shared_setup()\n"
+    )
+    graph = analyze_directory(tmp_path, exclude_patterns=[])
+    nodes = dict(graph.nxgraph.nodes(data=True))
+
+    assert nodes["py:function:tests.test_solver.test_it"].get("vv_level") == "L1"
+    # Helper must have no vv_level from the module scope.
+    helper = nodes["py:function:tests.test_solver._shared_setup"]
+    assert "vv_level" not in helper, helper
+
+
+def test_class_level_mark_does_not_propagate_to_private_methods(tmp_path):
+    test_file = tmp_path / "tests" / "test_solver.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "import pytest\n"
+        "\n"
+        "@pytest.mark.l0\n"
+        "class TestSolver:\n"
+        "    def _shared_fixture(self):\n"
+        "        return 1\n"
+        "\n"
+        "    def test_something(self):\n"
+        "        assert self._shared_fixture() == 1\n"
+    )
+    graph = analyze_directory(tmp_path, exclude_patterns=[])
+    nodes = dict(graph.nxgraph.nodes(data=True))
+
+    assert nodes[
+        "py:method:tests.test_solver.TestSolver.test_something"
+    ].get("vv_level") == "L0"
+    helper = nodes[
+        "py:method:tests.test_solver.TestSolver._shared_fixture"
+    ]
+    assert "vv_level" not in helper, helper
 
 
 def test_nested_class_does_not_leak_markers_upward():
@@ -520,7 +614,7 @@ def test_nested_class_does_not_leak_markers_upward():
         "        def test_inside(self): pass\n"
         "    def test_outside(self): pass\n"
     )
-    v = _visit_source(src)
+    v = _visit_source(src, is_test_file=True)
     inner = _find_node(v, "py:method:testmod.Outer.Inner.test_inside")
     outer = _find_node(v, "py:method:testmod.Outer.test_outside")
     assert inner.metadata["vv_level"] == "L2"
