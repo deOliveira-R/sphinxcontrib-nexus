@@ -311,6 +311,19 @@ def setup(app: Sphinx) -> dict[str, Any]:
 
     return {
         "version": __version__,
+        # Parallel-safe per a serial-vs-``-j N`` round-trip audit:
+        # both modes produce bit-identical node and edge sets on
+        # the ``minimal_project`` fixture (Session 4.3). The AST
+        # analysis runs once in ``build-finished`` on the main
+        # process AFTER all worker envs have been merged, so the
+        # per-worker env state that Sphinx parallelizes never
+        # touches the graph we ultimately write. The directive
+        # layer's ``env-merge-info`` handler correctly folds
+        # pending-edge entries from worker envs.
+        #
+        # A regression test in ``tests/test_fixture_e2e.py``
+        # builds the fixture with ``-j 2`` and asserts the result
+        # matches the serial build.
         "parallel_read_safe": True,
         "parallel_write_safe": True,
     }
