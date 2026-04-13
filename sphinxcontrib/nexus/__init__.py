@@ -166,6 +166,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # then apply any non-LLM verification registries. Both paths run
     # BEFORE ``_infer_implements`` so the token-intersection heuristic
     # honors every explicit edge as "already-known".
+    from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
         write_verifies_edges,
@@ -175,6 +176,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         load_registry,
     )
     write_verifies_edges(graph.nxgraph)
+    apply_pending_edges(app.env, graph.nxgraph)
 
     registry_paths = list(
         getattr(app.config, "nexus_verification_registry", []) or []
@@ -285,6 +287,9 @@ def setup(app: Sphinx) -> dict[str, Any]:
     app.add_config_value("nexus_infer_implements", True, "env")
     app.add_config_value("nexus_verification_registry", [], "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
+
+    from sphinxcontrib.nexus import directives as _directives_module
+    _directives_module.register(app)
 
     app.connect("env-check-consistency", _on_env_check_consistency)
     app.connect("build-finished", _on_build_finished)
