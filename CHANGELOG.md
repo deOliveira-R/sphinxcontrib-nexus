@@ -2,6 +2,89 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.8.0 — 2026-04-13
+
+Session 3 of the ORPHEUS V&V integration: non-LLM verification
+registry, Sphinx directives for declarative edges, and extended
+audit/gaps surface.
+
+### Added
+
+- **Non-LLM verification registry** (``sphinxcontrib.nexus.registry``).
+  A deterministic YAML-driven path for declaring ``TESTS`` and
+  ``IMPLEMENTS`` edges independent of the LLM-powered
+  ``ingest.py``. Schema is ``version: 1`` with ``verifications``
+  and ``implementations`` lists; each entry names a test or function
+  id and the equation labels it covers. Registry edges are tagged
+  ``source="registry"`` with confidence 1.0 and honored by the
+  ``_infer_implements`` guard. Missing nodes log warnings and skip
+  rather than raising. Loader is idempotent.
+- **Config: ``nexus_verification_registry``** (list of paths
+  relative to ``conf.py``, default ``[]``). Paths point at YAML
+  files loaded during ``_run_ast_analysis``, after the AST merge
+  and before ``_infer_implements``.
+- **Sphinx directives** ``.. verifies:: <label> :by: <symbol>`` and
+  ``.. implements:: <label> :by: <symbol>``. Declarative edges
+  expressed in theory docs rather than in test code or YAML. The
+  ``:by:`` option accepts a bare dotted name
+  (``orpheus.sn.solve_sn``) or an already-prefixed node id; if
+  omitted, the directive falls back to ``env.ref_context``
+  inspection so usage nested inside ``.. py:function::`` /
+  ``.. autofunction::`` picks up the signature automatically.
+- **Incremental-build-safe directive queue.** The pending-edge
+  registry is keyed by docname and persists across incremental
+  builds. An ``env-purge-doc`` handler drops stale entries when a
+  doctree is about to be re-parsed; an ``env-merge-info`` handler
+  folds parallel-build worker envs back into the main env. Fixes
+  the same caching trap that bit the 0.7.0 upgrade.
+- **``verification_audit`` grouping**. The query method and its MCP
+  / CLI exposures gain two keyword-only arguments:
+  ``group_by`` (one of ``"level"`` / ``"module"`` / ``"equation"``)
+  which buckets the flat ``gaps`` list into a dict keyed by the
+  chosen dimension; and ``include_tests`` which populates
+  ``summary["tests_declared"]`` / ``summary["tests_inferred"]`` so
+  consumers can weigh how much verification is declarative vs.
+  heuristic.
+- **``verification_gaps``** — a new query method surfacing three
+  buckets:
+  - ``untagged_tests`` — test nodes with no ``vv_level`` marker
+  - ``unverified_equations`` — equations in the
+    ``implemented`` / ``documented`` bucket
+  - ``missing_err_catchers`` — members of an optional
+    ``error_catalog`` set that no test's ``catches`` metadata
+    references
+  Filters by ``module`` and ``level``. Exposed as both a new MCP
+  tool and a ``nexus gaps`` CLI subcommand.
+- **``tests/fixtures/minimal_project/registry.yaml``** and a matching
+  directive block in ``theory/solver.rst`` — the e2e harness pins
+  both the registry pipeline and the directive lifecycle against a
+  real ``sphinx-build``.
+
+### Changed
+
+- **MCP tool count: 24 → 25** (``verification_gaps`` added).
+- **CLI subcommand count: 28 → 29** (``nexus gaps`` added).
+- ``nexus_verification_registry`` paths resolve relative to
+  ``app.srcdir`` (the directory holding ``conf.py``) so config
+  entries colocated with theory docs work naturally. Users with a
+  standard ``docs/conf.py`` layout can point at a repo-root
+  registry via ``"../verification.yaml"``.
+- ``verification_audit`` raises ``ValueError`` on an invalid
+  ``group_by`` instead of silently ignoring it.
+
+### Notes
+
+- 251 → 272 tests (+21). Split across ``test_registry.py`` (new,
+  17), ``test_directives.py`` (new, 20), extensions to
+  ``test_query.py`` (+12), and the fixture harness (+9).
+- ``.. verified-by::`` — the third directive the handoff spec
+  listed — is NOT in this release. It would need "enclosing
+  equation" detection, which is a different Sphinx lifecycle
+  problem from py-object detection. Users can write
+  ``.. verifies:: label :by: test`` from either side, or use the
+  registry YAML, to cover the same relationship.
+- PyYAML joins the core dependencies for the registry loader.
+
 ## 0.7.0 — 2026-04-13
 
 Session 2 of the ORPHEUS V&V integration: pytest-marker ingestion,
