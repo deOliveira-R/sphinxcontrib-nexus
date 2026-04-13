@@ -399,3 +399,44 @@ def test_analyze_directory(tmp_path):
     # alpha.run calls beta.compute
     call_targets = {t for s, t in calls if "alpha.run" in s}
     assert "py:function:beta.compute" in call_targets
+
+
+def test_exclude_patterns_match_nested_paths(tmp_path):
+    """`tests/*` and `tests/**` must exclude files at arbitrary depth,
+    not just direct children. Historically this was broken because the
+    analyzer used ``Path.match`` which only matches the path tail."""
+    (tmp_path / "src.py").write_text("def keeper(): pass\n")
+    nested = tmp_path / "tests" / "unit" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "test_foo.py").write_text("def test_one(): pass\n")
+    (tmp_path / "tests" / "test_top.py").write_text("def test_two(): pass\n")
+
+    graph = analyze_directory(tmp_path, exclude_patterns=["tests/*"])
+    nids = set(graph.nxgraph.nodes)
+
+    assert "py:function:src.keeper" in nids
+    # Nested test file must NOT leak through.
+    assert not any("test_one" in n for n in nids)
+    # Top-level test file also excluded.
+    assert not any("test_two" in n for n in nids)
+
+
+def test_exclude_patterns_fnmatch_semantics(tmp_path):
+    """Exclusion patterns are evaluated with fnmatch against the POSIX
+    path relative to ``source_dir`` — so patterns like ``docs/*`` or
+    ``*/vendor/*`` work as users would expect."""
+    (tmp_path / "a.py").write_text("def a(): pass\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "conf.py").write_text("project = 'x'\n")
+    pkg = tmp_path / "pkg" / "vendor"
+    pkg.mkdir(parents=True)
+    (pkg / "thirdparty.py").write_text("def vendored(): pass\n")
+
+    graph = analyze_directory(
+        tmp_path, exclude_patterns=["docs/*", "*/vendor/*"]
+    )
+    nids = set(graph.nxgraph.nodes)
+
+    assert "py:function:a.a" in nids
+    assert not any("vendored" in n for n in nids)
+    assert not any("conf" in n and "docs" in n for n in nids)

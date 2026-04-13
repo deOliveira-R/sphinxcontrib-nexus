@@ -62,6 +62,40 @@ def _finalize_graph(graph: Any) -> None:
             attrs["domain"] = parts[0] if len(parts) >= 2 else "py"
 
 
+# Non-source patterns that are always excluded from AST analysis,
+# independent of user config.
+_BASE_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    "docs/*",
+    ".venv/*",
+    "__pycache__/*",
+)
+
+# Default glob patterns (POSIX-style, matched against the path relative
+# to each source dir via fnmatch) used to identify Python test modules.
+DEFAULT_TEST_PATTERNS: tuple[str, ...] = (
+    "tests/*",
+    "*/tests/*",
+    "test_*.py",
+    "*/test_*.py",
+)
+
+
+def _compute_exclude_patterns(
+    analyze_tests: bool,
+    test_patterns: list[str],
+) -> list[str]:
+    """Build the exclusion list for ``analyze_directory``.
+
+    Base exclusions (docs, venv, __pycache__) are always applied. If
+    ``analyze_tests`` is False, ``test_patterns`` is appended so test
+    modules are skipped entirely.
+    """
+    patterns = list(_BASE_EXCLUDE_PATTERNS)
+    if not analyze_tests:
+        patterns.extend(test_patterns)
+    return patterns
+
+
 def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     """Run AST analysis on project source and merge into the doc graph."""
     import sys
@@ -97,18 +131,22 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     else:
         source_dirs = [project_root]
 
-    # Scan main source directories (excluding tests/ and docs/)
+    test_patterns = list(app.config.nexus_test_patterns)
+    analyze_tests = bool(app.config.nexus_analyze_tests)
+    exclude_patterns = _compute_exclude_patterns(analyze_tests, test_patterns)
+
+    # Scan main source directories.
     for src_dir in source_dirs:
         ast_graph = analyze_directory(
             source_dir=src_dir,
             project_root=project_root,
             sys_path_dirs=source_dirs,
-            exclude_patterns=["tests/*", "docs/*", ".venv/*", "__pycache__/*"],
+            exclude_patterns=exclude_patterns,
         )
         merge_graphs(graph, ast_graph)
 
-    # Scan extra directories (e.g. tests/) — no tests/* exclusion since
-    # these are explicitly requested by the user via nexus_extra_source_dirs
+    # Scan user-specified extra dirs (e.g. out-of-tree source roots).
+    # Test exclusion still follows the nexus_analyze_tests gate.
     all_sys_paths = source_dirs[:]
     for extra in app.config.nexus_extra_source_dirs:
         extra_path = (project_root / extra).resolve()
@@ -120,7 +158,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
             source_dir=extra_path,
             project_root=project_root,
             sys_path_dirs=all_sys_paths,
-            exclude_patterns=["docs/*", ".venv/*", "__pycache__/*"],
+            exclude_patterns=exclude_patterns,
         )
         merge_graphs(graph, ast_graph)
 
@@ -203,6 +241,10 @@ def setup(app: Sphinx) -> dict[str, Any]:
     app.add_config_value("nexus_ast_analyze", True, "env")
     app.add_config_value("nexus_extra_source_dirs", [], "env")
     app.add_config_value("nexus_max_viz_nodes", 300, "env")
+    app.add_config_value("nexus_analyze_tests", True, "env")
+    app.add_config_value(
+        "nexus_test_patterns", list(DEFAULT_TEST_PATTERNS), "env"
+    )
     app.add_directive("nexus-graph", NexusGraphDirective)
 
     app.connect("env-check-consistency", _on_env_check_consistency)

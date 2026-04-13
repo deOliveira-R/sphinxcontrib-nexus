@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -583,8 +584,11 @@ def analyze_directory(
         # Skip files under excluded directories
         if _skip_dirs & set(filepath.parts):
             continue
-        rel = str(filepath.relative_to(source_dir))
-        if any(filepath.match(pat) for pat in exclude_patterns):
+        rel = filepath.relative_to(source_dir).as_posix()
+        # Match exclude patterns against the relative POSIX path, not the
+        # path tail (Path.match anchors to the right, which silently
+        # skips nested matches for patterns like ``tests/*``).
+        if any(fnmatch(rel, pat) for pat in exclude_patterns):
             continue
 
         try:
