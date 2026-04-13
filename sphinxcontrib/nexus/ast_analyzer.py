@@ -312,21 +312,42 @@ class CodeVisitor(ast.NodeVisitor):
         return f"py:{node_type}:{name}"
 
     def _add_docstring_refs(self, node: ast.AST, source_id: str) -> None:
-        """Extract Sphinx role references from docstring."""
+        """Extract Sphinx role references from docstring.
+
+        Python-domain roles produce ``py:<objtype>:<name>`` target IDs that
+        reconcile against AST-discovered symbols. The math roles ``:math:``
+        and ``:eq:`` instead point at Sphinx math equation labels in the
+        ``math:equation:<label>`` namespace, which is what Sphinx's math
+        extractor produces for ``.. math:: :label: foo`` blocks.
+        """
         docstring = ast.get_docstring(node)
         if not docstring:
             return
+        # Python-domain role → objtype
+        py_type_map = {
+            "func": "function", "meth": "method", "class": "class",
+            "mod": "module", "attr": "attribute", "data": "data",
+            "exc": "exception", "obj": "function",
+        }
         for match in _SPHINX_ROLE_RE.finditer(docstring):
             role, target = match.group(1), match.group(2)
             target = target.lstrip("~")  # remove tilde prefix
-            resolved = self._imports.resolve(target)
-            # Map role to node type prefix
-            type_map = {
-                "func": "function", "meth": "method", "class": "class",
-                "mod": "module", "attr": "attribute", "data": "data",
-            }
-            obj_type = type_map.get(role, role)
-            target_id = f"py:{obj_type}:{resolved}"
+
+            if role in ("math", "eq"):
+                # `:math:` and `:eq:` both name an equation label. Skip
+                # LaTeX-source targets (which contain backslashes or
+                # braces) — those are inline math, not label references.
+                if any(c in target for c in "\\{}"):
+                    continue
+                target_id = f"math:equation:{target}"
+            elif role in py_type_map:
+                resolved = self._imports.resolve(target)
+                target_id = f"py:{py_type_map[role]}:{resolved}"
+            else:
+                # Unknown or unsupported role — skip rather than forge a
+                # bogus `py:<role>:...` node that can never resolve.
+                continue
+
             self.edges.append(GraphEdge(
                 source=source_id,
                 target=target_id,

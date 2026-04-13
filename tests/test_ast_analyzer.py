@@ -289,6 +289,74 @@ def test_docstring_tilde_role():
     assert "py:function:mymod.compute" in targets
 
 
+def test_docstring_math_role_targets_equation_namespace():
+    """`:math:` in a docstring refers to a Sphinx math equation label,
+    not a Python object. Target ID must be math:equation:<label>."""
+    v = _visit_source(
+        'def solve_cp():\n'
+        '    """Implements :math:`transport-cartesian`."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert "math:equation:transport-cartesian" in targets
+    assert "py:math:transport-cartesian" not in targets
+
+
+def test_docstring_eq_role_targets_equation_namespace():
+    v = _visit_source(
+        'def solve():\n'
+        '    """See :eq:`boltzmann`."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert "math:equation:boltzmann" in targets
+    assert "py:eq:boltzmann" not in targets
+
+
+def test_docstring_math_role_skips_latex_source():
+    """A `:math:` role whose target is LaTeX source (not a label) must
+    not produce a bogus equation reference. We use a raw docstring in
+    the fixture so the backslashes survive Python parsing."""
+    v = _visit_source(
+        'def foo():\n'
+        '    r""":math:`\\alpha + \\beta`."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert not any(t.startswith("math:equation:") for t in targets)
+
+
+def test_docstring_math_role_skips_braced_latex():
+    v = _visit_source(
+        'def foo():\n'
+        '    """:math:`{n}`."""\n'
+        '    pass'
+    )
+    edges = _edge_tuples(v, "references")
+    targets = {e[1] for e in edges}
+    assert not any(t.startswith("math:equation:") for t in targets)
+
+
+def test_docstring_all_python_roles_stay_in_py_namespace():
+    src = (
+        'def f():\n'
+        '    """:func:`g` :meth:`C.m` :class:`C` :mod:`pkg` '
+        ':attr:`x` :data:`D`."""\n'
+        '    pass'
+    )
+    v = _visit_source(src)
+    targets = {e[1] for e in _edge_tuples(v, "references")}
+    assert "py:function:g" in targets
+    assert "py:method:C.m" in targets
+    assert "py:class:C" in targets
+    assert "py:module:pkg" in targets
+    assert "py:attribute:x" in targets
+    assert "py:data:D" in targets
+
+
 # ---------------------------------------------------------------------------
 # analyze_directory integration test
 # ---------------------------------------------------------------------------
