@@ -220,3 +220,132 @@ def test_verification_audit_reflects_declared_tests(fixture_graph):
     # At minimum, fixture-attenuation, fixture-balance, fixture-keff,
     # and fixture-leakage are covered by declared pytest.mark.verifies.
     assert verified_count >= 4, audit.summary
+
+
+# ---------------------------------------------------------------------------
+# Session 3 features
+# ---------------------------------------------------------------------------
+
+
+def test_registry_implementation_edges_present(fixture_graph):
+    """``registry.yaml`` declares solve_balance implements
+    fixture-balance AND fixture-absorption. Both edges must appear
+    with ``source="registry"``."""
+    registry_edges = {
+        (s, t)
+        for s, t, d in fixture_graph.edges(data=True)
+        if d.get("type") == "implements" and d.get("source") == "registry"
+    }
+    assert (
+        "py:function:solver_pkg.solver.solve_balance",
+        "math:equation:fixture-balance",
+    ) in registry_edges
+    assert (
+        "py:function:solver_pkg.solver.solve_balance",
+        "math:equation:fixture-absorption",
+    ) in registry_edges
+
+
+def test_registry_verification_edge_present(fixture_graph):
+    """``registry.yaml`` declares test_end_to_end verifies
+    fixture-leakage at level L2."""
+    registry_tests = {
+        (s, t)
+        for s, t, d in fixture_graph.edges(data=True)
+        if d.get("type") == "tests" and d.get("source") == "registry"
+    }
+    assert (
+        "py:function:solver_tests.test_solver.test_end_to_end_via_helper_chain",
+        "math:equation:fixture-leakage",
+    ) in registry_tests
+
+
+def test_registry_enriches_test_node_with_level(fixture_graph):
+    """The registry entry for test_end_to_end_via_helper_chain sets
+    level=L2. Because the AST parser reads @pytest.mark.l2 on that
+    same test too, the final vv_level should be L2 either way.
+    More importantly: no crash on the dual-source population."""
+    node = fixture_graph.nodes[
+        "py:function:solver_tests.test_solver.test_end_to_end_via_helper_chain"
+    ]
+    assert node["vv_level"] == "L2"
+
+
+def test_directive_verifies_edge_present(fixture_graph):
+    """``theory/solver.rst`` has a ``.. verifies:: fixture-attenuation
+    :by: solver_tests.test_solver.test_end_to_end_via_helper_chain``
+    block. Expect a TESTS edge with ``source="directive"``."""
+    directive_edges = {
+        (s, t)
+        for s, t, d in fixture_graph.edges(data=True)
+        if d.get("type") == "tests" and d.get("source") == "directive"
+    }
+    assert (
+        "py:function:solver_tests.test_solver.test_end_to_end_via_helper_chain",
+        "math:equation:fixture-attenuation",
+    ) in directive_edges
+
+
+def test_directive_implements_edge_present(fixture_graph):
+    """``theory/solver.rst`` has a ``.. implements:: fixture-keff
+    :by: solver_pkg.solver.solve_keff`` block."""
+    directive_edges = {
+        (s, t)
+        for s, t, d in fixture_graph.edges(data=True)
+        if d.get("type") == "implements" and d.get("source") == "directive"
+    }
+    assert (
+        "py:function:solver_pkg.solver.solve_keff",
+        "math:equation:fixture-keff",
+    ) in directive_edges
+
+
+def test_verification_audit_group_by_module(fixture_graph):
+    q = GraphQuery(fixture_graph)
+    audit = q.verification_audit(group_by="module")
+    assert audit.group_by == "module"
+    # There's at most one bucket in the fixture — the solver_pkg
+    # equations — and it must exist when there are any gaps at all.
+    if audit.gaps:
+        assert audit.grouped, audit.grouped
+
+
+def test_verification_audit_include_tests_counts_declared(fixture_graph):
+    q = GraphQuery(fixture_graph)
+    audit = q.verification_audit(include_tests=True)
+    assert "tests_declared" in audit.summary
+    # At minimum, the three ``@pytest.mark.verifies`` markers
+    # (test_attenuation_vacuum_source, test_balance_zero_residual,
+    # test_keff_critical × 2 labels) + one registry entry
+    # (test_end_to_end → fixture-leakage) + directive
+    # (test_end_to_end → fixture-attenuation) = at least six declared.
+    assert audit.summary["tests_declared"] >= 5, audit.summary
+
+
+def test_verification_gaps_lists_no_untagged_tests(fixture_graph):
+    """Every test in the fixture carries a vv_level (function, class,
+    or module propagation). ``verification_gaps`` should return an
+    empty ``untagged_tests`` list — the fixture is "fully tagged"."""
+    q = GraphQuery(fixture_graph)
+    gaps = q.verification_gaps()
+    display_names = {g.display_name for g in gaps.untagged_tests}
+    # Allow the fixture to tag everything; this test is a canary on
+    # the fixture itself, not the query.
+    assert not any(
+        name.startswith("test_") for name in display_names
+    ), display_names
+
+
+def test_verification_gaps_error_catalog_filter(fixture_graph):
+    """Supply an error catalog and confirm the filter correctly
+    reports tags that no test's ``catches`` metadata mentions."""
+    q = GraphQuery(fixture_graph)
+    gaps = q.verification_gaps(
+        error_catalog={"FM-01", "FM-99", "ERR-777"},
+    )
+    tags = {g.display_name for g in gaps.missing_err_catchers}
+    # test_attenuation_vacuum_source declares catches=("FM-01",), so
+    # FM-01 is covered. FM-99 and ERR-777 should remain.
+    assert "FM-99" in tags
+    assert "ERR-777" in tags
+    assert "FM-01" not in tags

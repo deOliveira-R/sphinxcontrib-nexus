@@ -181,8 +181,14 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     registry_paths = list(
         getattr(app.config, "nexus_verification_registry", []) or []
     )
+    # Paths are resolved relative to ``app.srcdir`` — the directory
+    # that holds ``conf.py``. This matches how Sphinx handles most
+    # config-driven paths and lets users colocate their registry with
+    # the theory docs that reference it. For projects where the
+    # registry lives above ``docs/``, ``"../verification.yaml"`` works.
+    srcdir = Path(app.srcdir)
     for entry in registry_paths:
-        rpath = (project_root / entry).resolve()
+        rpath = (srcdir / entry).resolve()
         if not rpath.is_file():
             logger.warning(
                 "nexus_verification_registry: %s not found, skipping",

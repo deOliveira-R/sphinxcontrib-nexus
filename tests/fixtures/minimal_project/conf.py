@@ -21,3 +21,7 @@ nexus_ast_analyze = True
 nexus_extra_source_dirs = ["solver_pkg", "solver_tests"]
 nexus_analyze_tests = True
 nexus_test_patterns = ["solver_tests/*", "*/solver_tests/*", "test_*.py"]
+
+# Session 3: registry loader — applies explicit verification and
+# implementation edges before the inference heuristic runs.
+nexus_verification_registry = ["registry.yaml"]
