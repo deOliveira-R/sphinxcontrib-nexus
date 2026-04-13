@@ -58,6 +58,9 @@ nexus visualize --db graph.db            # opens HTML graph explorer in browser
 | `nexus_output` | `_nexus` | Output directory relative to build output |
 | `nexus_ast_analyze` | `True` | Run AST analysis during Sphinx build |
 | `nexus_max_viz_nodes` | `300` | Max nodes in auto-generated graph.html |
+| `nexus_extra_source_dirs` | `[]` | Extra directories (relative to project root) to analyze in addition to autodetected source roots. Useful for out-of-tree test suites or separate module roots. |
+| `nexus_analyze_tests` | `True` | Whether Python test modules are merged into the graph. Set to `False` to exclude them entirely (e.g. to keep coverage numbers focused on production code). |
+| `nexus_test_patterns` | `["tests/*", "*/tests/*", "test_*.py", "*/test_*.py"]` | Glob patterns (POSIX, evaluated with `fnmatch` against the path relative to each source dir) identifying Python test modules. Used both by `nexus_analyze_tests=False` exclusion and by the `is_test` flag on function nodes — a function is marked as a test only when its name follows the `test`/`test_*` convention **and** it lives in a file matching one of these patterns. |
 
 ## Supported Project Layouts
 
@@ -70,7 +73,7 @@ Nexus works with any Python project:
 
 ## What the Graph Contains
 
-### Node Types (16)
+### Node Types (14)
 
 | Type | Source | Example |
 |------|--------|---------|
@@ -89,7 +92,7 @@ Nexus works with any Python project:
 | `external` | Auto-detected | stdlib, builtins, installed packages (numpy, scipy, ...) |
 | `unresolved` | Auto-detected | Referenced but not documented symbols |
 
-### Edge Types (13)
+### Edge Types (12)
 
 | Edge | Meaning | Source |
 |------|---------|--------|
@@ -106,12 +109,14 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (20)
+## MCP Tools (24)
 
 ### Exploration
 - **`query`** — keyword search across node names
 - **`context`** — 360-degree view of a symbol (all connections grouped by type)
 - **`neighbors`** — direct connections with direction and type filtering
+- **`callers`** — functions that call a given node (optionally transitive)
+- **`callees`** — functions called by a given node (optionally transitive)
 - **`shortest_path`** — how two concepts connect
 - **`god_nodes`** — most connected nodes (entry points)
 - **`stats`** — graph-level statistics
@@ -127,13 +132,14 @@ Nexus works with any Python project:
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability
-- **`verification_coverage`** — equation → code → test coverage map
+- **`verification_coverage`** — equation → code → test coverage map (supports `limit`/`offset` pagination)
+- **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list
 - **`staleness`** — detect docs that drifted from code
 - **`session_briefing`** — AI agent context restoration
 - **`trace_error`** — trace from failing test to equations on call path
 - **`migration_plan`** — plan dependency migration with phased blast radius
 - **`ingest`** — LLM-powered paper/PDF ingestion into the graph
-- **`processes`** — detect named execution flows through the codebase
+- **`processes`** — detect named execution flows through the codebase (supports `limit`/`offset` pagination)
 
 ## MCP Resources (4)
 
@@ -144,7 +150,7 @@ Nexus works with any Python project:
 | `nexus://graph/schema` | Node types, edge types, ID format |
 | `nexus://briefing` | Session briefing for AI agents |
 
-## Skills (8)
+## Skills (9)
 
 Installed via `nexus setup`. Each skill triggers on natural language:
 
@@ -158,6 +164,7 @@ Installed via `nexus setup`. Each skill triggers on natural language:
 | `nexus-migration` | "Plan numpy→jax migration" |
 | `nexus-guide` | "What Nexus tools are available?" |
 | `nexus-cli` | "Analyze the codebase", "Start the server" |
+| `behavioral-auto-regression` | "Agent is using Grep instead of Nexus", "Tool selection is wrong" |
 
 ## Storage
 
