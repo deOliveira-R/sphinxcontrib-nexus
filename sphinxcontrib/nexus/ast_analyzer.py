@@ -852,11 +852,173 @@ def analyze_directory(
     # These are external functions/modules (numpy.array, scipy.integrate.quad, etc.)
     _classify_phantom_nodes(graph)
 
+    # Fold re-export phantoms into their canonical AST counterpart.
+    # A call site like ``Thing()`` inside ``pkg.user`` that imports
+    # ``Thing`` via ``pkg.__init__`` / ``pkg.geometry.__init__`` emits
+    # a ``py:function:pkg.geometry.Thing`` phantom (because the call
+    # resolver hardcodes a ``py:function:`` prefix regardless of type).
+    # ``_canonicalize_phantoms`` detects those by leaf-name match
+    # against typed class/function/method nodes and retargets their
+    # edges onto the canonical.
+    _canonicalize_phantoms(graph)
+
     logger.info(
         "AST analysis: %d nodes, %d edges from %d files",
         graph.node_count, graph.edge_count, len(py_files),
     )
     return graph
+
+
+#: Node types that count as "concrete" for canonicalization purposes —
+#: phantoms fold INTO these, never the other way around.
+_CANONICAL_TYPES: frozenset[str] = frozenset({
+    NodeType.CLASS.value,
+    NodeType.FUNCTION.value,
+    NodeType.METHOD.value,
+    NodeType.MODULE.value,
+    NodeType.EXCEPTION.value,
+    NodeType.TYPE.value,
+})
+
+#: Node types that MAY be folded into a canonical by
+#: ``_canonicalize_phantoms``. External / unresolved / empty-typed
+#: nodes are folded; anything with a concrete type stays put.
+_PHANTOM_TYPES: frozenset[str] = frozenset({
+    NodeType.UNRESOLVED.value,
+    NodeType.EXTERNAL.value,
+    "",
+})
+
+
+def _module_paths_overlap(phantom_name: str, canonical_name: str) -> bool:
+    """Return True if ``phantom_name`` and ``canonical_name`` could
+    plausibly refer to the same symbol by virtue of their module
+    paths overlapping.
+
+    Given two dotted names that share the same LEAF, the module
+    path is the dotted prefix (everything before the leaf). Overlap
+    holds when either of these module paths is a prefix or suffix
+    of the other. Examples::
+
+        pkg.geometry.Thing       vs  pkg.geometry.mesh.Thing   → True
+            (``pkg.geometry`` is a prefix of ``pkg.geometry.mesh``)
+
+        geometry.mesh.Thing      vs  pkg.geometry.mesh.Thing   → True
+            (``geometry.mesh`` is a suffix of ``pkg.geometry.mesh``)
+
+        numpy.ndarray            vs  local.ndarray             → False
+            (``numpy`` neither prefix nor suffix of ``local``)
+
+    The leaf-name fold uses this to distinguish same-symbol reshapes
+    (re-exports, short-import paths) from genuine leaf-name
+    collisions across unrelated modules.
+    """
+    def _prefix(name: str) -> str:
+        return name.rsplit(".", 1)[0] if "." in name else ""
+
+    p = _prefix(phantom_name)
+    c = _prefix(canonical_name)
+    if not p or not c:
+        return False
+    if p == c:
+        return True
+    # Prefix check: every dotted-segment of p is the head of c, or vice versa.
+    p_parts = p.split(".")
+    c_parts = c.split(".")
+    if len(p_parts) <= len(c_parts) and c_parts[: len(p_parts)] == p_parts:
+        return True
+    if len(c_parts) <= len(p_parts) and p_parts[: len(c_parts)] == c_parts:
+        return True
+    # Suffix check: p_parts == tail of c_parts, or vice versa.
+    if len(p_parts) <= len(c_parts) and c_parts[-len(p_parts):] == p_parts:
+        return True
+    if len(c_parts) <= len(p_parts) and p_parts[-len(c_parts):] == c_parts:
+        return True
+    return False
+
+
+def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
+    """Fold re-export and mis-typed phantoms into canonical AST nodes.
+
+    Pattern: a call site like ``Thing()`` inside ``pkg.user`` emits a
+    ``py:function:pkg.geometry.Thing`` target (hardcoded prefix in
+    ``_resolve_call_target``), even when ``Thing`` is actually a
+    class that lives at ``py:class:pkg.geometry.mesh.Thing``. The
+    phantom classifier marks the target ``unresolved`` because
+    ``pkg`` is project-internal, and the merge-time full-name
+    reconciler misses it because the dotted names differ.
+
+    This pass walks every phantom (``unresolved`` / ``external`` /
+    untyped node), looks up its leaf name against a concrete-type
+    index, and — when exactly one canonical matches AND the module
+    paths overlap (prefix/suffix) — retargets every incoming and
+    outgoing edge onto the canonical and drops the phantom.
+
+    The module-path-overlap guard is what prevents a legitimate
+    external reference like ``numpy.ndarray`` from being folded
+    into a local project class that happens to share the
+    ``ndarray`` leaf name. The guard says "these two names live in
+    the same rough neighborhood of the import tree"; a third-party
+    reference like ``numpy.ndarray`` has no neighborhood with
+    ``local.ndarray``, so it stays put.
+
+    Returns the number of phantom nodes removed. Conservative: when
+    the leaf name matches multiple canonicals, zero canonicals, or
+    a canonical in a disjoint module path, the phantom is left
+    alone.
+    """
+    g = graph.nxgraph
+
+    # Build leaf-name → list of (canonical_id, canonical_name) pairs.
+    leaf_index: dict[str, list[tuple[str, str]]] = {}
+    for nid, attrs in g.nodes(data=True):
+        if attrs.get("type") not in _CANONICAL_TYPES:
+            continue
+        name = attrs.get("name") or ""
+        if not name:
+            continue
+        leaf = name.rsplit(".", 1)[-1]
+        leaf_index.setdefault(leaf, []).append((nid, name))
+
+    removed = 0
+    for nid in list(g.nodes):
+        attrs = g.nodes[nid]
+        ntype = attrs.get("type", "")
+        if ntype not in _PHANTOM_TYPES:
+            continue
+        name = attrs.get("name") or ""
+        if not name or "." not in name:
+            # Bare names (e.g. a module ``numpy``) aren't folded —
+            # they have no dotted tail to compare.
+            continue
+
+        leaf = name.rsplit(".", 1)[-1]
+        all_candidates = leaf_index.get(leaf, [])
+        # Filter by module-path overlap so ``numpy.ndarray`` doesn't
+        # collapse into ``local.ndarray``.
+        matched = [
+            (cid, cname)
+            for cid, cname in all_candidates
+            if cid != nid and _module_paths_overlap(name, cname)
+        ]
+        if len(matched) != 1:
+            continue
+
+        canonical, _canonical_name = matched[0]
+        for src, _, key, data in list(g.in_edges(nid, keys=True, data=True)):
+            g.add_edge(src, canonical, **data)
+            g.remove_edge(src, nid, key=key)
+        for _, tgt, key, data in list(g.out_edges(nid, keys=True, data=True)):
+            g.add_edge(canonical, tgt, **data)
+            g.remove_edge(nid, tgt, key=key)
+        g.remove_node(nid)
+        removed += 1
+
+    if removed:
+        logger.info(
+            "Canonicalized %d re-export / mis-typed phantom nodes", removed,
+        )
+    return removed
 
 
 def _classify_phantom_nodes(graph: KnowledgeGraph) -> None:
