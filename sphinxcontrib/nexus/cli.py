@@ -527,6 +527,36 @@ def main(argv: list[str] | None = None) -> int:
     audit_cmd.add_argument(
         "--project-root", type=Path, default=None,
     )
+    audit_cmd.add_argument(
+        "--group-by",
+        choices=["level", "module", "equation"],
+        default=None,
+        help="Bucket gaps by V&V level, Python module, or equation id.",
+    )
+    audit_cmd.add_argument(
+        "--include-tests",
+        action="store_true",
+        help="Report tests_declared / tests_inferred counts in the summary.",
+    )
+
+    # --- gaps ---
+    gaps_cmd = sub.add_parser(
+        "gaps",
+        help="V&V gaps: untagged tests, unverified equations, missing err catchers (JSON)",
+    )
+    gaps_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    gaps_cmd.add_argument(
+        "--module", default=None,
+        help="Top-level Python package filter (e.g. 'orpheus').",
+    )
+    gaps_cmd.add_argument(
+        "--level",
+        choices=["L0", "L1", "L2", "L3"],
+        default=None,
+        help="V&V level filter.",
+    )
 
     args = parser.parse_args(argv)
     if args.command is None:
@@ -568,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         "callers": _run_callers,
         "callees": _run_callees,
         "audit": _run_audit,
+        "gaps": _run_gaps,
     }
     handler = dispatch.get(args.command)
     if handler:
@@ -1039,7 +1070,20 @@ def _run_audit(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args.db)
     project_root = args.project_root or Path.cwd()
-    return _json_out(to_dict(q.verification_audit(project_root)))
+    return _json_out(to_dict(q.verification_audit(
+        project_root,
+        group_by=args.group_by,
+        include_tests=args.include_tests,
+    )))
+
+
+def _run_gaps(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    return _json_out(to_dict(q.verification_gaps(
+        module=args.module,
+        level=args.level,
+    )))
 
 
 if __name__ == "__main__":
