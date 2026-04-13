@@ -403,6 +403,62 @@ def test_coverage_documented_when_no_code_no_tests():
     assert entry.status == "documented"
 
 
+def test_coverage_dedupes_duplicate_tests_edges():
+    """Regression for nexus#7 (query-time layer).
+
+    When two TESTS edges link the same (test, equation) pair —
+    e.g. one from ``pytest.mark.verifies`` and one from a registry
+    entry that was written before the write-time dedup was
+    hardened — the coverage result must collapse them to a single
+    ``TestReference``. Otherwise the per-equation test count
+    double-counts (the exact 86 → 87 bug from the 0.8.0 cross-
+    validation).
+    """
+    def build(g):
+        g.add_node("math:equation:eq-dup", type="equation", name="eq-dup",
+                   display_name="(dup)", domain="math", docname="theory")
+        g.add_node("py:function:test_t", type="function", name="test_t",
+                   display_name="test_t", domain="py", is_test=True)
+        # Two explicit TESTS edges from different sources — this is
+        # the bug shape the write-time fix prevents, but the query
+        # layer must still be robust to a graph loaded from an older
+        # nexus version that has this state.
+        g.add_edge("py:function:test_t", "math:equation:eq-dup",
+                   type="tests", source="pytest.mark.verifies",
+                   confidence=1.0)
+        g.add_edge("py:function:test_t", "math:equation:eq-dup",
+                   type="tests", source="registry", confidence=1.0)
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-dup")
+    assert len(entry.tests) == 1
+    assert entry.tests[0].id == "py:function:test_t"
+
+
+def test_coverage_dedupes_duplicate_implements_edges():
+    """Same regression shape for IMPLEMENTS: duplicate edges must not
+    inflate ``implementing_code``."""
+    def build(g):
+        g.add_node("math:equation:eq-impl-dup", type="equation",
+                   name="eq-impl-dup", display_name="(impl-dup)",
+                   domain="math", docname="theory")
+        g.add_node("py:function:impl", type="function", name="impl",
+                   display_name="impl", domain="py")
+        g.add_edge("py:function:impl", "math:equation:eq-impl-dup",
+                   type="implements", source="directive",
+                   confidence=1.0)
+        g.add_edge("py:function:impl", "math:equation:eq-impl-dup",
+                   type="implements", source="registry",
+                   confidence=1.0)
+
+    g = _coverage_graph(build)
+    cov = GraphQuery(g).verification_coverage()
+    entry = _find_entry(cov, "math:equation:eq-impl-dup")
+    assert len(entry.implementing_code) == 1
+    assert entry.implementing_code[0].id == "py:function:impl"
+
+
 def test_coverage_implemented_when_code_but_no_tests():
     def build(g):
         g.add_node("math:equation:eq-5", type="equation", name="eq-5",

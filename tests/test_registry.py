@@ -187,6 +187,125 @@ implementations:
 # ---------------------------------------------------------------------------
 
 
+def test_registry_skips_pair_with_existing_marker_edge(tmp_path):
+    """Regression for nexus#7.
+
+    When a test already carries a ``pytest.mark.verifies``-sourced
+    TESTS edge for a given equation, the registry must not write a
+    second, parallel TESTS edge. The meaning is the same — both
+    sources assert "this test verifies this equation" — and two
+    edges inflate the per-equation test count.
+    """
+    path = _write_yaml(tmp_path, """
+version: 1
+verifications:
+  - test: py:function:tests.test_solver.test_solve
+    verifies: [eq-1]
+""")
+    g = _base_graph()
+    # Simulate write_verifies_edges already having written the edge
+    # from the AST marker pass (which runs BEFORE the registry).
+    g.add_edge(
+        "py:function:tests.test_solver.test_solve",
+        "math:equation:eq-1",
+        type="tests",
+        source="pytest.mark.verifies",
+        confidence=1.0,
+    )
+
+    written = load_registry(path, g)
+    assert written == 0, (
+        "registry wrote a duplicate TESTS edge on top of an "
+        "existing pytest.mark.verifies-sourced edge"
+    )
+    tests_edges = [
+        (s, t, d.get("source"))
+        for s, t, d in g.edges(data=True)
+        if d.get("type") == "tests"
+    ]
+    assert len(tests_edges) == 1, tests_edges
+    # The existing (marker-sourced) edge must survive.
+    assert tests_edges[0][2] == "pytest.mark.verifies"
+
+
+def test_registry_skips_pair_with_existing_directive_edge(tmp_path):
+    """Same regression, but for directive-sourced edges.
+
+    ``.. verifies::`` directives write TESTS edges with
+    ``source="directive"``; the registry must honor those too.
+    """
+    path = _write_yaml(tmp_path, """
+version: 1
+verifications:
+  - test: py:function:tests.test_solver.test_solve
+    verifies: [eq-1]
+""")
+    g = _base_graph()
+    g.add_edge(
+        "py:function:tests.test_solver.test_solve",
+        "math:equation:eq-1",
+        type="tests",
+        source="directive",
+        confidence=1.0,
+    )
+
+    assert load_registry(path, g) == 0
+
+
+def test_registry_skips_implements_pair_with_existing_explicit_edge(tmp_path):
+    """Registry implementations also must not duplicate a pre-existing
+    explicit IMPLEMENTS edge from a directive."""
+    path = _write_yaml(tmp_path, """
+version: 1
+implementations:
+  - function: py:function:solver.solve
+    implements: [eq-1]
+""")
+    g = _base_graph()
+    g.add_edge(
+        "py:function:solver.solve",
+        "math:equation:eq-1",
+        type="implements",
+        source="directive",
+        confidence=1.0,
+    )
+
+    assert load_registry(path, g) == 0
+
+
+def test_registry_still_writes_over_inferred_edge(tmp_path):
+    """Inference-sourced edges (``source="inferred"``) are NOT
+    considered explicit — the registry's deterministic assertion
+    should replace them rather than defer."""
+    path = _write_yaml(tmp_path, """
+version: 1
+implementations:
+  - function: py:function:solver.solve
+    implements: [eq-1]
+""")
+    g = _base_graph()
+    g.add_edge(
+        "py:function:solver.solve",
+        "math:equation:eq-1",
+        type="implements",
+        source="inferred",
+        confidence=0.7,
+    )
+
+    written = load_registry(path, g)
+    assert written == 1
+    # Both edges now coexist — the inferred one stays, the registry
+    # edge is added. Consumers that care about the difference can
+    # read the ``source`` attribute.
+    pair_edges = [
+        d
+        for _, _, d in g.edges(data=True)
+        if d.get("type") == "implements"
+    ]
+    assert len(pair_edges) == 2
+    assert {e["source"] for e in pair_edges} == {"inferred", "registry"}
+
+
 def test_registry_is_idempotent(tmp_path):
     path = _write_yaml(tmp_path, """
 version: 1
