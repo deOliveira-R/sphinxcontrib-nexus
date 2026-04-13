@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +163,51 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         merge_graphs(graph, ast_graph)
 
     # Write declared TESTS edges (from @pytest.mark.verifies) first,
-    # so _infer_implements can honor them as "already-known" links
-    # and skip redundant token-intersection matches.
+    # then apply any non-LLM verification registries. Both paths run
+    # BEFORE ``_infer_implements`` so the token-intersection heuristic
+    # honors every explicit edge as "already-known".
+    from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
         write_verifies_edges,
     )
+    from sphinxcontrib.nexus.registry import (
+        RegistryError,
+        load_registry,
+    )
     write_verifies_edges(graph.nxgraph)
+    apply_pending_edges(app.env, graph.nxgraph)
+
+    registry_paths = list(
+        getattr(app.config, "nexus_verification_registry", []) or []
+    )
+    # Paths are resolved relative to ``app.srcdir`` — the directory
+    # that holds ``conf.py``. This matches how Sphinx handles most
+    # config-driven paths and lets users colocate their registry with
+    # the theory docs that reference it. For projects where the
+    # registry lives above ``docs/``, ``"../verification.yaml"`` works.
+    srcdir = Path(app.srcdir)
+    for entry in registry_paths:
+        rpath = (srcdir / entry).resolve()
+        if not rpath.is_file():
+            logger.warning(
+                "nexus_verification_registry: %s not found, skipping",
+                rpath,
+            )
+            continue
+        try:
+            written = load_registry(rpath, graph.nxgraph)
+        except RegistryError as err:
+            logger.warning(
+                "nexus_verification_registry: %s failed to load: %s",
+                rpath, err,
+            )
+            continue
+        logger.info(
+            "nexus_verification_registry: loaded %d edges from %s",
+            written, rpath,
+        )
+
     if getattr(app.config, "nexus_infer_implements", True):
         _infer_implements(graph.nxgraph)
 
@@ -253,7 +291,11 @@ def setup(app: Sphinx) -> dict[str, Any]:
         "nexus_test_patterns", list(DEFAULT_TEST_PATTERNS), "env"
     )
     app.add_config_value("nexus_infer_implements", True, "env")
+    app.add_config_value("nexus_verification_registry", [], "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
+
+    from sphinxcontrib.nexus import directives as _directives_module
+    _directives_module.register(app)
 
     app.connect("env-check-consistency", _on_env_check_consistency)
     app.connect("build-finished", _on_build_finished)

@@ -498,18 +498,61 @@ def callees(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
 
 
 @_mcp.tool()
-def verification_audit() -> str:
+def verification_audit(
+    group_by: str = "",
+    include_tests: bool = False,
+) -> str:
     """Complete V&V audit in a single call.
 
     Combines verification_coverage + staleness into one actionable report.
     Returns: summary counts by status, prioritized gap list (equations
-    without full verification chain), stale documentation pages.
+    without full verification chain), and optionally a ``grouped`` view
+    bucketing those gaps by a chosen dimension.
 
-    Gaps are sorted by closure difficulty: "implemented" first (just need
-    a test), then "documented" (need code implementation).
+    Args:
+        group_by: Optional bucket dimension. One of ``"level"`` (by
+            V&V level of the nearest test), ``"module"`` (by top-level
+            Python package of the nearest implementing code node), or
+            ``"equation"`` (by equation id). Empty string (default) —
+            no grouping, flat ``gaps`` list only.
+        include_tests: When True, the ``summary`` also reports
+            ``tests_declared`` and ``tests_inferred`` counts so the
+            caller can weigh how much of the "verified" total rides
+            on explicit (marker/directive/registry) vs. heuristic
+            evidence.
     """
     q = _get_query()
-    result = q.verification_audit(_project_root)
+    result = q.verification_audit(
+        _project_root,
+        group_by=group_by or None,
+        include_tests=include_tests,
+    )
+    return to_json(to_dict(result))
+
+
+@_mcp.tool()
+def verification_gaps(
+    module: str = "",
+    level: str = "",
+) -> str:
+    """Surface per-bucket V&V gaps for this project.
+
+    Returns three lists: untagged tests (no ``vv_level`` marker),
+    unverified equations (no incoming TESTS edge), and missing
+    error-catcher tags (only populated when a consumer supplies an
+    error catalog via a future config path).
+
+    Args:
+        module: Optional top-level Python package filter
+            (e.g. ``"orpheus"``). Empty = no module filter.
+        level: Optional V&V level filter, one of ``"L0"`` / ``"L1"``
+            / ``"L2"`` / ``"L3"``. Empty = no level filter.
+    """
+    q = _get_query()
+    result = q.verification_gaps(
+        module=module or None,
+        level=level or None,
+    )
     return to_json(to_dict(result))
 
 

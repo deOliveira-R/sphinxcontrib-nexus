@@ -310,12 +310,45 @@ class AuditGap:
 
 @dataclass
 class VerificationAuditResult:
-    """Complete V&V audit in a single call."""
+    """Complete V&V audit in a single call.
+
+    ``grouped`` is populated when ``verification_audit`` was called
+    with a ``group_by`` argument. It holds the same gaps as ``gaps``,
+    keyed by the requested dimension (``"L0"``/``"L1"``/… for
+    ``group_by="level"``; top-level Python module for
+    ``group_by="module"``; the equation id itself for
+    ``group_by="equation"``). When ``group_by`` is ``None``, this is
+    an empty dict.
+    """
 
     summary: dict[str, int]
     gaps: list[AuditGap]
     stale_pages: list[StalenessEntry]
     total_equations: int
+    group_by: str | None = None
+    grouped: dict[str, list[AuditGap]] = field(default_factory=dict)
+
+
+@dataclass
+class VerificationGap:
+    """One gap reported by ``verification_gaps``."""
+
+    kind: str  # "untagged_test" | "unverified_equation" | "missing_err_catcher"
+    node_id: str
+    display_name: str = ""
+    module: str = ""
+    level: str = ""
+    detail: str = ""
+
+
+@dataclass
+class VerificationGapsResult:
+    """Buckets returned by ``verification_gaps``."""
+
+    untagged_tests: list[VerificationGap] = field(default_factory=list)
+    unverified_equations: list[VerificationGap] = field(default_factory=list)
+    missing_err_catchers: list[VerificationGap] = field(default_factory=list)
+    filters: dict[str, str | None] = field(default_factory=dict)
 
 
 class GraphQuery:
@@ -1126,12 +1159,32 @@ class GraphQuery:
         return CoverageResult(entries=entries, summary=dict(summary))
 
     def verification_audit(
-        self, project_root: Path | str | None = None,
+        self,
+        project_root: Path | str | None = None,
+        *,
+        group_by: str | None = None,
+        include_tests: bool = False,
     ) -> VerificationAuditResult:
-        """Complete V&V audit in a single call.
+        """Complete V&V audit with optional grouping.
 
-        Combines verification_coverage + staleness into one actionable
-        report with gaps prioritized by closure difficulty.
+        Combines ``verification_coverage`` and ``staleness`` into one
+        actionable report with gaps prioritized by closure difficulty
+        (``implemented`` first, then ``documented``).
+
+        Args:
+            project_root: Passed through to ``staleness``.
+            group_by: Optional grouping dimension. ``"level"`` buckets
+                gaps by the ``vv_level`` of their nearest test (or
+                ``"unassigned"`` when no level is known). ``"module"``
+                buckets by the top-level Python package of the nearest
+                implementing code node (or ``"unassigned"``).
+                ``"equation"`` keys by ``equation_id`` directly — useful
+                for cross-referencing audit output against the doc
+                graph. ``None`` (default) keeps the flat ``gaps`` list.
+            include_tests: When True, the audit also populates the
+                ``summary["tests_declared"]`` / ``summary["tests_inferred"]``
+                counts so consumers can judge how much of the
+                verification claim is load-bearing declarative evidence.
         """
         coverage = self.verification_coverage()
         stale = self.staleness(project_root)
@@ -1163,13 +1216,201 @@ class GraphQuery:
         priority = {"implemented": 0, "documented": 1}
         gaps.sort(key=lambda g: priority.get(g.status, 99))
 
+        summary = dict(coverage.summary)
+        if include_tests:
+            declared = inferred = 0
+            for entry in coverage.entries:
+                for t in entry.tests:
+                    if t.source == "declared":
+                        declared += 1
+                    else:
+                        inferred += 1
+            summary["tests_declared"] = declared
+            summary["tests_inferred"] = inferred
+
+        grouped: dict[str, list[AuditGap]] = {}
+        if group_by == "level":
+            for gap in gaps:
+                level = self._level_for_gap(gap)
+                grouped.setdefault(level, []).append(gap)
+        elif group_by == "module":
+            for gap in gaps:
+                module = self._module_for_gap(gap)
+                grouped.setdefault(module, []).append(gap)
+        elif group_by == "equation":
+            for gap in gaps:
+                grouped.setdefault(gap.equation_id, []).append(gap)
+        elif group_by is not None:
+            raise ValueError(
+                f"group_by must be one of 'level', 'module', 'equation', "
+                f"or None — got {group_by!r}"
+            )
+
         return VerificationAuditResult(
-            summary=coverage.summary,
+            summary=summary,
             gaps=gaps,
             stale_pages=stale.stale_docs,
             total_equations=sum(
                 1 for _, a in self._g.nodes(data=True) if a.get("type") == "equation"
             ),
+            group_by=group_by,
+            grouped=grouped,
+        )
+
+    def _level_for_gap(self, gap: AuditGap) -> str:
+        """Derive the V&V level of an audit gap by looking at its
+        nearest test nodes' ``vv_level`` metadata. Returns
+        ``"unassigned"`` when no test is known or none carries a level.
+        """
+        for test_id in gap.nearest_tests:
+            lvl = self._g.nodes.get(test_id, {}).get("vv_level")
+            if lvl:
+                return str(lvl)
+        return "unassigned"
+
+    def _module_for_gap(self, gap: AuditGap) -> str:
+        """Derive the top-level Python module of an audit gap by
+        taking the first dotted prefix of its nearest implementing
+        code node, or falling back to the nearest test. Returns
+        ``"unassigned"`` when neither resolves."""
+        for code_id in gap.implementing_code:
+            name = self._g.nodes.get(code_id, {}).get("name", "")
+            if name and "." in name:
+                return name.split(".", 1)[0]
+            if name:
+                return name
+        for test_id in gap.nearest_tests:
+            name = self._g.nodes.get(test_id, {}).get("name", "")
+            if name and "." in name:
+                return name.split(".", 1)[0]
+        return "unassigned"
+
+    def verification_gaps(
+        self,
+        module: str | None = None,
+        level: str | None = None,
+        error_catalog: set[str] | None = None,
+    ) -> VerificationGapsResult:
+        """Surface per-bucket V&V gaps, optionally filtered.
+
+        Returns three lists:
+
+        - ``untagged_tests``: test nodes (``is_test=True``) that carry
+          no ``vv_level`` metadata. These are the ones that need a
+          ``@pytest.mark.lN`` before they can be audited.
+        - ``unverified_equations``: equation nodes with no incoming
+          ``tests`` edge from any tier (declared, 1-hop, multi-hop).
+          Equivalent to the ``documented``/``implemented`` bucket of
+          ``verification_audit``.
+        - ``missing_err_catchers``: when ``error_catalog`` is supplied,
+          any ``ERR-NNN`` / ``FM-NN`` tag in the catalog that no test's
+          ``catches`` metadata mentions.
+
+        Filters:
+
+        - ``module`` — keeps only nodes whose name starts with this
+          top-level Python package prefix.
+        - ``level`` — keeps only entries whose nearest test has this
+          ``vv_level``. Applied to ``unverified_equations`` by looking
+          at the strongest-tier test it does have (if any); applied to
+          ``untagged_tests`` is a no-op (they have no level to filter
+          on, by definition).
+        """
+
+        def _matches_module(node_id: str) -> bool:
+            if module is None:
+                return True
+            name = self._g.nodes.get(node_id, {}).get("name", "")
+            if not name:
+                return False
+            top = name.split(".", 1)[0]
+            return top == module
+
+        # ---- untagged_tests --------------------------------------------
+        untagged: list[VerificationGap] = []
+        for node_id, attrs in self._g.nodes(data=True):
+            if not attrs.get("is_test"):
+                continue
+            if attrs.get("vv_level"):
+                continue
+            if not _matches_module(node_id):
+                continue
+            name = attrs.get("name", "")
+            untagged.append(VerificationGap(
+                kind="untagged_test",
+                node_id=node_id,
+                display_name=attrs.get("display_name", "") or name,
+                module=name.split(".", 1)[0] if "." in name else name,
+                level="",
+                detail="no @pytest.mark.l[0-3] marker",
+            ))
+
+        # ---- unverified_equations --------------------------------------
+        unverified: list[VerificationGap] = []
+        coverage = self.verification_coverage()
+        for entry in coverage.entries:
+            if entry.status not in ("implemented", "documented"):
+                continue
+            if not _matches_module(entry.node.id):
+                # The equation's own module is "math", so the module
+                # filter is instead applied to its nearest
+                # implementing code — fall back to that.
+                implementing_ids = [c.id for c in entry.implementing_code]
+                if not any(_matches_module(c) for c in implementing_ids):
+                    continue
+
+            gap_level = ""
+            if level is not None:
+                # An "unverified" equation by definition has no strong
+                # verification, so any test metadata lives on tests in
+                # adjacent 1-hop / multi-hop tiers. Filter by whether
+                # any of them matches the requested level.
+                levels = {
+                    self._g.nodes.get(t.id, {}).get("vv_level", "")
+                    for t in entry.tests
+                }
+                if level not in levels:
+                    continue
+                gap_level = level
+
+            unverified.append(VerificationGap(
+                kind="unverified_equation",
+                node_id=entry.node.id,
+                display_name=entry.node.display_name or entry.node.name,
+                module="math",
+                level=gap_level,
+                detail=f"status={entry.status}",
+            ))
+
+        # ---- missing_err_catchers --------------------------------------
+        missing_err: list[VerificationGap] = []
+        if error_catalog:
+            covered: set[str] = set()
+            for _, attrs in self._g.nodes(data=True):
+                catches = attrs.get("catches")
+                if catches:
+                    covered.update(catches)
+            for err_tag in sorted(error_catalog - covered):
+                missing_err.append(VerificationGap(
+                    kind="missing_err_catcher",
+                    node_id=f"err:{err_tag}",
+                    display_name=err_tag,
+                    module="",
+                    level="",
+                    detail="no test declares @pytest.mark.catches for this tag",
+                ))
+
+        return VerificationGapsResult(
+            untagged_tests=untagged,
+            unverified_equations=unverified,
+            missing_err_catchers=missing_err,
+            filters={
+                "module": module,
+                "level": level,
+                "error_catalog_size": (
+                    len(error_catalog) if error_catalog else None
+                ),
+            },
         )
 
     # ------------------------------------------------------------------

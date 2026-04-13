@@ -415,3 +415,183 @@ def test_coverage_implemented_when_code_but_no_tests():
     cov = GraphQuery(g).verification_coverage()
     entry = _find_entry(cov, "math:equation:eq-5")
     assert entry.status == "implemented"
+
+
+# ---------------------------------------------------------------------------
+# verification_audit: group_by and include_tests
+# ---------------------------------------------------------------------------
+
+
+def _audit_graph() -> nx.MultiDiGraph:
+    """Two unverified equations, plus one verified one, across two
+    pretend modules (orpheus.sn, orpheus.cp). Each equation has
+    implementing code; some have declared tests at a level."""
+    g = nx.MultiDiGraph()
+    # Equations
+    for label in ("balance", "transport-cartesian", "keff"):
+        g.add_node(f"math:equation:{label}", type="equation", name=label,
+                   display_name=f"({label})", domain="math",
+                   docname="theory")
+    # SN module implementations
+    g.add_node("py:function:orpheus.sn.solve_transport", type="function",
+               name="orpheus.sn.solve_transport", display_name="solve_transport",
+               domain="py")
+    g.add_node("py:function:orpheus.sn.enforce_balance", type="function",
+               name="orpheus.sn.enforce_balance", display_name="enforce_balance",
+               domain="py")
+    g.add_edge("py:function:orpheus.sn.solve_transport",
+               "math:equation:transport-cartesian", type="implements")
+    g.add_edge("py:function:orpheus.sn.enforce_balance",
+               "math:equation:balance", type="implements")
+    # CP module implementation
+    g.add_node("py:function:orpheus.cp.compute_keff", type="function",
+               name="orpheus.cp.compute_keff", display_name="compute_keff",
+               domain="py")
+    g.add_edge("py:function:orpheus.cp.compute_keff",
+               "math:equation:keff", type="implements")
+    # A declared test verifying keff at L1
+    g.add_node("py:function:tests.test_cp.test_keff", type="function",
+               name="tests.test_cp.test_keff", display_name="test_keff",
+               domain="py", is_test=True, vv_level="L1",
+               verifies=("keff",))
+    g.add_edge("py:function:tests.test_cp.test_keff",
+               "math:equation:keff", type="tests",
+               source="pytest.mark.verifies", confidence=1.0)
+    return g
+
+
+def test_audit_flat_gaps_sorted_by_status():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit()
+    assert audit.group_by is None
+    assert audit.grouped == {}
+    statuses = [g.status for g in audit.gaps]
+    # balance + transport-cartesian are "implemented" (have code, no tests).
+    assert statuses.count("implemented") == 2
+    # keff is verified — not in gaps.
+    assert not any(g.equation_id == "math:equation:keff" for g in audit.gaps)
+
+
+def test_audit_group_by_module_buckets_gaps():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit(group_by="module")
+    assert audit.group_by == "module"
+    assert "orpheus" in audit.grouped
+    # All SN gaps end up under "orpheus" (top-level package).
+    orpheus_gaps = audit.grouped["orpheus"]
+    eq_ids = {g.equation_id for g in orpheus_gaps}
+    assert "math:equation:balance" in eq_ids
+    assert "math:equation:transport-cartesian" in eq_ids
+
+
+def test_audit_group_by_equation_keys_by_eq_id():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit(group_by="equation")
+    assert audit.group_by == "equation"
+    assert "math:equation:balance" in audit.grouped
+    assert len(audit.grouped["math:equation:balance"]) == 1
+
+
+def test_audit_group_by_level_buckets_unassigned_gaps():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit(group_by="level")
+    # Both gap equations have no tests, so they land in "unassigned".
+    assert "unassigned" in audit.grouped
+    assert len(audit.grouped["unassigned"]) == 2
+
+
+def test_audit_invalid_group_by_raises():
+    q = GraphQuery(_audit_graph())
+    with pytest.raises(ValueError, match="group_by"):
+        q.verification_audit(group_by="bogus")
+
+
+def test_audit_include_tests_adds_counts():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit(include_tests=True)
+    assert "tests_declared" in audit.summary
+    assert "tests_inferred" in audit.summary
+    # One declared test (test_keff → keff), zero inferred
+    # (implementing code has no is_test callers).
+    assert audit.summary["tests_declared"] == 1
+
+
+def test_audit_without_include_tests_omits_counts():
+    q = GraphQuery(_audit_graph())
+    audit = q.verification_audit()
+    assert "tests_declared" not in audit.summary
+
+
+# ---------------------------------------------------------------------------
+# verification_gaps
+# ---------------------------------------------------------------------------
+
+
+def _gaps_graph() -> nx.MultiDiGraph:
+    g = nx.MultiDiGraph()
+    # Equation with no tests anywhere
+    g.add_node("math:equation:eq-orphan", type="equation", name="eq-orphan",
+               display_name="(orphan)", domain="math", docname="theory")
+    # Equation with code but no tests
+    g.add_node("math:equation:eq-impl", type="equation", name="eq-impl",
+               display_name="(impl)", domain="math", docname="theory")
+    g.add_node("py:function:pkg.solve", type="function",
+               name="pkg.solve", display_name="solve", domain="py")
+    g.add_edge("py:function:pkg.solve", "math:equation:eq-impl",
+               type="implements")
+    # Two test functions — one tagged L0, one untagged
+    g.add_node("py:function:tests.test_a.test_one", type="function",
+               name="tests.test_a.test_one", display_name="test_one",
+               domain="py", is_test=True, vv_level="L0")
+    g.add_node("py:function:tests.test_a.test_two", type="function",
+               name="tests.test_a.test_two", display_name="test_two",
+               domain="py", is_test=True)  # no vv_level → untagged
+    return g
+
+
+def test_gaps_lists_untagged_tests():
+    q = GraphQuery(_gaps_graph())
+    result = q.verification_gaps()
+    names = {g.display_name for g in result.untagged_tests}
+    assert "test_two" in names
+    assert "test_one" not in names  # L0-tagged, not untagged
+
+
+def test_gaps_lists_unverified_equations():
+    q = GraphQuery(_gaps_graph())
+    result = q.verification_gaps()
+    ids = {g.node_id for g in result.unverified_equations}
+    assert "math:equation:eq-orphan" in ids
+    assert "math:equation:eq-impl" in ids
+
+
+def test_gaps_module_filter_on_untagged():
+    q = GraphQuery(_gaps_graph())
+    result = q.verification_gaps(module="tests")
+    # test_two is in tests.* — kept
+    names = {g.display_name for g in result.untagged_tests}
+    assert "test_two" in names
+    # The equation filter falls back to implementing code (pkg.solve)
+    # which is under "pkg", not "tests" — so equations should be gone.
+    assert all(
+        g.node_id != "math:equation:eq-impl"
+        for g in result.unverified_equations
+    )
+
+
+def test_gaps_missing_err_catchers():
+    g = _gaps_graph()
+    # Mark test_one as catching FM-01 only
+    g.nodes["py:function:tests.test_a.test_one"]["catches"] = ("FM-01",)
+    q = GraphQuery(g)
+    result = q.verification_gaps(
+        error_catalog={"FM-01", "FM-07", "ERR-020"},
+    )
+    tags = {g.display_name for g in result.missing_err_catchers}
+    assert tags == {"FM-07", "ERR-020"}
+
+
+def test_gaps_missing_err_catchers_empty_when_no_catalog():
+    q = GraphQuery(_gaps_graph())
+    result = q.verification_gaps()
+    assert result.missing_err_catchers == []

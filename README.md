@@ -61,6 +61,8 @@ nexus visualize --db graph.db            # opens HTML graph explorer in browser
 | `nexus_extra_source_dirs` | `[]` | Extra directories (relative to project root) to analyze in addition to autodetected source roots. Useful for out-of-tree test suites or separate module roots. |
 | `nexus_analyze_tests` | `True` | Whether Python test modules are merged into the graph. Set to `False` to exclude them entirely (e.g. to keep coverage numbers focused on production code). |
 | `nexus_test_patterns` | `["tests/*", "*/tests/*", "test_*.py", "*/test_*.py"]` | Glob patterns (POSIX, evaluated with `fnmatch` against the path relative to each source dir) identifying Python test modules. Used both by `nexus_analyze_tests=False` exclusion and by the `is_test` flag on function nodes — a function is marked as a test only when its name follows the `test`/`test_*` convention **and** it lives in a file matching one of these patterns. |
+| `nexus_infer_implements` | `True` | Whether to run the token-intersection heuristic in `merge._infer_implements`. Set `False` when explicit registry / marker / directive coverage is complete and the heuristic's inferred edges are noise. |
+| `nexus_verification_registry` | `[]` | List of paths (relative to `conf.py`) to YAML files declaring explicit verification and implementation edges. See `schema version 1` in the README's V&V section. Missing nodes are logged and skipped; schema errors raise `RegistryError` at build time. |
 
 ## Supported Project Layouts
 
@@ -109,7 +111,7 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (24)
+## MCP Tools (25)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -133,7 +135,8 @@ Nexus works with any Python project:
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability
 - **`verification_coverage`** — equation → code → test coverage map (supports `limit`/`offset` pagination)
-- **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list
+- **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list (supports `group_by` and `include_tests`)
+- **`verification_gaps`** — untagged tests, unverified equations, missing err catchers (supports `module` and `level` filters)
 - **`staleness`** — detect docs that drifted from code
 - **`session_briefing`** — AI agent context restoration
 - **`trace_error`** — trace from failing test to equations on call path

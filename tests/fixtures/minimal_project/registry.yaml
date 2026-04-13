@@ -1,0 +1,18 @@
+version: 1
+
+# Registry-declared verifications. These run alongside the
+# @pytest.mark.verifies markers in solver_tests/test_solver.py —
+# the pipeline writes TESTS edges from both sources and the
+# idempotency guards ensure no duplicates.
+verifications:
+  - test: py:function:solver_tests.test_solver.test_end_to_end_via_helper_chain
+    verifies: [fixture-leakage]
+    level: L2
+
+# Registry-declared implementations. Useful when the
+# token-intersection heuristic would either miss or over-match
+# a legitimate (code, equation) pair.
+implementations:
+  - function: py:function:solver_pkg.solver.solve_balance
+    implements: [fixture-balance, fixture-absorption]
+    confidence: 1.0

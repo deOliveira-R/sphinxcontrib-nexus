@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "sphinxcontrib-nexus"
-version = "0.7.0"
+version = "0.8.0"
 description = "Unified code + documentation knowledge graph from Sphinx builds and Python AST analysis"
 readme = "README.md"
 license = "MIT"
@@ -20,6 +20,7 @@ dependencies = [
     "Sphinx>=7.0",
     "networkx>=3.0",
     "mcp>=1.0",
+    "PyYAML>=6.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
