@@ -349,3 +349,58 @@ def test_verification_gaps_error_catalog_filter(fixture_graph):
     assert "FM-99" in tags
     assert "ERR-777" in tags
     assert "FM-01" not in tags
+
+
+# ---------------------------------------------------------------------------
+# Issue #3 — re-export canonicalization
+# ---------------------------------------------------------------------------
+
+
+def test_mesh_class_has_exactly_one_canonical_node(fixture_graph):
+    """``Mesh`` is defined in ``solver_pkg.helpers`` and re-exported
+    from ``solver_pkg.__init__`` via ``from .helpers import Mesh``.
+    ``solver.build_mesh`` then imports ``Mesh`` via the re-export
+    path (``from solver_pkg import Mesh``) and instantiates it.
+
+    After canonicalization the graph must contain exactly one node
+    whose leaf is ``Mesh``, and it must be the canonical
+    ``py:class:solver_pkg.helpers.Mesh`` — not a
+    ``py:class:solver_pkg.Mesh`` re-export duplicate or a
+    ``py:function:solver_pkg.Mesh`` call-site mis-typing.
+    """
+    mesh_nodes = [
+        nid
+        for nid, attrs in fixture_graph.nodes(data=True)
+        if (attrs.get("name") or "").rsplit(".", 1)[-1] == "Mesh"
+    ]
+    assert mesh_nodes == ["py:class:solver_pkg.helpers.Mesh"], mesh_nodes
+
+    canonical = "py:class:solver_pkg.helpers.Mesh"
+    assert fixture_graph.nodes[canonical].get("type") == "class"
+
+
+def test_build_mesh_call_targets_canonical(fixture_graph):
+    """``solver_pkg.solver.build_mesh`` calls ``Mesh(size=size)``.
+    That CALLS edge must land on the canonical class, even though
+    the source file imported via the re-export path."""
+    build_mesh_id = "py:function:solver_pkg.solver.build_mesh"
+    calls = [
+        t for _, t, d in fixture_graph.out_edges(build_mesh_id, data=True)
+        if d.get("type") == "calls"
+    ]
+    assert "py:class:solver_pkg.helpers.Mesh" in calls, calls
+    # No stray Mesh phantoms on the call edges.
+    mesh_targets = [t for t in calls if t.endswith(".Mesh")]
+    assert mesh_targets == ["py:class:solver_pkg.helpers.Mesh"], mesh_targets
+
+
+def test_no_function_typed_mesh_phantom(fixture_graph):
+    """Regression guard: the 0.6.0 bug shape produced a
+    ``py:function:solver_pkg.Mesh`` node because
+    ``_resolve_call_target`` hardcoded the ``py:function:`` prefix.
+    The canonicalization pass folds those phantoms away."""
+    function_mesh = [
+        nid for nid in fixture_graph.nodes
+        if nid.startswith("py:function:") and nid.endswith(".Mesh")
+    ]
+    assert function_mesh == [], function_mesh
