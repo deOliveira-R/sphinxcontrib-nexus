@@ -30,6 +30,136 @@ _SPHINX_ROLE_RE = re.compile(r":(\w+):`~?([^`]+)`")
 
 
 # ---------------------------------------------------------------------------
+# Decorator parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_decorator(node: ast.expr) -> str:
+    """Serialize a decorator AST node to its source-like string.
+
+    Handles bare names (``@foo``), attribute chains (``@pytest.mark.l0``),
+    calls with positional args (``@verifies("label-1", "label-2")``),
+    and keyword args (``@verify.l0(catches=["ERR-003"])``). Falls back
+    to ``<unparseable>`` for anything ``ast.unparse`` can't handle.
+    """
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return "<unparseable>"
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Reconstruct a dotted identifier like ``pytest.mark.l0`` from an
+    ``Attribute`` / ``Name`` chain. Returns ``None`` if the chain
+    contains anything else (calls, subscripts, etc.)."""
+    parts: list[str] = []
+    curr: ast.expr = node
+    while isinstance(curr, ast.Attribute):
+        parts.append(curr.attr)
+        curr = curr.value
+    if not isinstance(curr, ast.Name):
+        return None
+    parts.append(curr.id)
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
+    """Extract a tuple of string literals from a ``Constant(str)``, a
+    list/tuple literal of string constants, or return ``None`` if the
+    expression contains anything else. Used so we never evaluate
+    arbitrary expressions in decorator arguments."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value,)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        out: list[str] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                out.append(elt.value)
+            else:
+                return None
+        return tuple(out)
+    return None
+
+
+_PYTEST_LEVELS = frozenset({"l0", "l1", "l2", "l3"})
+
+
+def _parse_pytest_markers(
+    decorators: list[ast.expr],
+) -> dict[str, object]:
+    """Extract structured pytest-marker metadata from a decorator list.
+
+    Returns a dict with any of these keys present when recognized:
+
+    - ``vv_level``: ``"L0" / "L1" / "L2" / "L3"`` — from
+      ``@pytest.mark.lN`` or ``@verify.lN(...)``.
+    - ``verifies``: ``tuple[str, ...]`` — string args from
+      ``@pytest.mark.verifies(...)`` or ``equations=[...]`` kwarg
+      in ``@verify.lN(...)``.
+    - ``catches``: ``tuple[str, ...]`` — same, but from
+      ``@pytest.mark.catches(...)`` or ``catches=[...]`` kwarg.
+    - ``slow``: ``True`` if ``@pytest.mark.slow`` is present.
+
+    Only extracts constant-string literals (bare or in list/tuple/set
+    literals). Unrecognized decorators are silently ignored here; they
+    still appear in the flat ``decorators`` metadata emitted by
+    ``_render_decorator``.
+    """
+    meta: dict[str, object] = {}
+    verifies: list[str] = []
+    catches: list[str] = []
+
+    for dec in decorators:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        dotted = _dotted_name(target)
+        if dotted is None:
+            continue
+
+        parts = dotted.split(".")
+
+        # ``pytest.mark.*`` family
+        if len(parts) >= 3 and parts[0] == "pytest" and parts[1] == "mark":
+            mark = parts[2]
+            if mark in _PYTEST_LEVELS:
+                meta["vv_level"] = mark.upper()
+            elif mark == "slow":
+                meta["slow"] = True
+            elif mark == "verifies" and isinstance(dec, ast.Call):
+                for arg in dec.args:
+                    lits = _literal_strings(arg)
+                    if lits:
+                        verifies.extend(lits)
+            elif mark == "catches" and isinstance(dec, ast.Call):
+                for arg in dec.args:
+                    lits = _literal_strings(arg)
+                    if lits:
+                        catches.extend(lits)
+            continue
+
+        # ``verify.lN(...)`` sugar
+        if len(parts) >= 2 and parts[0] == "verify" and parts[1] in _PYTEST_LEVELS:
+            meta["vv_level"] = parts[1].upper()
+            if isinstance(dec, ast.Call):
+                for kw in dec.keywords:
+                    if kw.arg == "equations":
+                        lits = _literal_strings(kw.value)
+                        if lits:
+                            verifies.extend(lits)
+                    elif kw.arg == "catches":
+                        lits = _literal_strings(kw.value)
+                        if lits:
+                            catches.extend(lits)
+            continue
+
+    if verifies:
+        meta["verifies"] = tuple(verifies)
+    if catches:
+        meta["catches"] = tuple(catches)
+    return meta
+
+
+# ---------------------------------------------------------------------------
 # ModuleResolver — file path → qualified module name
 # ---------------------------------------------------------------------------
 
