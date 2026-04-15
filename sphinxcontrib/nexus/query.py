@@ -232,6 +232,50 @@ class StalenessResult:
 
 
 @dataclass
+class IdGrammarExample:
+    """One representative node ID for a (domain, type) pair."""
+
+    domain: str
+    type: str
+    id: str
+    display_name: str
+
+
+@dataclass
+class IdGrammar:
+    """Representative node IDs teaching the LLM the ID grammar."""
+
+    description: str
+    examples: list[IdGrammarExample]
+
+
+@dataclass
+class HotNode:
+    """A node likely to be queried next in the current session."""
+
+    id: str
+    type: str
+    degree: int
+    reason: str
+
+
+@dataclass
+class HotNodes:
+    """Recently-touched, high-degree nodes worth surfacing early."""
+
+    description: str
+    nodes: list[HotNode]
+
+
+@dataclass
+class PreloadHint:
+    """A static ToolSearch invocation to preload common Nexus tools."""
+
+    description: str
+    tool_search_call: str
+
+
+@dataclass
 class BriefingResult:
     """Session briefing for an AI agent."""
 
@@ -242,6 +286,15 @@ class BriefingResult:
     recent_changes: list[ChangeEntry]
     unresolved_count: int
     external_count: int
+    id_grammar: IdGrammar = field(
+        default_factory=lambda: IdGrammar(description="", examples=[]),
+    )
+    hot_nodes: HotNodes = field(
+        default_factory=lambda: HotNodes(description="", nodes=[]),
+    )
+    preload_hint: PreloadHint = field(
+        default_factory=lambda: PreloadHint(description="", tool_search_call=""),
+    )
 
 
 @dataclass
@@ -1561,6 +1614,25 @@ class GraphQuery:
             if a.get("type") == "external"
         )
 
+        id_grammar = self._compute_id_grammar()
+        hot_nodes = self._compute_hot_nodes(
+            changes_result.changed_symbols,
+            god_top_ids={n.id for n in top_nodes},
+        )
+        preload_hint = PreloadHint(
+            description=(
+                "Nexus MCP tool schemas are deferred (not loaded by default in "
+                "LLM sessions). Paste the tool_search_call below into a single "
+                "ToolSearch call on the first turn that uses Nexus — this loads "
+                "the eight most-common tools in one round-trip instead of staged."
+            ),
+            tool_search_call=(
+                "select:mcp__nexus__query,mcp__nexus__callers,mcp__nexus__callees,"
+                "mcp__nexus__context,mcp__nexus__impact,mcp__nexus__provenance_chain,"
+                "mcp__nexus__shortest_path,mcp__nexus__neighbors"
+            ),
+        )
+
         return BriefingResult(
             graph_stats=stats_result,
             god_nodes=top_nodes,
@@ -1569,7 +1641,109 @@ class GraphQuery:
             recent_changes=changes_result.changed_symbols[:10],
             unresolved_count=unresolved,
             external_count=external,
+            id_grammar=id_grammar,
+            hot_nodes=hot_nodes,
+            preload_hint=preload_hint,
         )
+
+    def _compute_id_grammar(self) -> IdGrammar:
+        """Pick one median-degree node per (domain, type) pair as an example.
+
+        Excludes the ``external`` and ``unresolved`` types — already
+        surfaced as counts elsewhere and not useful for constructing
+        queries.
+        """
+        description = (
+            "One representative node ID per (domain, type) pair present in "
+            "the graph. Use these to learn the ID grammar for constructing "
+            "queries against Nexus tools that accept node IDs (callers, "
+            "callees, context, impact, provenance_chain, shortest_path, "
+            "neighbors). Each id is a verbatim graph key — it round-trips "
+            "through context(id=...) without transformation."
+        )
+
+        buckets: dict[tuple[str, str], list[str]] = {}
+        for nid, attrs in self._g.nodes(data=True):
+            ntype = attrs.get("type", "")
+            if ntype in ("external", "unresolved"):
+                continue
+            domain = attrs.get("domain", "")
+            buckets.setdefault((domain, ntype), []).append(nid)
+
+        examples: list[IdGrammarExample] = []
+        for (domain, ntype) in sorted(buckets.keys()):
+            ids = buckets[(domain, ntype)]
+            if not ids:
+                continue
+            # Sort by (degree asc, id asc); pick the median element.
+            ranked = sorted(ids, key=lambda n: (self._g.degree(n), n))
+            pick = ranked[len(ranked) // 2]
+            attrs = self._g.nodes[pick]
+            examples.append(IdGrammarExample(
+                domain=domain,
+                type=ntype,
+                id=pick,
+                display_name=attrs.get("display_name", "") or attrs.get("name", ""),
+            ))
+
+        return IdGrammar(description=description, examples=examples)
+
+    def _compute_hot_nodes(
+        self,
+        changed_symbols: list[ChangeEntry],
+        god_top_ids: set[str],
+    ) -> HotNodes:
+        """Rank recently-changed, high-degree nodes as likely next queries.
+
+        ``recent_changes`` in the briefing is computed from a git diff of
+        the current branch vs its merge base on main/master (see
+        :meth:`detect_changes` with ``scope="branch"``). This function uses
+        the same data — there is no separate time/commit window.
+        """
+        description = (
+            "Nodes most likely to be queried in this session. Computed from "
+            "symbols changed in the current branch vs main/master, filtered "
+            "to those with degree above the graph median (so 'hot' means "
+            "both recent and central). Empty on a fresh branch or when all "
+            "changes land on obscure leaf symbols."
+        )
+
+        if not changed_symbols:
+            return HotNodes(description=description, nodes=[])
+
+        # Median degree over the whole graph, used as a centrality floor.
+        all_degrees = sorted(d for _, d in self._g.degree())
+        if not all_degrees:
+            return HotNodes(description=description, nodes=[])
+        median_degree = all_degrees[len(all_degrees) // 2]
+
+        reason_map = {
+            "added": "added in current branch",
+            "modified": "modified in current branch",
+            "deleted": "deleted in current branch",
+        }
+
+        seen: set[str] = set()
+        candidates: list[HotNode] = []
+        for entry in changed_symbols:
+            nid = entry.node.id
+            if nid in seen or nid in god_top_ids:
+                continue
+            if nid not in self._g:
+                continue
+            deg = self._g.degree(nid)
+            if deg < median_degree:
+                continue
+            seen.add(nid)
+            candidates.append(HotNode(
+                id=nid,
+                type=entry.node.type,
+                degree=deg,
+                reason=reason_map.get(entry.change_type, "changed in current branch"),
+            ))
+
+        candidates.sort(key=lambda h: (-h.degree, h.id))
+        return HotNodes(description=description, nodes=candidates[:5])
 
     # ------------------------------------------------------------------
     # Feature 5: Minimum Retest Set
