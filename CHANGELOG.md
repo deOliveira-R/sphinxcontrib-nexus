@@ -2,6 +2,59 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.10.0 — 2026-04-14
+
+LLM-orientation pass on ``session_briefing``. Three additive fields
+teach the agent the node-ID grammar on the first turn, surface the
+handful of nodes most likely to be queried next, and emit a paste-
+ready ``ToolSearch`` invocation for Nexus's deferred MCP tools.
+Drop-in upgrade from 0.9.0: no existing field was removed or
+re-shaped.
+
+### Added
+
+- **``id_grammar``** in ``BriefingResult``. For each
+  ``(domain, type)`` pair actually present in the graph (excluding
+  the noise types ``external`` and ``unresolved``), emits one
+  representative node with the median degree in that bucket.
+  Max-degree nodes are already in ``god_nodes``; min-degree nodes
+  are obscure; the median is the useful teaching example. Examples
+  are sorted by ``(domain, type)`` ascending and are deterministic
+  across calls on an unchanged graph.
+- **``hot_nodes``** in ``BriefingResult``. Nodes that (a) appear in
+  ``recent_changes`` (same data ``session_briefing`` already uses,
+  i.e. ``detect_changes(scope="branch")`` against main/master — no
+  separate window), (b) have degree at or above the graph median
+  so "hot" implies both recent *and* central, and (c) are not
+  already in ``god_nodes[:5]`` (to avoid duplicating the signal
+  that field already carries). Top 5 by degree, tiebreak on id.
+  Each entry carries a free-form ``reason`` drawn from a small
+  stable vocabulary (``"modified in current branch"``, etc).
+- **``preload_hint``** in ``BriefingResult``. A static, graph-
+  independent ``select:`` string listing the eight most-used Nexus
+  MCP tools (``query``, ``callers``, ``callees``, ``context``,
+  ``impact``, ``provenance_chain``, ``shortest_path``,
+  ``neighbors``). Paste it into a single ``ToolSearch`` call on
+  the first turn that touches Nexus instead of loading schemas
+  one tool at a time.
+
+All three fields flow through the existing ``to_dict`` /
+``asdict`` path as nested dataclasses, so ``session_briefing`` MCP
+and CLI responses pick them up automatically — no serializer
+changes required.
+
+### Round-trip contract verified
+
+Before wiring ``id_grammar``, ran an empirical probe that walked
+every ``god_nodes`` entry from a realistic briefing and fed its
+``id`` back into ``assemble_context``. All five round-tripped
+cleanly — confirming that ``NodeResult.id`` (the
+``<domain>:<type>:<name>`` graph key) is directly accepted by
+``context`` and, by extension, every other MCP tool that takes a
+node id. The contract that ``id_grammar.examples[*].id`` is
+usable verbatim now has a test
+(``test_briefing_id_grammar_round_trip``) pinning it.
+
 ## 0.9.0 — 2026-04-13
 
 Session 4 of the ORPHEUS V&V integration: infrastructure hardening.
