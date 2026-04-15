@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +83,23 @@ DEFAULT_TEST_PATTERNS: tuple[str, ...] = (
 def _compute_exclude_patterns(
     analyze_tests: bool,
     test_patterns: list[str],
+    user_patterns: list[str] | None = None,
 ) -> list[str]:
     """Build the exclusion list for ``analyze_directory``.
 
     Base exclusions (docs, venv, __pycache__) are always applied. If
     ``analyze_tests`` is False, ``test_patterns`` is appended so test
-    modules are skipped entirely.
+    modules are skipped entirely. ``user_patterns`` (from
+    ``nexus_source_exclude_patterns``) is appended unconditionally —
+    these are downstream-project escape hatches for directories that
+    are neither tests nor build artifacts (tutorials, vendored code,
+    legacy modules).
     """
     patterns = list(_BASE_EXCLUDE_PATTERNS)
     if not analyze_tests:
         patterns.extend(test_patterns)
+    if user_patterns:
+        patterns.extend(user_patterns)
     return patterns
 
 
@@ -133,7 +140,10 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
 
     test_patterns = list(app.config.nexus_test_patterns)
     analyze_tests = bool(app.config.nexus_analyze_tests)
-    exclude_patterns = _compute_exclude_patterns(analyze_tests, test_patterns)
+    user_excludes = list(getattr(app.config, "nexus_source_exclude_patterns", []) or [])
+    exclude_patterns = _compute_exclude_patterns(
+        analyze_tests, test_patterns, user_excludes,
+    )
 
     # Scan main source directories.
     for src_dir in source_dirs:
@@ -301,6 +311,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
     )
     app.add_config_value("nexus_infer_implements", True, "env")
     app.add_config_value("nexus_verification_registry", [], "env")
+    app.add_config_value("nexus_source_exclude_patterns", [], "env")
     app.add_directive("nexus-graph", NexusGraphDirective)
 
     from sphinxcontrib.nexus import directives as _directives_module

@@ -2,6 +2,47 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.11.0 — 2026-04-14
+
+Public escape hatch for downstream projects that need to keep
+directories out of AST analysis without monkey-patching private
+internals. Closes #13.
+
+### Added
+
+- **``nexus_source_exclude_patterns``** Sphinx config value
+  (default ``[]``). POSIX glob patterns evaluated with ``fnmatch``
+  against paths relative to each source directory — same semantics
+  as ``nexus_test_patterns``. Patterns are appended to the
+  exclusion list passed to ``analyze_directory`` for both the main
+  source pass and the ``nexus_extra_source_dirs`` pass.
+
+  Concrete motivating case (ORPHEUS): ``student_resources/``
+  contains pedagogical scripts that intentionally shadow
+  ``orpheus.*`` class names. Sphinx's py-domain xref resolver was
+  matching the short names against both the real package and the
+  tutorial copies, so the AST extractor recorded ``documents``
+  edges to both — which then made the staleness tracker count the
+  tutorial file's mtime against every API page that documented an
+  affected ``orpheus`` module. With this option, downstream
+  projects can drop the shadowing source out of analysis from
+  ``conf.py`` directly:
+
+  ```python
+  nexus_source_exclude_patterns = ["student_resources/*"]
+  ```
+
+  No more reaching into ``_BASE_EXCLUDE_PATTERNS``.
+
+### Changed
+
+- **``_compute_exclude_patterns``** gained an optional
+  ``user_patterns`` parameter (default ``None``). When provided,
+  the patterns are appended unconditionally — independent of the
+  ``analyze_tests`` gate, so user excludes still apply when tests
+  are being analyzed. Pre-0.11 callers that pass only positional
+  ``analyze_tests``/``test_patterns`` continue to work unchanged.
+
 ## 0.10.0 — 2026-04-14
 
 LLM-orientation pass on ``session_briefing``. Three additive fields
