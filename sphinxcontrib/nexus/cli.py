@@ -7,8 +7,12 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sphinxcontrib.nexus import __version__
+
+if TYPE_CHECKING:
+    from sphinxcontrib.nexus.query import GraphQuery
 
 _DESCRIPTION = """\
 Nexus — unified code + documentation knowledge graph.
@@ -628,7 +632,7 @@ def main(argv: list[str] | None = None) -> int:
 # ------------------------------------------------------------------
 
 
-def _load_query(db_path: Path) -> "GraphQuery":
+def _load_query(db_path: Path) -> GraphQuery:
     from sphinxcontrib.nexus.export import load_sqlite
     from sphinxcontrib.nexus.query import GraphQuery
 

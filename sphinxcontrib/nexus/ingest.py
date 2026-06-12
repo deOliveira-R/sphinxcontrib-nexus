@@ -111,7 +111,7 @@ def _extract_pdf_text(file_path: Path) -> str:
 
     # Fallback: try PyPDF2 or pymupdf
     try:
-        import fitz  # pymupdf
+        import fitz  # pymupdf  # pyright: ignore[reportMissingImports]
         doc = fitz.open(str(file_path))
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
@@ -120,7 +120,7 @@ def _extract_pdf_text(file_path: Path) -> str:
         pass
 
     try:
-        from PyPDF2 import PdfReader
+        from PyPDF2 import PdfReader  # pyright: ignore[reportMissingImports]
         reader = PdfReader(str(file_path))
         return "\n".join(page.extract_text() or "" for page in reader.pages)
     except ImportError:

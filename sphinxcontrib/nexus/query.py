@@ -401,7 +401,7 @@ class VerificationGapsResult:
     untagged_tests: list[VerificationGap] = field(default_factory=list)
     unverified_equations: list[VerificationGap] = field(default_factory=list)
     missing_err_catchers: list[VerificationGap] = field(default_factory=list)
-    filters: dict[str, str | None] = field(default_factory=dict)
+    filters: dict[str, str | int | None] = field(default_factory=dict)
 
 
 class GraphQuery:

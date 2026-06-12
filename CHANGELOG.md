@@ -75,8 +75,20 @@ release makes the mismatch visible and switchable.
   nested tree deliberately via ``nexus_extra_source_dirs`` if you
   ever need one analyzed.
 
+- **MCP ``impact`` / ``neighbors`` validate ``direction`` at the tool
+  boundary** — an invalid value now returns a self-describing error
+  payload instead of leaking a bare string into ``Literal``-typed
+  query internals.
+
 ### Changed
 
+- **Repo is pyright-clean** (``pyrightconfig.json`` points at the
+  project venv; CI-checkable). Fixed along the way: a quoted
+  forward-reference in ``cli.py``, ``VerificationGapsResult.filters``
+  typing (it carries an ``int`` count), edge-attribute restoration in
+  ``export.load_sqlite`` now goes through ``g.edges[u, v, key]``,
+  ``_add_docstring_refs`` declares the actual ``ast.get_docstring``
+  domain instead of ``ast.AST``.
 - **Server state model.** The four smeared module globals
   (``_db_path``, ``_project_root``, ...) collapse into one named
   concept: ``_workspace: Workspace``. ``serve()`` resolves its paths

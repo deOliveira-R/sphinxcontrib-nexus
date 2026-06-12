@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sphinxcontrib.nexus.query import GraphQuery
 
@@ -60,7 +60,7 @@ def assemble_context(q: GraphQuery, node_id: str) -> dict:
 def assemble_neighbors(
     q: GraphQuery,
     node_id: str,
-    direction: str = "both",
+    direction: Literal["in", "out", "both"] = "both",
     edge_types: list[str] | None = None,
 ) -> list[dict]:
     """Direct connections as list of {node, edge} dicts."""

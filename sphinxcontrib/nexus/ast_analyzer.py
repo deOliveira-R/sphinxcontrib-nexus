@@ -538,7 +538,11 @@ class CodeVisitor(ast.NodeVisitor):
     def _node_id(self, node_type: str, name: str) -> str:
         return f"py:{node_type}:{name}"
 
-    def _add_docstring_refs(self, node: ast.AST, source_id: str) -> None:
+    def _add_docstring_refs(
+        self,
+        node: ast.AsyncFunctionDef | ast.FunctionDef | ast.ClassDef | ast.Module,
+        source_id: str,
+    ) -> None:
         """Extract Sphinx role references from docstring.
 
         Python-domain roles produce ``py:<objtype>:<name>`` target IDs that

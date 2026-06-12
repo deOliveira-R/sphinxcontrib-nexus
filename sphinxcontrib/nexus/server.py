@@ -240,6 +240,11 @@ def impact(
         edge_types: Comma-separated edge types to follow (e.g., "calls,imports").
                     Empty means all edge types.
     """
+    if direction not in ("upstream", "downstream"):
+        return to_json({
+            "error": f"direction must be 'upstream' or 'downstream', "
+                     f"got {direction!r}",
+        })
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
     result = q.impact(target, direction=direction, max_depth=max_depth, edge_types=types)
@@ -275,6 +280,11 @@ def neighbors(
         direction: "in" (incoming), "out" (outgoing), or "both".
         edge_types: Comma-separated edge types to filter (e.g., "calls,contains").
     """
+    if direction not in ("in", "out", "both"):
+        return to_json({
+            "error": f"direction must be 'in', 'out', or 'both', "
+                     f"got {direction!r}",
+        })
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
     return to_json(assemble_neighbors(q, node_id, direction=direction, edge_types=types))

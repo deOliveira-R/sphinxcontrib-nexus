@@ -278,7 +278,7 @@ def load_sqlite(path: Path) -> KnowledgeGraph:
             eid = row["edge_id"]
             if eid in edge_nx_keys:
                 src, tgt, nx_key = edge_nx_keys[eid]
-                g[src][tgt][nx_key][row["key"]] = json.loads(row["value"])
+                g.edges[src, tgt, nx_key][row["key"]] = json.loads(row["value"])
 
         return kg
     finally:
