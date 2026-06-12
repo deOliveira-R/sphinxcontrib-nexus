@@ -489,6 +489,11 @@ class GraphQuery:
         """
         root = Path(project_root) if project_root is not None else None
 
+        # Path-equality contract: resolve relative spellings against
+        # the project root, then compare realpaths. Realized a second
+        # time in SQL-space by brief._in_file_node_ids (which must not
+        # load the graph) — keep the two in lockstep; the symlink/
+        # spelling corner tests in test_brief.py pin both.
         def _norm(p: Path | str) -> Path:
             p = Path(p)
             if not p.is_absolute() and root is not None:

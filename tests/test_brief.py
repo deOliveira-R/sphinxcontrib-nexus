@@ -133,6 +133,69 @@ def test_brief_positions_come_from_the_analyzer(analyzed_db):
 
 
 # ---------------------------------------------------------------------------
+# Path-matching corners — the two _norm realizations stay in lockstep
+# ---------------------------------------------------------------------------
+
+
+def test_symlinked_root_resolves_in_both_norm_realizations(analyzed_db):
+    """The path-equality contract lives twice — graph-space
+    (GraphQuery.node_at) and SQL-space (brief._in_file_node_ids).
+    A query through a symlinked alias of the root must land on the
+    same nodes through BOTH, or the realizations have drifted."""
+    from sphinxcontrib.nexus.export import load_sqlite
+    from sphinxcontrib.nexus.query import GraphQuery
+
+    db, root, lib = analyzed_db
+    alias = root.parent / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    aliased_lib = alias / lib.relative_to(root)
+
+    brief = file_brief(db, aliased_lib, project_root=alias)
+    assert brief is not None and len(brief.nodes) >= 2
+
+    node = GraphQuery(load_sqlite(db)).node_at(aliased_lib, 1, project_root=alias)
+    assert node is not None
+    assert node.id in {n.id for n in brief.nodes}
+
+
+def test_fallback_tier_matches_unfamiliar_spelling(tmp_path):
+    """A stored spelling the exact tier cannot anticipate (here a
+    ``./``-prefixed relative path) must still resolve via the
+    basename-prefiltered scan."""
+    (tmp_path / "pkg").mkdir()
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(
+        id="py:function:pkg.mod.f", type=NodeType.FUNCTION,
+        name="pkg.mod.f", domain="py",
+        metadata={"file_path": "./pkg/mod.py", "lineno": 1},
+    ))
+    db = tmp_path / "graph.db"
+    write_sqlite(kg, db)
+    brief = file_brief(db, "pkg/mod.py", project_root=tmp_path)
+    assert brief is not None
+    assert [n.id for n in brief.nodes] == ["py:function:pkg.mod.f"]
+
+
+def test_fallback_tier_escapes_like_wildcards(tmp_path):
+    """``_`` in a basename is a LIKE wildcard; unescaped, querying
+    ``my_mod.py`` would prefilter-match ``myxmod.py`` and (worse)
+    an unescaped stored ``%``-pattern could over-match. The query
+    for one must never return the other."""
+    kg = KnowledgeGraph()
+    for stem in ("my_mod", "myxmod"):
+        kg.add_node(GraphNode(
+            id=f"py:function:{stem}.f", type=NodeType.FUNCTION,
+            name=f"{stem}.f", domain="py",
+            metadata={"file_path": f"./{stem}.py", "lineno": 1},
+        ))
+    db = tmp_path / "graph.db"
+    write_sqlite(kg, db)
+    brief = file_brief(db, "my_mod.py", project_root=tmp_path)
+    assert brief is not None
+    assert [n.id for n in brief.nodes] == ["py:function:my_mod.f"]
+
+
+# ---------------------------------------------------------------------------
 # Against a hand-built graph — the doc-domain lines
 # ---------------------------------------------------------------------------
 

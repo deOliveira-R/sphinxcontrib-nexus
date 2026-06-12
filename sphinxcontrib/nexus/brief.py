@@ -113,6 +113,10 @@ def _in_file_node_ids(
     survivors (symlinked roots, mixed separators).
     """
 
+    # Same path-equality contract as GraphQuery.node_at's _norm,
+    # realized in SQL-space because this module must never load the
+    # graph — keep the two in lockstep; the symlink/spelling corner
+    # tests in test_brief.py pin both.
     def _norm(p: Path | str) -> Path:
         p = Path(p)
         if not p.is_absolute() and project_root is not None:
