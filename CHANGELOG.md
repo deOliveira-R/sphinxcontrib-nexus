@@ -56,6 +56,22 @@ release makes the mismatch visible and switchable.
   session's first turn instead of never.
 - **CLI ``nexus workspaces``** — same discovery, human-readable.
 
+### Fixed
+
+- **AST analysis no longer ingests nested git working trees.**
+  ``analyze_directory`` prunes any subdirectory carrying a ``.git``
+  entry (gitlink file = linked worktree / submodule, directory =
+  vendored clone); the analyzed root itself is exempt. Found while
+  end-to-end-testing this release on ORPHEUS: the main checkout's
+  graph contained 30,049 nodes of which **15,420 (51%) were
+  worktree copies** (``py:attribute:.claude.worktrees.<name>.orpheus...``)
+  — every Claude Code session worktree's full source tree was being
+  re-analyzed under mangled module paths, polluting query results,
+  caller counts, impact analysis, and god_nodes. The clean rebuild
+  matches the worktree-side build node-for-node class. Re-include a
+  nested tree deliberately via ``nexus_extra_source_dirs`` if you
+  ever need one analyzed.
+
 ### Changed
 
 - **Server state model.** The four smeared module globals

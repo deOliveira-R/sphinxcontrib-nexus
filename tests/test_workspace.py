@@ -370,3 +370,47 @@ def test_briefing_workspace_block_quiet_when_matching(server_on_main):
     """No worktrees, graph built on the current branch: no warnings."""
     block = server_mod._workspace_payload()
     assert "warnings" not in block
+
+
+# ---------------------------------------------------------------------------
+# AST analysis must not ingest nested git working trees
+# ---------------------------------------------------------------------------
+
+
+def _module_names(kg: KnowledgeGraph) -> set[str]:
+    g = kg.nxgraph
+    return {
+        g.nodes[n]["name"]
+        for n in g.nodes
+        if g.nodes[n].get("type") == "module"
+    }
+
+
+def test_analyze_skips_nested_worktrees_and_clones(tmp_path):
+    """A checkout nested inside the analyzed tree (Claude Code worktree
+    = gitlink file; vendored clone = .git directory) is a FOREIGN tree:
+    its files must contribute nothing to this project's graph.
+    Observed on ORPHEUS: 51% of all nodes were worktree copies."""
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()  # the analyzed tree IS a repo root — exempt
+    (root / "real_module.py").write_text("def real():\n    pass\n")
+
+    worktree = root / ".claude" / "worktrees" / "session-a"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: /elsewhere\n")  # gitlink FILE
+    (worktree / "worktree_copy.py").write_text("def copied():\n    pass\n")
+
+    clone = root / "vendor" / "somelib"
+    clone.mkdir(parents=True)
+    (clone / ".git").mkdir()  # nested clone: .git DIRECTORY
+    (clone / "vendored.py").write_text("def vendored():\n    pass\n")
+
+    kg = analyze_directory(source_dir=root, project_root=root)
+
+    modules = _module_names(kg)
+    assert "real_module" in modules
+    assert not any("worktree_copy" in m for m in modules), modules
+    assert not any("vendored" in m for m in modules), modules

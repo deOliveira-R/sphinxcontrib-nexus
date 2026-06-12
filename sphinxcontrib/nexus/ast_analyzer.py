@@ -846,6 +846,27 @@ DEFAULT_TEST_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _nested_git_trees(source_dir: Path) -> set[Path]:
+    """Roots of git working trees nested INSIDE ``source_dir``.
+
+    A directory carrying a ``.git`` entry — a directory for nested
+    clones, a gitlink file for linked worktrees and submodules — is a
+    DIFFERENT checkout: its files are never part of this project's
+    import tree and must not contribute nodes to this project's graph.
+    The canonical instance is Claude Code session worktrees under
+    ``.claude/worktrees/<name>``, each holding a full copy of the
+    project source; without this pruning they duplicate every symbol
+    under mangled module paths (observed on ORPHEUS: 51% of all graph
+    nodes were worktree copies). ``source_dir`` itself is exempt —
+    being a repository root is normal.
+    """
+    return {
+        git_entry.parent
+        for git_entry in source_dir.rglob(".git")
+        if git_entry.parent != source_dir
+    }
+
+
 def analyze_directory(
     source_dir: Path,
     project_root: Path | None = None,
@@ -877,10 +898,16 @@ def analyze_directory(
 
     # Pre-compute exclusion directory names for fast filtering
     _skip_dirs = {".venv", "venv", "__pycache__", "node_modules", ".tox", ".git"}
+    nested_trees = _nested_git_trees(source_dir)
     py_files = sorted(source_dir.rglob("*.py"))
     for filepath in py_files:
         # Skip files under excluded directories
         if _skip_dirs & set(filepath.parts):
+            continue
+        # Skip files inside nested git working trees (worktrees,
+        # vendored clones, submodules) — foreign checkouts, not this
+        # project's import tree.
+        if nested_trees and not nested_trees.isdisjoint(filepath.parents):
             continue
         rel = filepath.relative_to(source_dir).as_posix()
         # Match exclude patterns against the relative POSIX path, not the
