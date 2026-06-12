@@ -38,9 +38,11 @@ from sphinxcontrib.nexus.graph import GraphNode, KnowledgeGraph, NodeType
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
+    GitProvenance,
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    changed_files,
     checkout_containing,
     default_branch,
     discover,
@@ -165,6 +167,57 @@ def test_stamp_round_trips_through_sqlite(repo):
     # ...and the full load carries the same stamp.
     kg = load_sqlite(db)
     assert kg.metadata[PROVENANCE_KEY] == meta[PROVENANCE_KEY]
+
+
+def test_from_stamp_round_trips_git_provenance(repo):
+    """Writer and reader share one vocabulary: what ``stamp_provenance``
+    records, ``GitProvenance.from_stamp`` reconstructs exactly."""
+    kg = _make_graph("solver")
+    stamp_provenance(kg, repo)
+    live = git_provenance(repo)
+    assert GitProvenance.from_stamp(kg.metadata[PROVENANCE_KEY]) == live
+
+
+def test_from_stamp_absent_or_gitless_is_none(tmp_path):
+    assert GitProvenance.from_stamp(None) is None
+    # A non-git tree stamps source_root/built_at but no git keys.
+    kg = _make_graph("solver")
+    stamp_provenance(kg, tmp_path)
+    assert GitProvenance.from_stamp(kg.metadata[PROVENANCE_KEY]) is None
+
+
+# ---------------------------------------------------------------------------
+# changed_files — the staleness primitive
+# ---------------------------------------------------------------------------
+
+
+def test_changed_files_empty_when_tree_matches_commit(repo):
+    prov = git_provenance(repo)
+    assert prov is not None
+    assert changed_files(repo, prov.commit) == frozenset()
+
+
+def test_changed_files_sees_committed_and_uncommitted(repo):
+    prov = git_provenance(repo)
+    assert prov is not None
+    committed = repo / "tracked.txt"
+    committed.write_text("changed\n")
+    _git(repo, "commit", "-am", "change tracked")
+    uncommitted = repo / "loose.txt"
+    uncommitted.write_text("new\n")
+    _git(repo, "add", "loose.txt")  # staged but not committed
+    changed = changed_files(repo, prov.commit)
+    assert changed == {committed.resolve(), uncommitted.resolve()}
+
+
+def test_changed_files_unknown_commit_is_none(repo):
+    """``None`` means UNKNOWN — a commit this clone doesn't have must
+    not read as 'nothing changed'."""
+    assert changed_files(repo, "0000000") is None
+
+
+def test_changed_files_non_repo_is_none(tmp_path):
+    assert changed_files(tmp_path, "0000000") is None
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +441,7 @@ def server_on_main(repo, monkeypatch):
     )
     monkeypatch.setattr(server_mod, "_query", GraphQuery(load_sqlite(db)))
     monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
+    monkeypatch.setattr(server_mod, "_changed_cache", None)
     return repo
 
 
@@ -502,6 +556,48 @@ def test_briefing_workspace_block_quiet_when_matching(server_on_main):
     """No worktrees, graph built on the current branch: no warnings."""
     block = server_mod._workspace_payload()
     assert "warnings" not in block
+
+
+# ---------------------------------------------------------------------------
+# node_at staleness — positions in a snapshot drift with edits
+# ---------------------------------------------------------------------------
+
+
+def test_position_warning_quiet_for_unchanged_file(server_on_main):
+    assert server_mod._position_staleness_warning("tracked.txt") is None
+
+
+def test_position_warning_fires_for_changed_file(server_on_main):
+    (server_on_main / "tracked.txt").write_text("edited\n")
+    server_mod._changed_cache = None  # the edit happened after the fixture
+    warning = server_mod._position_staleness_warning("tracked.txt")
+    assert warning is not None
+    prov = git_provenance(server_on_main)  # stamp == HEAD here
+    assert prov is not None
+    assert prov.commit in warning and "rebuild" in warning
+
+
+def test_node_at_payload_carries_the_warning(server_on_main):
+    """The warning rides along even when no node matches — a stale
+    graph is exactly when the no-match answer is least trustworthy."""
+    (server_on_main / "tracked.txt").write_text("edited\n")
+    server_mod._changed_cache = None
+    payload = json.loads(server_mod.node_at("tracked.txt", 1))
+    assert "error" in payload  # the one-node graph has no file_path
+    assert "warning" in payload
+
+
+def test_changed_set_is_cached_per_build(server_on_main, monkeypatch):
+    """One git subprocess per (root, db_mtime, commit) — not per call."""
+    calls = []
+    real = server_mod.changed_files
+    monkeypatch.setattr(
+        server_mod, "changed_files",
+        lambda *a: calls.append(a) or real(*a),
+    )
+    server_mod._files_changed_since_build()
+    server_mod._files_changed_since_build()
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

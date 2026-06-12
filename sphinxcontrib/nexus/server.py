@@ -37,9 +37,12 @@ from sphinxcontrib.nexus._serialize import (
 from sphinxcontrib.nexus.export import load_sqlite
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.workspace import (
+    PROVENANCE_KEY,
+    GitProvenance,
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    changed_files,
     checkout_containing,
     discover,
     resolve_checkout_root,
@@ -139,6 +142,63 @@ def _active_root() -> Path | None:
     return _workspace.root if _workspace is not None else None
 
 
+# Files changed since the active graph's build commit, cached per
+# (root, db_mtime, commit): the set can only change when the graph is
+# rebuilt, the active workspace switches, or the checkout moves to a
+# different stamped commit — one git subprocess per reload, not per
+# tool call. ``None`` set value means the diff itself failed
+# (unknown ≠ unchanged).
+_changed_cache: tuple[tuple[Path, float, str], frozenset[Path] | None] | None = None
+
+
+def _build_commit() -> str | None:
+    """Commit the active graph's provenance stamp records, ``None``
+    when the graph is unloaded, unstamped, or built from a non-git
+    tree."""
+    if _query is None:
+        return None
+    prov = GitProvenance.from_stamp(
+        _query.knowledge_graph.metadata.get(PROVENANCE_KEY)
+    )
+    return prov.commit if prov is not None else None
+
+
+def _files_changed_since_build() -> frozenset[Path] | None:
+    """Working-tree files that differ from the active graph's stamped
+    commit. ``None`` when unknowable: no root, no provenance stamp,
+    or git failure."""
+    global _changed_cache
+    root = _active_root()
+    commit = _build_commit()
+    if root is None or commit is None:
+        return None
+    key = (root, _db_mtime, commit)
+    if _changed_cache is None or _changed_cache[0] != key:
+        _changed_cache = (key, changed_files(root, commit))
+    return _changed_cache[1]
+
+
+def _position_staleness_warning(file: str) -> str | None:
+    """Warning text when ``file`` has changed since the graph was
+    built — positions in a build-time snapshot drift with edits, and
+    the (file, line) → node mapping fails SILENTLY otherwise."""
+    root = _active_root()
+    changed = _files_changed_since_build()
+    if root is None or not changed:
+        return None
+    queried = Path(file)
+    if not queried.is_absolute():
+        queried = root / queried
+    if queried.resolve() not in changed:
+        return None
+    return (
+        f"{file} changed since the graph was built "
+        f"(commit {_build_commit()}) — positions may map to the wrong "
+        f"symbol; rebuild the graph (sphinx-build / nexus analyze) "
+        f"for faithful answers"
+    )
+
+
 def _workspace_payload() -> dict[str, Any]:
     """Workspace block for briefings: which tree the active graph was
     built from, whether it still matches the checkout, and which
@@ -160,23 +220,25 @@ def _workspace_payload() -> dict[str, Any]:
     }
 
     warnings: list[str] = []
-    prov = active.provenance
-    if prov is None:
+    if active.provenance is None:
         warnings.append(
             "the active graph carries no provenance stamp (built by "
             "nexus < 0.12) — rebuild it to make the graph self-describing"
         )
-    elif (
-        active.branch
-        and prov.get("git_branch")
-        and prov["git_branch"] != active.branch
-    ):
-        warnings.append(
-            f"the active graph was built on branch {prov['git_branch']!r} "
-            f"but the checkout is now on {active.branch!r} — rebuild the "
-            f"graph, or switch with use_workspace if you meant another "
-            f"checkout"
-        )
+    else:
+        prov = GitProvenance.from_stamp(active.provenance)
+        if (
+            prov is not None
+            and active.branch
+            and prov.branch
+            and prov.branch != active.branch
+        ):
+            warnings.append(
+                f"the active graph was built on branch {prov.branch!r} "
+                f"but the checkout is now on {active.branch!r} — rebuild "
+                f"the graph, or switch with use_workspace if you meant "
+                f"another checkout"
+            )
     if any(o["has_graph"] for o in others):
         warnings.append(
             "sibling worktrees with their own graphs exist — if your "
@@ -314,8 +376,9 @@ def node_at(file: str, line: int) -> str:
     """
     q = _get_query()
     result = q.node_at(file, line, project_root=_active_root())
+    warning = _position_staleness_warning(file)
     if result is None:
-        return to_json({
+        payload: dict[str, Any] = {
             "error": f"No graph node encloses {file}:{line}",
             "hint": (
                 "Either the file is outside the analyzed tree, or the "
@@ -323,8 +386,12 @@ def node_at(file: str, line: int) -> str:
                 "analyze) and retry. Line numbers shift with edits: a "
                 "stale graph maps positions to the wrong symbol."
             ),
-        })
-    return to_json(to_dict(result))
+        }
+    else:
+        payload = to_dict(result)
+    if warning is not None:
+        payload["warning"] = warning
+    return to_json(payload)
 
 
 @nexus_tool

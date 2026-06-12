@@ -29,16 +29,28 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sphinxcontrib.nexus.export import read_sqlite_metadata
-from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+if TYPE_CHECKING:
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
 
 logger = logging.getLogger(__name__)
 
 #: Key under which the build-time stamp lives in ``graph.metadata``
 #: (and therefore in the SQLite ``metadata`` table).
 PROVENANCE_KEY = "provenance"
+
+#: Keys inside the stamp dict. Single vocabulary shared by the writer
+#: (:func:`stamp_provenance`) and every reader
+#: (:meth:`GitProvenance.from_stamp`, workspace payloads, file briefs)
+#: so the stamp's shape cannot drift between sites.
+STAMP_SOURCE_ROOT = "source_root"
+STAMP_BUILT_AT = "built_at"
+STAMP_GIT_BRANCH = "git_branch"
+STAMP_GIT_COMMIT = "git_commit"
+STAMP_GIT_DIRTY = "git_dirty"
 
 _GIT_TIMEOUT_S = 10
 
@@ -85,6 +97,25 @@ class GitProvenance:
 
     dirty: bool
     """Uncommitted changes present (staged or unstaged)."""
+
+    @classmethod
+    def from_stamp(cls, stamp: Mapping[str, Any] | None) -> GitProvenance | None:
+        """Read back what :func:`stamp_provenance` wrote.
+
+        ``None`` when there is no stamp at all or the stamp carries no
+        git keys (graph built from a non-git tree) — the same absence
+        contract as :func:`git_provenance`.
+        """
+        if stamp is None:
+            return None
+        commit = stamp.get(STAMP_GIT_COMMIT)
+        if not commit:
+            return None
+        return cls(
+            branch=stamp.get(STAMP_GIT_BRANCH) or None,
+            commit=str(commit),
+            dirty=bool(stamp.get(STAMP_GIT_DIRTY)),
+        )
 
 
 def git_provenance(root: Path) -> GitProvenance | None:
@@ -138,15 +169,44 @@ def stamp_provenance(graph: KnowledgeGraph, source_root: Path) -> None:
     """
     root = source_root.resolve()
     stamp: dict[str, Any] = {
-        "source_root": str(root),
-        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        STAMP_SOURCE_ROOT: str(root),
+        STAMP_BUILT_AT: datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     prov = git_provenance(root)
     if prov is not None:
-        stamp["git_branch"] = prov.branch
-        stamp["git_commit"] = prov.commit
-        stamp["git_dirty"] = prov.dirty
+        stamp[STAMP_GIT_BRANCH] = prov.branch
+        stamp[STAMP_GIT_COMMIT] = prov.commit
+        stamp[STAMP_GIT_DIRTY] = prov.dirty
     graph.metadata[PROVENANCE_KEY] = stamp
+
+
+def changed_files(root: Path, since_commit: str) -> frozenset[Path] | None:
+    """Absolute paths of tracked files that differ between
+    ``since_commit`` and the CURRENT working tree.
+
+    ``git diff --name-only <commit>`` (no ``..HEAD``) diffs the commit
+    against the working tree, so both committed-since and uncommitted
+    edits are covered in one subprocess.  Untracked files never appear
+    — but an untracked file is not in any built graph either, so the
+    staleness question does not arise for it.
+
+    ``None`` means UNKNOWN (git missing, not a repository, commit not
+    found) — distinct from ``frozenset()`` which means "verified
+    unchanged".  Callers must not collapse the two: a graph built at a
+    commit this clone no longer has is *more* suspect, not less.
+
+    If the graph was built from a dirty tree (stamp ``git_dirty``),
+    files dirty at build time may appear here even though the graph
+    already reflects them — the warning consumers phrase around "may".
+    """
+    out = _git(root, "diff", "--name-only", since_commit)
+    if out is None:
+        return None
+    return frozenset(
+        (root / line.strip()).resolve()
+        for line in out.splitlines()
+        if line.strip()
+    )
 
 
 # ------------------------------------------------------------------
