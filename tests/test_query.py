@@ -735,3 +735,23 @@ def test_node_at_relative_path_with_root(positioned_graph, tmp_path):
 def test_node_at_unknown_file_is_none(positioned_graph, tmp_path):
     q, _ = positioned_graph
     assert q.node_at(tmp_path / "elsewhere.py", 1) is None
+
+
+def test_node_results_carry_positions(positioned_graph):
+    """The reverse bridge: any AST-derived result is directly
+    addressable by editors / LSP / Read — file and line ride on the
+    NodeResult itself, no text-search round-trip."""
+    q, file = positioned_graph
+    node = q.node_at(file, 5)
+    assert node is not None
+    assert node.file_path  # the analyzer's own spelling of `file`
+    assert node.lineno == 3  # `def outer():` starts on line 3
+
+
+def test_doc_domain_results_leave_positions_empty(sample_graph):
+    """Doc nodes live in pages, not source files — their position
+    fields stay at the dataclass defaults rather than inventing one."""
+    q = GraphQuery(sample_graph)
+    equation = q.get_node("math:equation:diffusion")
+    assert equation is not None
+    assert equation.file_path == "" and equation.lineno == 0

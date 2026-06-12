@@ -29,6 +29,13 @@ class NodeResult:
     domain: str = ""
     docname: str = ""
     degree: int = 0
+    file_path: str = ""
+    """Source file of an AST-derived node — the reverse bridge: any
+    query result can be fed straight to an editor, LSP request, or
+    Read without a text-search round-trip. Empty for doc-domain
+    nodes, which live in pages, not files."""
+    lineno: int = 0
+    """1-based definition line in ``file_path``; 0 when unknown."""
 
 
 @dataclass
@@ -436,6 +443,8 @@ class GraphQuery:
             domain=attrs.get("domain", ""),
             docname=attrs.get("docname", ""),
             degree=self._g.degree(node_id),
+            file_path=attrs.get("file_path", ""),
+            lineno=attrs.get("lineno") or 0,
         )
 
     def _edge_result(
