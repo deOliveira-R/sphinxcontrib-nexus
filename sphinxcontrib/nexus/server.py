@@ -27,6 +27,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from sphinxcontrib.nexus._serialize import (
     assemble_communities,
     assemble_context,
+    assemble_impact,
     assemble_neighbors,
     assemble_processes,
     assemble_shortest_path,
@@ -395,17 +396,31 @@ def node_at(file: str, line: int) -> str:
 
 
 @nexus_tool
-def context(node_id: str) -> str:
+def context(node_id: str, limit_per_type: int = 25) -> str:
     """Get a 360-degree view of a node: its attributes and all connections.
 
     Shows the node's properties plus all incoming and outgoing edges
     grouped by type. This is the primary tool for understanding a symbol.
 
+    Each edge-type bucket is sorted most-connected-first and capped at
+    ``limit_per_type`` entries; when anything is dropped, an ``omitted``
+    block reports per-bucket counts. A hub node's full context is
+    megabytes of JSON — use ``neighbors(node_id, edge_types=...)`` for a
+    complete single-type list instead of removing the cap.
+
     Args:
         node_id: Node ID (e.g., "py:function:sn_solver.solve_sn").
+        limit_per_type: Max entries per edge-type bucket (default 25).
+            ``0`` means no cap — expect a huge payload on hub nodes.
     """
     q = _get_query()
-    return to_json(assemble_context(q, node_id))
+    return to_json(
+        assemble_context(
+            q,
+            node_id,
+            per_type_limit=limit_per_type if limit_per_type > 0 else None,
+        )
+    )
 
 
 @nexus_tool
@@ -414,6 +429,7 @@ def impact(
     direction: str = "upstream",
     max_depth: int = 3,
     edge_types: str = "",
+    limit_per_depth: int = 50,
 ) -> str:
     """Analyze blast radius: what depends on this symbol (upstream)
     or what this symbol depends on (downstream).
@@ -423,12 +439,18 @@ def impact(
     - depth=2: LIKELY AFFECTED — indirect dependents
     - depth=3: MAY NEED TESTING — transitive
 
+    Each depth bucket is sorted most-connected-first and capped at
+    ``limit_per_depth`` nodes; ``total_affected`` is always the TRUE
+    traversal count, and an ``omitted`` block reports per-depth drops.
+
     Args:
         target: Node ID of the symbol to analyze.
         direction: "upstream" (what depends on this) or "downstream" (what this depends on).
         max_depth: Maximum traversal depth (default 3).
         edge_types: Comma-separated edge types to follow (e.g., "calls,imports").
                     Empty means all edge types.
+        limit_per_depth: Max nodes per depth bucket (default 50).
+            ``0`` means no cap — expect a huge payload on hub nodes.
     """
     if direction not in ("upstream", "downstream"):
         return to_json({
@@ -437,8 +459,16 @@ def impact(
         })
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
-    result = q.impact(target, direction=direction, max_depth=max_depth, edge_types=types)
-    return to_json(to_dict(result))
+    return to_json(
+        assemble_impact(
+            q,
+            target,
+            direction=direction,
+            max_depth=max_depth,
+            edge_types=types,
+            per_depth_limit=limit_per_depth if limit_per_depth > 0 else None,
+        )
+    )
 
 
 @nexus_tool

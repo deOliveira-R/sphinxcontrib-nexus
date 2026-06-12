@@ -59,7 +59,10 @@ def test_journal_wrapper_preserves_parameter_schemas():
     parameters survive and Context params stay excluded."""
     schemas = {t.name: t.inputSchema for t in asyncio.run(_mcp.list_tools())}
     assert set(schemas["impact"]["properties"]) == {
-        "target", "direction", "max_depth", "edge_types",
+        "target", "direction", "max_depth", "edge_types", "limit_per_depth",
+    }
+    assert set(schemas["context"]["properties"]) == {
+        "node_id", "limit_per_type",
     }
     assert set(schemas["node_at"]["properties"]) == {"file", "line"}
     assert "ctx" not in schemas["session_briefing"].get("properties", {})

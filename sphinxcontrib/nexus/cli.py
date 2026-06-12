@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         "--depth", type=int, default=3,
         help="Maximum traversal depth (default: 3).",
     )
+    impact_cmd.add_argument(
+        "--limit-per-depth", type=int, default=50,
+        help="Max nodes listed per depth bucket, most-connected first "
+             "(default: 50; 0 = no cap).",
+    )
 
     # --- provenance ---
     prov_cmd = sub.add_parser(
@@ -325,6 +330,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     context_cmd.add_argument(
         "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    context_cmd.add_argument(
+        "--limit-per-type", type=int, default=25,
+        help="Max entries per edge-type bucket, most-connected first "
+             "(default: 25; 0 = no cap).",
     )
 
     # --- neighbors ---
@@ -909,20 +919,31 @@ def _run_query(args: argparse.Namespace) -> int:
 
 
 def _run_impact(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import assemble_impact
+
     q = _load_query(args.db)
-    result = q.impact(args.target, direction=args.direction, max_depth=args.depth)
-    if result.total_affected == 0:
+    result = assemble_impact(
+        q,
+        args.target,
+        direction=args.direction,
+        max_depth=args.depth,
+        per_depth_limit=args.limit_per_depth if args.limit_per_depth > 0 else None,
+    )
+    if result["total_affected"] == 0:
         print(f"No {'upstream' if args.direction == 'upstream' else 'downstream'} "
               f"dependents found for {args.target}")
         return 0
-    for depth, nodes in result.by_depth.items():
+    omitted = result.get("omitted", {})
+    for depth, nodes in result["by_depth"].items():
         label = {1: "WILL BREAK", 2: "LIKELY AFFECTED", 3: "MAY NEED TESTING"}.get(
             depth, f"depth={depth}",
         )
         print(f"  d={depth} ({label}):")
         for n in nodes:
-            print(f"    {n.id:55s}  type={n.type}")
-    print(f"\nTotal affected: {result.total_affected}")
+            print(f"    {n['id']:55s}  type={n['type']}")
+        if depth in omitted:
+            print(f"    ... (+{omitted[depth]} more; --limit-per-depth 0 for all)")
+    print(f"\nTotal affected: {result['total_affected']}")
     return 0
 
 
@@ -1067,7 +1088,11 @@ def _run_briefing(args: argparse.Namespace) -> int:
 def _run_context(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_context
     q = _load_query(args.db)
-    return _json_out(assemble_context(q, args.node_id))
+    return _json_out(assemble_context(
+        q,
+        args.node_id,
+        per_type_limit=args.limit_per_type if args.limit_per_type > 0 else None,
+    ))
 
 
 def _run_neighbors(args: argparse.Namespace) -> int:

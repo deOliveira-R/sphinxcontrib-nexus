@@ -217,3 +217,53 @@ class TestJsonCli:
             capsys,
         )
         assert isinstance(data, dict)
+
+
+# ------------------------------------------------------------------
+# Token budgets: context --limit-per-type / impact --limit-per-depth
+# ------------------------------------------------------------------
+
+
+@pytest.fixture()
+def hub_graph(tmp_path):
+    """The test_serialize hub graph (30 callers of one node) as sqlite."""
+    from test_serialize import _build_hub_graph
+
+    db_path = tmp_path / "hub.db"
+    write_sqlite(_build_hub_graph(n_callers=30), db_path)
+    return db_path
+
+
+class TestTokenBudgetCli:
+    HUB = "py:function:mod.hub"
+
+    def test_context_caps_by_default(self, hub_graph, capsys):
+        data = _cli_json(["context", self.HUB, "--db", str(hub_graph)], capsys)
+        assert len(data["incoming"]["calls"]) == 25
+        assert data["omitted"] == {"incoming": {"calls": 5}}
+
+    def test_context_limit_zero_uncaps(self, hub_graph, capsys):
+        data = _cli_json(
+            ["context", self.HUB, "--db", str(hub_graph), "--limit-per-type", "0"],
+            capsys,
+        )
+        assert len(data["incoming"]["calls"]) == 30
+        assert "omitted" not in data
+
+    def test_impact_caps_and_reports_omissions(self, hub_graph, capsys):
+        assert main([
+            "impact", self.HUB, "--db", str(hub_graph), "--limit-per-depth", "5",
+        ]) == 0
+        out = capsys.readouterr().out
+        assert "... (+25 more" in out
+        # 30 callers at depth 1 + 10 meta-callers at depth 2: the true
+        # total survives the cap
+        assert "Total affected: 40" in out
+
+    def test_impact_limit_zero_uncaps(self, hub_graph, capsys):
+        assert main([
+            "impact", self.HUB, "--db", str(hub_graph), "--limit-per-depth", "0",
+        ]) == 0
+        out = capsys.readouterr().out
+        assert "more" not in out
+        assert out.count("py:function:mod.caller_") == 30

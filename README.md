@@ -117,7 +117,7 @@ Nexus works with any Python project:
 ### Exploration
 - **`query`** — keyword search across node names
 - **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node; warns when the file changed since the graph was built (positions in a snapshot drift with edits)
-- **`context`** — 360-degree view of a symbol (all connections grouped by type)
+- **`context`** — 360-degree view of a symbol: connections grouped by type, each bucket most-connected-first and token-budgeted (`limit_per_type`, default 25; honest `omitted` counts — a hub node's full context is megabytes)
 - **`neighbors`** — direct connections with direction and type filtering
 - **`callers`** — functions that call a given node (optionally transitive)
 - **`callees`** — functions called by a given node (optionally transitive)
@@ -126,7 +126,7 @@ Nexus works with any Python project:
 - **`stats`** — graph-level statistics
 
 ### Safety & Refactoring
-- **`impact`** — blast radius analysis (what breaks if you change X)
+- **`impact`** — blast radius analysis (what breaks if you change X); depth buckets token-budgeted (`limit_per_depth`, default 50) while `total_affected` stays the true count
 - **`detect_changes`** — map git diff to affected symbols
 - **`rename`** — safe multi-file rename with confidence tagging
 - **`retest`** — minimum set of tests to re-run after changes
