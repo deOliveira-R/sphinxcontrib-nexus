@@ -2,6 +2,56 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.13.0 — 2026-06-12
+
+Token-budgeted tool outputs and the LSP↔graph parity oracle.
+
+### Token budgets for `context` and `impact`
+
+Measured on a real production graph (ORPHEUS): `context` on a
+degree-3429 hub node serialized to **2.7 MB** of JSON and depth-3
+`impact` to 1–2 MB — far beyond what an MCP tool consumer can read,
+and enough to blow an agent's context outright.
+
+- `assemble_context(per_type_limit=25)`: per-edge-type buckets sorted
+  most-connected-first, capped, with an honest `omitted` block
+  (per-bucket drop counts + escape-hatch hint) present only when
+  something was dropped. Entries are now compact node dicts — in the
+  grouped view the edge dict was pure redundancy (type = bucket key,
+  direction = outgoing/incoming key, endpoints = queried node + the
+  entry); `neighbors` keeps the flat node+edge view. Empty sentinel
+  fields (`""`/`0`) are dropped from bulk entries (~25% of payload).
+- New `assemble_impact(per_depth_limit=50)` — single source for MCP
+  and CLI; `total_affected` is ALWAYS the true traversal count.
+- MCP: `context(limit_per_type=25)`, `impact(limit_per_depth=50)`,
+  `0` = uncapped. CLI: `--limit-per-type` / `--limit-per-depth` with
+  `... (+N more)` markers.
+- Result: hub context 2716 KB → 12 KB (226×); hub impact ~2 MB →
+  ~67 KB.
+
+### LSP↔graph parity oracle (`tests/test_lsp_parity.py`)
+
+Pyright re-derives symbols and call edges through a fully independent
+implementation; the oracle asserts the AST analyzer's graph agrees.
+The 51%-worktree-contamination bug class from 0.12.0 would now be
+caught automatically. Per-file `documentSymbol` set-EQUALITY (the
+analyzer's deliberate granularity — closures excluded — is encoded in
+the reducers, not a weakened assertion); `incomingCalls` vs graph
+`callers` with static calls exact and dynamic dispatch directional
+(graph ⊆ pyright). Finding: the analyzer resolves same-class
+`self.method()` dispatch (now pinned), so the enrichment gap (#F4) is
+only annotation-mediated dispatch. Skips without `pyright-langserver`;
+runs in the CI pyright job.
+
+### Notes
+
+- README documents the `verification_coverage` tier-calibration
+  caveat (closes #5 per its own option 4): measured 2 of 972
+  test-bearing entries (0.2%) carry multihop-only credit; the remedy
+  is an explicit `verifies` marker on driver tests, not heuristic
+  tuning.
+- 442 tests; `pyright sphinxcontrib/` 0/0.
+
 ## 0.12.0 — 2026-06-11
 
 Git-worktree (workspace) support. A graph database is a snapshot of
