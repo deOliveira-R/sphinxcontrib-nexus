@@ -117,6 +117,10 @@ release makes the mismatch visible and switchable.
   (unspecified) spawn cwd; the ``:-.`` fallback keeps other MCP
   clients working.
 - ``nexus serve --help`` no longer hardcodes a tool count.
+- **Version is single-sourced** from ``__init__.__version__``;
+  ``pyproject.toml`` declares ``dynamic = ["version"]`` (flit extracts
+  the literal at build time). Previously the two copies had to be
+  bumped in lockstep — pure drift surface.
 
 ## 0.11.0 — 2026-04-14
 

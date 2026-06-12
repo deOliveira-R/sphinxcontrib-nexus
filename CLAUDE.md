@@ -72,12 +72,13 @@ sphinxcontrib/nexus/
 
 - README "MCP Tools (N)" header and tool bullets ↔ FastMCP registry
   (`tests/test_server_registry.py`).
-- Version appears in BOTH `pyproject.toml` and `__init__.__version__` —
-  bump both together.
+- Version is single-sourced in `sphinxcontrib/nexus/__init__.py`
+  (`__version__`); `pyproject.toml` declares it `dynamic` and flit
+  extracts the literal at build time.
 
 ## Release process
 
-1. Bump version in `pyproject.toml` AND `sphinxcontrib/nexus/__init__.py`.
+1. Bump `__version__` in `sphinxcontrib/nexus/__init__.py`.
 2. Update `CHANGELOG.md` (Added / Fixed / Changed).
 3. Merge to `main` via PR (no direct commits to main).
 4. Tag `vX.Y.Z` — CI publishes to PyPI on tags.

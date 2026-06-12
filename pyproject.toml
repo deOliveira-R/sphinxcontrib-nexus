@@ -4,7 +4,9 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "sphinxcontrib-nexus"
-version = "0.12.0"
+# Version is single-sourced from sphinxcontrib/nexus/__init__.py
+# (__version__); flit extracts the literal at build time.
+dynamic = ["version"]
 description = "Unified code + documentation knowledge graph from Sphinx builds and Python AST analysis"
 readme = "README.md"
 license = "MIT"
