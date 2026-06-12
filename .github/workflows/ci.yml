@@ -48,3 +48,9 @@ jobs:
 
       - name: Type check
         run: .venv/bin/pyright sphinxcontrib/
+
+      # The parity oracle needs pyright-langserver, which only this
+      # job installs — the pytest matrix jobs skip these tests. The
+      # type-check step above has already warmed the npm bundle cache.
+      - name: LSP-graph parity oracle
+        run: .venv/bin/python -m pytest tests/test_lsp_parity.py -v
