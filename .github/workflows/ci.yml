@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +27,24 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # pyrightconfig.json points at ./.venv — build the same layout
+      # CI-side so the type check resolves imports exactly as local
+      # development does.
+      - name: Install into project venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[test]" pyright
+
+      - name: Type check
+        run: .venv/bin/pyright sphinxcontrib/
