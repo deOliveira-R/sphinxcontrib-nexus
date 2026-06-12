@@ -116,7 +116,7 @@ Nexus works with any Python project:
 
 ### Exploration
 - **`query`** — keyword search across node names
-- **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node
+- **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node; warns when the file changed since the graph was built (positions in a snapshot drift with edits)
 - **`context`** — 360-degree view of a symbol (all connections grouped by type)
 - **`neighbors`** — direct connections with direction and type filtering
 - **`callers`** — functions that call a given node (optionally transitive)
@@ -149,6 +149,28 @@ Nexus works with any Python project:
 ### Workspaces (git worktrees)
 - **`workspaces`** — list every checkout of the project (main tree + linked git worktrees) with branch, graph presence, and build provenance
 - **`use_workspace`** — switch the server to the graph built inside another checkout, referenced by worktree name, branch name, or absolute root path (per-session; auto-reload follows)
+
+Node results from AST-derived symbols carry `file_path` and `lineno`,
+so any query answer can be fed straight back to an editor, LSP
+request, or file read — the position → node bridge (`node_at`) runs
+in both directions.
+
+### Edit-time file brief (the ambient channel)
+
+```bash
+nexus file-brief path/to/module.py --db _nexus/graph.db --project-root .
+```
+
+Prints ≤6 lines of graph context for one source file — node count and
+external callers, the highest-degree node's copy-pasteable ID, the
+equations the file implements and how many tests verify them, the doc
+pages documenting it, and a staleness flag when the file changed since
+the graph was built. It reads the SQLite database directly (no graph
+load, ~100 ms warm), which makes it cheap enough to wire into an
+edit-time hook (e.g. a Claude Code `PostToolUse` hook on
+`Edit|Write`): graph context then arrives WITH every edit, the way a
+language server pushes diagnostics, instead of waiting to be asked.
+`--json` emits the full structured brief.
 
 ### Usage journal
 

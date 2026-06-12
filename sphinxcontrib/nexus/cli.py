@@ -125,6 +125,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     workspaces_cmd.add_argument("-v", "--verbose", action="store_true")
 
+    # --- file-brief ---
+    file_brief_cmd = sub.add_parser(
+        "file-brief",
+        help="Edit-time brief: what the graph knows about one source "
+        "file (direct SQLite read — fast enough for a hook)",
+    )
+    file_brief_cmd.add_argument(
+        "file", type=Path,
+        help="Source file; relative paths resolve against --project-root.",
+    )
+    file_brief_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+        help="SQLite database path (default: _nexus/graph.db).",
+    )
+    file_brief_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+        help="Checkout root for path resolution and the git staleness "
+        "check (default: cwd).",
+    )
+    file_brief_cmd.add_argument(
+        "--json", dest="json_out", action="store_true",
+        help="Emit the full brief as JSON instead of the ≤6-line text.",
+    )
+
     # --- status ---
     status_cmd = sub.add_parser(
         "status",
@@ -594,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         "analyze": _run_analyze,
         "serve": _run_serve,
         "workspaces": _run_workspaces,
+        "file-brief": _run_file_brief,
         "status": _run_status,
         "query": _run_query,
         "impact": _run_impact,
@@ -811,7 +836,7 @@ def _run_serve(args: argparse.Namespace) -> int:
 
 
 def _run_workspaces(args: argparse.Namespace) -> int:
-    from sphinxcontrib.nexus.workspace import Workspace, discover
+    from sphinxcontrib.nexus.workspace import GitProvenance, Workspace, discover
 
     active = Workspace(
         db_path=args.db.resolve(),
@@ -824,13 +849,33 @@ def _run_workspaces(args: argparse.Namespace) -> int:
             f"graph built {entry['graph_built']}"
             if entry["has_graph"] else "no graph"
         )
-        provenance = entry["provenance"] or {}
-        stamped = (
-            f"  (from {provenance.get('git_branch')}"
-            f"@{provenance.get('git_commit')})"
-            if provenance.get("git_commit") else ""
-        )
+        prov = GitProvenance.from_stamp(entry["provenance"])
+        stamped = f"  (from {prov.branch}@{prov.commit})" if prov else ""
         print(f"{marker} {entry['root']}  [{entry['branch']}]  {graph}{stamped}")
+    return 0
+
+
+def _run_file_brief(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from sphinxcontrib.nexus.brief import file_brief, render_text
+
+    if not args.db.is_file():
+        print(f"No graph database at {args.db}", file=sys.stderr)
+        return 1
+    root = (args.project_root or Path.cwd()).resolve()
+    brief = file_brief(args.db, args.file, project_root=root)
+    if brief is None:
+        print(
+            f"{args.file} is not in the graph (new file, excluded "
+            f"tree, or stale build)",
+            file=sys.stderr,
+        )
+        return 1
+    if args.json_out:
+        print(json.dumps(asdict(brief), indent=2))
+    else:
+        print(render_text(brief))
     return 0
 
 

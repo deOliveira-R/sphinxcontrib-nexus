@@ -6,13 +6,18 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import networkx as nx
-
-from sphinxcontrib.nexus.graph import KnowledgeGraph
+if TYPE_CHECKING:
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
 
 logger = logging.getLogger(__name__)
+
+# networkx (via .graph) is imported INSIDE the functions that build or
+# traverse graphs: the metadata/connection helpers at the bottom serve
+# latency-critical consumers (the edit-time file brief fires from a
+# PostToolUse hook) that must not pay the ~150 ms graph-stack import
+# for a few SQL reads.
 
 
 #: Current SQLite schema version. Bump only on incompatible schema
@@ -36,6 +41,8 @@ class SchemaVersionError(RuntimeError):
 
 def graph_to_dict(graph: KnowledgeGraph) -> dict:
     """Convert graph to networkx node-link format."""
+    import networkx as nx
+
     data = nx.node_link_data(graph.nxgraph, edges="edges")
     data["graph"] = graph.metadata
     return data
@@ -43,6 +50,10 @@ def graph_to_dict(graph: KnowledgeGraph) -> dict:
 
 def dict_to_graph(data: dict) -> KnowledgeGraph:
     """Load a KnowledgeGraph from networkx node-link format."""
+    import networkx as nx
+
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
     nxg = nx.node_link_graph(data, edges="edges")
     kg = KnowledgeGraph(nxg)
     kg.metadata = data.get("graph", {})
@@ -102,6 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_type   ON edges(type);
 CREATE INDEX IF NOT EXISTS idx_nodes_type   ON nodes(type);
 CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain);
+CREATE INDEX IF NOT EXISTS idx_node_attrs_key_value ON node_attrs(key, value);
 """
 
 _FTS_SCHEMA = """\
@@ -246,6 +258,8 @@ def load_sqlite(path: Path) -> KnowledgeGraph:
     databases written by nexus releases before schema_version
     existed) and treated as version 1.
     """
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
     kg = KnowledgeGraph()
     kg.metadata.update(read_sqlite_metadata(path))
     _check_schema_version(kg.metadata, path)
