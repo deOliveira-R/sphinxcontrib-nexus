@@ -2,6 +2,74 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## 0.12.0 — 2026-06-11
+
+Git-worktree (workspace) support. A graph database is a snapshot of
+ONE checkout, but agent harnesses (Claude Code) spawn the MCP server
+against the MAIN checkout and never restart it when a session moves
+into a worktree — so worktree sessions silently query the wrong
+branch's graph. Observed in production: the main checkout's graph was
+26 days stale while the active worktree rebuilt its own graph on
+every docs build; every session answered from the stale one. This
+release makes the mismatch visible and switchable.
+
+### Added
+
+- **Provenance stamping.** Every graph-write site (the Sphinx
+  ``build-finished`` handler and ``nexus analyze``) now stamps
+  ``graph.metadata["provenance"]`` with ``source_root``, ``built_at``,
+  and — when the tree is a git checkout — ``git_branch``,
+  ``git_commit`` (short), ``git_dirty``. Graphs are self-describing:
+  any consumer can tell which tree, branch, and commit a database is
+  a snapshot of. Non-git trees still get ``source_root``/``built_at``.
+- **``workspace`` module.** ``Workspace`` (a checkout paired with its
+  graph database via a root-relative layout), ``discover()``
+  (enumerate all checkouts via ``git worktree list --porcelain`` and
+  report each one's graph status, branch, and provenance),
+  ``git_provenance()``, ``list_worktrees()``, ``stamp_provenance()``.
+  All git access is subprocess-based and failure-tolerant: missing
+  git / non-repository roots degrade to "active workspace only",
+  never to a tool-call exception.
+- **``read_sqlite_metadata()``** in ``export`` — metadata-table-only
+  peek (no node/edge loading) so discovery can read provenance from
+  every sibling database cheaply. Deliberately not gated on
+  ``schema_version`` (the metadata table is where the version itself
+  lives); ``load_sqlite`` now delegates its metadata pass to it.
+- **MCP tool ``workspaces``** — list every checkout (main + linked
+  worktrees) with branch, graph presence, build time, provenance,
+  and which one is active.
+- **MCP tool ``use_workspace(root)``** — atomically re-point the
+  server at the graph built inside another checkout. Safe because
+  each agent session owns its server process (verified: Claude Code
+  spawns one ``nexus serve`` per session). Fails loud with a
+  build-it-first hint when the target checkout has no graph; the
+  active graph is untouched by a failed switch. Auto-reload tracks
+  the new database afterwards; a workspace-switch guard inside the
+  reload lock prevents a stale pre-lock ``stat`` from clobbering a
+  freshly switched graph.
+- **``session_briefing`` workspace block** (MCP tool and
+  ``nexus://briefing`` resource). Reports the active workspace's
+  provenance and sibling checkouts, with warnings when (a) the graph
+  carries no provenance stamp, (b) the graph was built on a different
+  branch than the checkout now has, or (c) sibling worktrees carry
+  graphs of their own — the wrong-tree tripwire fires on the
+  session's first turn instead of never.
+- **CLI ``nexus workspaces``** — same discovery, human-readable.
+
+### Changed
+
+- **Server state model.** The four smeared module globals
+  (``_db_path``, ``_project_root``, ...) collapse into one named
+  concept: ``_workspace: Workspace``. ``serve()`` resolves its paths
+  at startup.
+- **``nexus setup`` MCP config template** now anchors ``command``,
+  ``--db``, and ``--project-root`` on ``${CLAUDE_PROJECT_DIR:-.}``
+  instead of bare relative paths — Claude Code sets that variable for
+  spawned MCP servers, so resolution no longer depends on the
+  (unspecified) spawn cwd; the ``:-.`` fallback keeps other MCP
+  clients working.
+- ``nexus serve --help`` no longer hardcodes a tool count.
+
 ## 0.11.0 — 2026-04-14
 
 Public escape hatch for downstream projects that need to keep

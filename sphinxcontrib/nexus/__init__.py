@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,13 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     _finalize_graph(graph)
 
     from sphinxcontrib.nexus.export import write_json, write_sqlite
+    from sphinxcontrib.nexus.workspace import stamp_provenance
+
+    # Stamp which tree this graph is a snapshot of (root, branch,
+    # commit, dirty) so consumers — especially agents working in git
+    # worktrees — can tell whether the graph matches their checkout.
+    # Same project-root convention as _run_ast_analysis.
+    stamp_provenance(graph, Path(app.srcdir).parent)
 
     outdir = Path(app.outdir) / app.config.nexus_output
     outdir.mkdir(parents=True, exist_ok=True)

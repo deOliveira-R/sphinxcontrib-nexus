@@ -32,6 +32,7 @@ from sphinxcontrib.nexus.graph import (
     NodeType,
 )
 from sphinxcontrib.nexus.query import GraphQuery
+from sphinxcontrib.nexus.workspace import Workspace
 
 
 def _make_small_graph(label: str = "foo") -> KnowledgeGraph:
@@ -61,7 +62,7 @@ def server_state(tmp_path, monkeypatch):
     db = tmp_path / "graph.db"
     write_sqlite(_make_small_graph("initial"), db)
 
-    monkeypatch.setattr(server_mod, "_db_path", db)
+    monkeypatch.setattr(server_mod, "_workspace", Workspace(db_path=db))
     monkeypatch.setattr(
         server_mod, "_query",
         GraphQuery(_make_small_graph("initial")),

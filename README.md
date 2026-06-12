@@ -112,7 +112,7 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (25)
+## MCP Tools (27)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -144,6 +144,10 @@ Nexus works with any Python project:
 - **`migration_plan`** — plan dependency migration with phased blast radius
 - **`ingest`** — LLM-powered paper/PDF ingestion into the graph
 - **`processes`** — detect named execution flows through the codebase (supports `limit`/`offset` pagination)
+
+### Workspaces (git worktrees)
+- **`workspaces`** — list every checkout of the project (main tree + linked git worktrees) with branch, graph presence, and build provenance
+- **`use_workspace`** — switch the server to the graph built inside another checkout (per-session; auto-reload follows)
 
 ## MCP Resources (4)
 
@@ -255,6 +259,33 @@ print(f"unverified L0 equations:     {len(gaps.unverified_equations)}")
 ```
 
 Same surface on the MCP side (`verification_audit`, `verification_gaps`) and the CLI (`nexus audit`, `nexus gaps`).
+
+## Git Worktrees & Workspaces
+
+A graph database is a snapshot of **one** checkout. Agent harnesses
+(e.g. Claude Code) spawn the MCP server against the main checkout and
+keep it running when a session moves into a git worktree — so without
+help, worktree sessions silently query the wrong branch's graph.
+Nexus closes that hole in three layers:
+
+1. **Provenance stamping.** Every graph write (Sphinx build, `nexus
+   analyze`) stamps `metadata["provenance"]` with `source_root`,
+   `built_at`, `git_branch`, `git_commit`, `git_dirty`. Every database
+   says which tree it is a snapshot of.
+2. **Discovery.** `workspaces` (MCP) / `nexus workspaces` (CLI)
+   enumerate all checkouts via `git worktree list` and report which
+   have graphs, on which branch, built from where.
+3. **Switching + tripwire.** `use_workspace(root)` re-points the
+   server at another checkout's graph (one server per agent session,
+   so the switch is session-scoped). `session_briefing` carries a
+   `workspace` block that warns when the graph's branch no longer
+   matches the checkout or when sibling worktrees have graphs of
+   their own — the wrong-tree mismatch surfaces on the session's
+   first turn.
+
+Recommended agent protocol: after entering a worktree, build its docs
+(or run `nexus analyze`) inside the worktree, then call
+`use_workspace(<worktree root>)`.
 
 ## Storage
 

@@ -23,6 +23,7 @@ Quick start:
   nexus serve --db graph.db      Start the MCP server
   nexus status --db graph.db     Show graph summary
   nexus query --db graph.db "solve"   Search the graph
+  nexus workspaces --db graph.db Show checkouts (worktrees) + their graphs
 """
 
 
@@ -93,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     # --- serve ---
     serve_cmd = sub.add_parser(
         "serve",
-        help="Start MCP server (stdio) — 16 tools, 4 resources",
+        help="Start MCP server (stdio) over the knowledge graph",
     )
     serve_cmd.add_argument(
         "--db", type=Path, default=Path("_nexus/graph.db"),
@@ -104,6 +105,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Project root for git operations and file searches.",
     )
     serve_cmd.add_argument("-v", "--verbose", action="store_true")
+
+    # --- workspaces ---
+    workspaces_cmd = sub.add_parser(
+        "workspaces",
+        help="List project checkouts (git worktrees) and their graphs",
+    )
+    workspaces_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+        help="SQLite database path of the active checkout.",
+    )
+    workspaces_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+        help="Checkout root the database belongs to (default: cwd).",
+    )
+    workspaces_cmd.add_argument("-v", "--verbose", action="store_true")
 
     # --- status ---
     status_cmd = sub.add_parser(
@@ -573,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
         "setup": _run_setup,
         "analyze": _run_analyze,
         "serve": _run_serve,
+        "workspaces": _run_workspaces,
         "status": _run_status,
         "query": _run_query,
         "impact": _run_impact,
@@ -660,12 +677,16 @@ def _run_setup(args: argparse.Namespace) -> int:
         files = list((target / name).rglob("*.md"))
         print(f"  {name}/ ({len(files)} files)")
 
-    # Install MCP server configuration
-    nexus_cmd = shutil.which("nexus") or ".venv/bin/nexus"
-    db_path = "docs/_build/html/_nexus/graph.db"
+    # Install MCP server configuration. Paths are anchored on
+    # ${CLAUDE_PROJECT_DIR} (set by Claude Code in the spawned server's
+    # environment, with `:-.` as the fallback for other MCP clients)
+    # rather than on the spawn cwd, which is unspecified.
+    project_dir = "${CLAUDE_PROJECT_DIR:-.}"
+    nexus_cmd = shutil.which("nexus") or f"{project_dir}/.venv/bin/nexus"
+    db_path = f"{project_dir}/docs/_build/html/_nexus/graph.db"
     nexus_server_config = {
         "command": nexus_cmd,
-        "args": ["serve", "--db", db_path, "--project-root", "."],
+        "args": ["serve", "--db", db_path, "--project-root", project_dir],
     }
 
     if args.global_install:
@@ -745,6 +766,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
     else:
         merged = ast_graph
 
+    from sphinxcontrib.nexus.workspace import stamp_provenance
+    stamp_provenance(merged, project_root.resolve())
+
     write_sqlite(merged, args.db)
     print(f"Written to {args.db}")
     print(f"  Nodes: {merged.node_count}")
@@ -776,6 +800,30 @@ def _run_serve(args: argparse.Namespace) -> int:
 
     project_root = (args.project_root or Path.cwd()).resolve()
     serve(db_path=db_path, project_root=project_root)
+    return 0
+
+
+def _run_workspaces(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus.workspace import Workspace, discover
+
+    active = Workspace(
+        db_path=args.db.resolve(),
+        root=(args.project_root or Path.cwd()).resolve(),
+    )
+    for status in discover(active):
+        entry = status.to_payload()
+        marker = "*" if entry["is_active"] else " "
+        graph = (
+            f"graph built {entry['graph_built']}"
+            if entry["has_graph"] else "no graph"
+        )
+        provenance = entry["provenance"] or {}
+        stamped = (
+            f"  (from {provenance.get('git_branch')}"
+            f"@{provenance.get('git_commit')})"
+            if provenance.get("git_commit") else ""
+        )
+        print(f"{marker} {entry['root']}  [{entry['branch']}]  {graph}{stamped}")
     return 0
 
 

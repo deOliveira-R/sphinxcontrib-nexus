@@ -218,6 +218,27 @@ def write_sqlite(graph: KnowledgeGraph, path: Path) -> None:
         conn.close()
 
 
+def read_sqlite_metadata(path: Path) -> dict[str, Any]:
+    """Read only the ``metadata`` table of a graph database.
+
+    A cheap peek (no node/edge loading) used by workspace discovery to
+    report each checkout's graph provenance without paying a full
+    :func:`load_sqlite`.  Deliberately NOT gated on ``schema_version``:
+    the metadata table is the stable part of the schema — it is where
+    the version itself is stored — so reading it must work across
+    versions (the version check consumes this function's output).
+    """
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        return {
+            row["key"]: json.loads(row["value"])
+            for row in conn.execute("SELECT key, value FROM metadata")
+        }
+    finally:
+        conn.close()
+
+
 def load_sqlite(path: Path) -> KnowledgeGraph:
     """Load graph from a SQLite database into a KnowledgeGraph.
 
@@ -226,16 +247,13 @@ def load_sqlite(path: Path) -> KnowledgeGraph:
     databases written by nexus releases before schema_version
     existed) and treated as version 1.
     """
+    kg = KnowledgeGraph()
+    kg.metadata.update(read_sqlite_metadata(path))
+    _check_schema_version(kg.metadata, path)
+
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     try:
-        kg = KnowledgeGraph()
-
-        # Metadata
-        for row in conn.execute("SELECT key, value FROM metadata"):
-            kg.metadata[row["key"]] = json.loads(row["value"])
-
-        _check_schema_version(kg.metadata, path)
 
         g = kg.nxgraph
 
