@@ -23,6 +23,20 @@ Code releases; the specifics below carry their probe date.
 
 ## Known regression vectors (probed 2026-06; re-verify per release)
 
+Probe coverage 2026-06: Fable 5 (interactive main-agent scaffold) AND
+Opus 4.8 (sub-agent scaffold, probed via dispatched introspection).
+Cross-model findings: the delegation sentence and the ToolSearch
+deferral mechanics are VERBATIM-IDENTICAL across both; base scaffolds
+favor IMPORTANT/NEVER (CRITICAL is a project-layer token, VERY
+IMPORTANT absent from both). The sub-agent scaffold has NO pro-Grep
+default at all — its search guidance is fully tool-agnostic ("search
+broadly", "use multiple search strategies"), and the dedicated-tools
+idea appears only as the Bash tool's cat/head/tail/sed/awk/echo
+avoidance note. Consequence: for sub-agents, Nexus steering is purely
+ADDITIVE — there is no directive to override, so the affirmative
+dispatch table and the deferral/delegation counters below are the
+entire mechanism.
+
 1. **Plain habit regression** (the original): statistical pull toward
    grep for any "find something in code" impulse. The historical trigger
    directive `ALWAYS use Grep for search tasks` is **GONE from current
