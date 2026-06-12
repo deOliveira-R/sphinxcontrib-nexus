@@ -25,6 +25,18 @@ description: "Use when the user asks about Nexus itself — available tools, how
 3. Follow that skill's workflow
 ```
 
+## Bridges into the graph
+
+- **From a position** (LSP result, stack trace, editor line):
+  `node_at({file, line})` → graph node → `context`/`impact`.
+- **From a node result**: AST-derived results carry
+  `file_path`/`lineno` — open the source directly.
+- **From an edit**: projects may inject `nexus file-brief` output
+  via an edit-time hook — the brief's node IDs are entry points,
+  its `stale:` line means rebuild before trusting positions.
+- **From a worktree**: after EnterWorktree, `use_workspace(<name>)`
+  so queries answer from that checkout's graph.
+
 ## Full Reference
 
 See [../nexus-exploring/reference.md](../nexus-exploring/reference.md) for
