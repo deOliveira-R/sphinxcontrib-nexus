@@ -49,6 +49,11 @@ class WorkspaceLayoutError(ValueError):
     inside the project root)."""
 
 
+class WorkspaceResolutionError(ValueError):
+    """A checkout reference (name / branch / path) did not resolve to
+    exactly one checkout of the project."""
+
+
 def _git(root: Path, *args: str) -> str | None:
     """Run a git command at ``root``; ``None`` on any failure."""
     try:
@@ -164,6 +169,53 @@ def list_worktrees(root: Path) -> list[WorktreeEntry]:
                 entries.append(WorktreeEntry(path=path, branch=branch))
             path, branch = None, None
     return entries
+
+
+def resolve_checkout_root(active: Workspace, ref: str) -> Path:
+    """Resolve a checkout reference to a checkout root path.
+
+    Accepted forms, tried in order:
+
+    1. **Absolute path** — used as-is (existence is the caller's check,
+       so the caller can produce its own context-rich error).
+    2. **Worktree directory name or branch name** — matched against
+       ``git worktree list`` at the active root.  Agents see short
+       names like ``sn-nd-layout`` in ``workspaces`` output; making
+       them type the absolute root back is pure friction.
+    3. **Relative path** — only when it exists as a directory, as a
+       last resort (kept for symmetry with absolute paths; ambiguity
+       with form 2 is resolved in favour of the worktree match, which
+       is what the short name almost always means).
+
+    Raises :class:`WorkspaceResolutionError` when a non-path reference
+    matches zero or several checkouts; the message lists the known
+    checkouts so the caller can self-correct without a second
+    discovery round-trip.
+    """
+    candidate = Path(ref).expanduser()
+    if candidate.is_absolute():
+        return candidate
+
+    entries = list_worktrees(active.root) if active.root is not None else []
+    matches = [e for e in entries if ref in (e.path.name, e.branch)]
+    if len(matches) == 1:
+        return matches[0].path
+    if len(matches) > 1:
+        listing = ", ".join(str(e.path) for e in matches)
+        raise WorkspaceResolutionError(
+            f"{ref!r} is ambiguous — it matches several checkouts: "
+            f"{listing}. Pass the absolute root path instead."
+        )
+    if candidate.is_dir():
+        return candidate
+    known = ", ".join(
+        f"{e.path.name} ({e.branch or 'detached'})" for e in entries
+    ) or "none discovered"
+    raise WorkspaceResolutionError(
+        f"No checkout named {ref!r}. Known checkouts: {known}. "
+        f"Pass a worktree directory name, a branch name, or an "
+        f"absolute root path."
+    )
 
 
 @dataclass(frozen=True)

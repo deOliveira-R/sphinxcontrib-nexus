@@ -147,7 +147,7 @@ Nexus works with any Python project:
 
 ### Workspaces (git worktrees)
 - **`workspaces`** — list every checkout of the project (main tree + linked git worktrees) with branch, graph presence, and build provenance
-- **`use_workspace`** — switch the server to the graph built inside another checkout (per-session; auto-reload follows)
+- **`use_workspace`** — switch the server to the graph built inside another checkout, referenced by worktree name, branch name, or absolute root path (per-session; auto-reload follows)
 
 ## MCP Resources (4)
 

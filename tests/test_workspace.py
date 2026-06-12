@@ -40,9 +40,11 @@ from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
     Workspace,
     WorkspaceLayoutError,
+    WorkspaceResolutionError,
     discover,
     git_provenance,
     list_worktrees,
+    resolve_checkout_root,
     stamp_provenance,
 )
 
@@ -264,6 +266,54 @@ def test_discover_degrades_without_root(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# resolve_checkout_root — name / branch / path forms
+# ---------------------------------------------------------------------------
+
+
+def _active_on(repo: Path) -> Workspace:
+    return Workspace(db_path=repo / DB_RELPATH, root=repo)
+
+
+def test_resolve_absolute_path_passes_through(repo, worktree):
+    resolved = resolve_checkout_root(_active_on(repo), str(worktree))
+    assert resolved == worktree
+
+
+def test_resolve_by_worktree_directory_name(repo, worktree):
+    resolved = resolve_checkout_root(_active_on(repo), worktree.name)
+    assert resolved.resolve() == worktree.resolve()
+
+
+def test_resolve_by_branch_name(repo, worktree):
+    resolved = resolve_checkout_root(_active_on(repo), "feature")
+    assert resolved.resolve() == worktree.resolve()
+
+
+def test_resolve_unknown_name_lists_candidates(repo, worktree):
+    with pytest.raises(WorkspaceResolutionError) as exc:
+        resolve_checkout_root(_active_on(repo), "no-such-checkout")
+    # The error is self-correcting: it names the real candidates.
+    assert worktree.name in str(exc.value)
+
+
+def test_resolve_ambiguous_name_is_an_error(repo, tmp_path):
+    # A worktree whose DIRECTORY name equals another worktree's BRANCH
+    # name: the reference matches both checkouts.
+    wt_a = tmp_path / "wt-a"
+    _git(repo, "worktree", "add", str(wt_a), "-b", "shared")
+    wt_b = tmp_path / "shared"
+    _git(repo, "worktree", "add", str(wt_b), "-b", "other")
+    with pytest.raises(WorkspaceResolutionError, match="ambiguous"):
+        resolve_checkout_root(_active_on(repo), "shared")
+
+
+def test_resolve_name_without_root_degrades_to_error(tmp_path):
+    active = Workspace(db_path=tmp_path / "graph.db", root=None)
+    with pytest.raises(WorkspaceResolutionError):
+        resolve_checkout_root(active, "some-name")
+
+
+# ---------------------------------------------------------------------------
 # MCP server tools — the wrong-tree tripwire end to end
 # ---------------------------------------------------------------------------
 
@@ -320,6 +370,28 @@ def test_use_workspace_without_graph_fails_with_hint(server_on_main, worktree):
 def test_use_workspace_rejects_non_directory(server_on_main):
     result = json.loads(server_mod.use_workspace("/no/such/place"))
     assert "error" in result
+
+
+def test_use_workspace_switches_by_worktree_name(server_on_main, worktree):
+    """Agents see short names in ``workspaces`` output; the short name
+    is enough to switch — no absolute path round-trip."""
+    _write_graph(worktree, "feature_node")
+    result = json.loads(server_mod.use_workspace(worktree.name))
+    assert result["switched"] is True
+    assert result["workspace"]["active"]["branch"] == "feature"
+
+
+def test_use_workspace_switches_by_branch_name(server_on_main, worktree):
+    _write_graph(worktree, "feature_node")
+    result = json.loads(server_mod.use_workspace("feature"))
+    assert result["switched"] is True
+    assert result["workspace"]["active"]["branch"] == "feature"
+
+
+def test_use_workspace_unknown_name_reports_candidates(server_on_main, worktree):
+    result = json.loads(server_mod.use_workspace("no-such-checkout"))
+    assert "error" in result
+    assert worktree.name in result["error"]
 
 
 def test_reload_tracks_switched_workspace(server_on_main, worktree):

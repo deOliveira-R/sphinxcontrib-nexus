@@ -46,7 +46,10 @@ release makes the mismatch visible and switchable.
   active graph is untouched by a failed switch. Auto-reload tracks
   the new database afterwards; a workspace-switch guard inside the
   reload lock prevents a stale pre-lock ``stat`` from clobbering a
-  freshly switched graph.
+  freshly switched graph. Accepts a worktree directory name or a
+  branch name in addition to an absolute root path
+  (``workspace.resolve_checkout_root``); unknown or ambiguous names
+  fail with the list of known checkouts.
 - **``session_briefing`` workspace block** (MCP tool and
   ``nexus://briefing`` resource). Reports the active workspace's
   provenance and sibling checkouts, with warnings when (a) the graph

@@ -32,7 +32,9 @@ from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.workspace import (
     Workspace,
     WorkspaceLayoutError,
+    WorkspaceResolutionError,
     discover,
+    resolve_checkout_root,
 )
 
 logger = logging.getLogger(__name__)
@@ -461,14 +463,19 @@ def use_workspace(root: str) -> str:
     root.
 
     Args:
-        root: Absolute path of the checkout to read from. Its graph
-            is expected at the same root-relative location as the
-            active database (e.g. ``docs/_build/html/_nexus/graph.db``).
+        root: The checkout to read from — its worktree directory name
+            (e.g. ``sn-nd-layout``), its branch name, or its absolute
+            root path. Its graph is expected at the same root-relative
+            location as the active database
+            (e.g. ``docs/_build/html/_nexus/graph.db``).
     """
     global _query, _workspace, _db_mtime
     if _workspace is None:
         return to_json({"error": "Graph not loaded. Call serve() first."})
-    target_root = Path(root).expanduser()
+    try:
+        target_root = resolve_checkout_root(_workspace, root)
+    except WorkspaceResolutionError as e:
+        return to_json({"error": str(e)})
     if not target_root.is_dir():
         return to_json({"error": f"Not a directory: {target_root}"})
     try:
