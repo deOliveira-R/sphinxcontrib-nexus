@@ -68,6 +68,21 @@ release makes the mismatch visible and switchable.
 - **CI runs pyright** alongside the pytest matrix (which now includes
   Python 3.14); the type check builds the same ``./.venv`` layout
   ``pyrightconfig.json`` points at locally.
+- **Usage journal.** Every MCP tool call appends one JSON line
+  (timestamp, tool, args repr-truncated, duration, outcome, active
+  workspace, pid) to ``~/.nexus/usage.jsonl`` — ``NEXUS_USAGE_LOG``
+  overrides the path, an empty value disables. The self-observation
+  channel: tool adoption gets evaluated from recorded behavior instead
+  of anyone's memory. Journaling is failure-tolerant and never blocks
+  a tool call; the registration wrapper is schema-transparent
+  (guarded by test).
+- **behavioral-auto-regression skill updated to the current prompt
+  landscape**: the historical Grep ``ALWAYS`` directive is gone from
+  current agent prompts; the live regression vectors are habit
+  (counter: claim the "dedicated tools" category), search delegation
+  to generic grep-wielding sub-agents (counter: project explorer
+  agent + deny built-in Explore), and deferred MCP tools (counter:
+  ToolSearch loading — deferral is not unavailability).
 - **Roots-based workspace auto-alignment.** ``session_briefing`` asks
   the client (MCP ``roots/list``) which directory the session was
   launched from; when that lies inside a different checkout that has

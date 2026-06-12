@@ -51,3 +51,15 @@ def test_readme_resource_count_matches_registry():
 
     assert readme_resources == registry_resources
     assert declared_count == len(registry_resources)
+
+
+def test_journal_wrapper_preserves_parameter_schemas():
+    """The nexus_tool journaling wrapper must stay schema-transparent:
+    FastMCP introspects through functools.wraps/__wrapped__, so tool
+    parameters survive and Context params stay excluded."""
+    schemas = {t.name: t.inputSchema for t in asyncio.run(_mcp.list_tools())}
+    assert set(schemas["impact"]["properties"]) == {
+        "target", "direction", "max_depth", "edge_types",
+    }
+    assert set(schemas["node_at"]["properties"]) == {"file", "line"}
+    assert "ctx" not in schemas["session_briefing"].get("properties", {})

@@ -10,8 +10,14 @@ Usage:
 
 from __future__ import annotations
 
+import functools
+import inspect
+import json
 import logging
+import os
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -183,11 +189,95 @@ def _workspace_payload() -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------
+# Usage journal — the self-observation channel
+# ------------------------------------------------------------------
+
+#: Override the journal location; set EMPTY to disable journaling.
+USAGE_JOURNAL_ENV = "NEXUS_USAGE_LOG"
+
+
+def _usage_journal_path() -> Path | None:
+    raw = os.environ.get(USAGE_JOURNAL_ENV)
+    if raw is not None:
+        return Path(raw).expanduser() if raw.strip() else None
+    return Path.home() / ".nexus" / "usage.jsonl"
+
+
+def _journal_usage(
+    tool: str, args: tuple, kwargs: dict, ms: float, outcome: str,
+) -> None:
+    """Append one usage record; never raises into the tool call."""
+    try:
+        path = _usage_journal_path()
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": tool,
+            "args": repr(args)[:200] if args else "",
+            "kwargs": repr(kwargs)[:200] if kwargs else "",
+            "ms": round(ms, 1),
+            "outcome": outcome,
+            "workspace": str(_active_root()) if _workspace is not None else None,
+            "pid": os.getpid(),
+        }
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        logger.debug("Usage journal write failed", exc_info=True)
+
+
+def nexus_tool(fn):
+    """Register an MCP tool with usage journaling.
+
+    The journal (``~/.nexus/usage.jsonl``; ``NEXUS_USAGE_LOG`` overrides
+    the path, empty value disables) is ground truth for evaluating which
+    tools agents actually reach for — per call: timestamp, tool, args
+    (repr-truncated), duration, outcome, active workspace, server pid.
+    Tool evaluation then rests on recorded behavior instead of anyone's
+    memory. Journaling never blocks or fails a tool call.
+    """
+    def record(args: tuple, kwargs: dict, started: float, outcome: str) -> None:
+        _journal_usage(
+            fn.__name__, args, kwargs,
+            (time.perf_counter() - started) * 1000, outcome,
+        )
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            started = time.perf_counter()
+            outcome = "ok"
+            try:
+                return await fn(*args, **kwargs)
+            except Exception:
+                outcome = "exception"
+                raise
+            finally:
+                record(args, kwargs, started, outcome)
+        return _mcp.tool()(async_wrapper)
+
+    @functools.wraps(fn)
+    def sync_wrapper(*args, **kwargs):
+        started = time.perf_counter()
+        outcome = "ok"
+        try:
+            return fn(*args, **kwargs)
+        except Exception:
+            outcome = "exception"
+            raise
+        finally:
+            record(args, kwargs, started, outcome)
+    return _mcp.tool()(sync_wrapper)
+
+
+# ------------------------------------------------------------------
 # MCP Tools
 # ------------------------------------------------------------------
 
 
-@_mcp.tool()
+@nexus_tool
 def query(text: str, node_types: str = "", limit: int = 20) -> str:
     """Search the knowledge graph by keyword.
 
@@ -206,7 +296,7 @@ def query(text: str, node_types: str = "", limit: int = 20) -> str:
     return to_json(to_dict(results))
 
 
-@_mcp.tool()
+@nexus_tool
 def node_at(file: str, line: int) -> str:
     """Map a file position to the graph node enclosing it.
 
@@ -237,7 +327,7 @@ def node_at(file: str, line: int) -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def context(node_id: str) -> str:
     """Get a 360-degree view of a node: its attributes and all connections.
 
@@ -251,7 +341,7 @@ def context(node_id: str) -> str:
     return to_json(assemble_context(q, node_id))
 
 
-@_mcp.tool()
+@nexus_tool
 def impact(
     target: str,
     direction: str = "upstream",
@@ -284,7 +374,7 @@ def impact(
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def shortest_path(source: str, target: str, max_hops: int = 8) -> str:
     """Find the shortest path between two nodes.
 
@@ -300,7 +390,7 @@ def shortest_path(source: str, target: str, max_hops: int = 8) -> str:
     return to_json(assemble_shortest_path(q, source, target, max_hops=max_hops))
 
 
-@_mcp.tool()
+@nexus_tool
 def neighbors(
     node_id: str,
     direction: str = "both",
@@ -323,7 +413,7 @@ def neighbors(
     return to_json(assemble_neighbors(q, node_id, direction=direction, edge_types=types))
 
 
-@_mcp.tool()
+@nexus_tool
 def god_nodes(top_n: int = 10) -> str:
     """Get the most connected nodes in the graph.
 
@@ -337,14 +427,14 @@ def god_nodes(top_n: int = 10) -> str:
     return to_json(to_dict(results))
 
 
-@_mcp.tool()
+@nexus_tool
 def stats() -> str:
     """Get graph-level statistics: node/edge counts by type, density, etc."""
     q = _get_query()
     return to_json(to_dict(q.stats()))
 
 
-@_mcp.tool()
+@nexus_tool
 def communities(min_size: int = 3) -> str:
     """Detect functional communities (groups of tightly connected symbols).
 
@@ -357,7 +447,7 @@ def communities(min_size: int = 3) -> str:
     return to_json(assemble_communities(q, min_size=min_size))
 
 
-@_mcp.tool()
+@nexus_tool
 def detect_changes(scope: str = "all") -> str:
     """Detect which symbols changed in git and what they affect.
 
@@ -375,7 +465,7 @@ def detect_changes(scope: str = "all") -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def rename(old_name: str, new_name: str, dry_run: bool = True) -> str:
     """Analyze or execute a safe rename across the codebase.
 
@@ -396,7 +486,7 @@ def rename(old_name: str, new_name: str, dry_run: bool = True) -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def provenance_chain(node_id: str) -> str:
     """Trace the full citation → equation → code chain for a symbol.
 
@@ -411,7 +501,7 @@ def provenance_chain(node_id: str) -> str:
     return to_json(to_dict(q.provenance_chain(node_id)))
 
 
-@_mcp.tool()
+@nexus_tool
 def verification_coverage(
     status_filter: str = "",
     limit: int = 0,
@@ -442,7 +532,7 @@ def verification_coverage(
     )
 
 
-@_mcp.tool()
+@nexus_tool
 def staleness() -> str:
     """Detect documentation pages that drifted from code.
 
@@ -519,7 +609,7 @@ async def _auto_align_workspace(ctx: Context) -> dict[str, Any] | None:
     return None
 
 
-@_mcp.tool()
+@nexus_tool
 async def session_briefing(ctx: Context) -> str:
     """Generate a structured briefing for starting a new session.
 
@@ -544,7 +634,7 @@ async def session_briefing(ctx: Context) -> str:
     return to_json(payload)
 
 
-@_mcp.tool()
+@nexus_tool
 def workspaces() -> str:
     """List every checkout of this project (main tree + linked git
     worktrees) and the state of each one's knowledge graph.
@@ -563,7 +653,7 @@ def workspaces() -> str:
     return to_json({"workspaces": [s.to_payload() for s in discover(_workspace)]})
 
 
-@_mcp.tool()
+@nexus_tool
 def use_workspace(root: str) -> str:
     """Switch this server to the graph built inside another checkout
     (a git worktree or sibling clone) of the same project.
@@ -640,7 +730,7 @@ def _switch_workspace(target_root: Path) -> dict[str, Any]:
     }
 
 
-@_mcp.tool()
+@nexus_tool
 def retest(scope: str = "all") -> str:
     """Compute the minimum set of tests to re-run after changes.
 
@@ -658,7 +748,7 @@ def retest(scope: str = "all") -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def trace_error(test_node_id: str) -> str:
     """Trace from a failing test back to the equations on its call path.
 
@@ -674,7 +764,7 @@ def trace_error(test_node_id: str) -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def migration_plan(from_dep: str, to_dep: str = "") -> str:
     """Plan a dependency migration (e.g., numpy → jax).
 
@@ -691,7 +781,7 @@ def migration_plan(from_dep: str, to_dep: str = "") -> str:
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def processes(
     min_length: int = 3,
     limit: int = 0,
@@ -719,7 +809,7 @@ def processes(
     )
 
 
-@_mcp.tool()
+@nexus_tool
 def graph_query(pattern: str, limit: int = 50) -> str:
     """Execute a structured graph traversal query.
 
@@ -746,7 +836,7 @@ def graph_query(pattern: str, limit: int = 50) -> str:
     return to_json(results)
 
 
-@_mcp.tool()
+@nexus_tool
 def ingest(file_path: str, llm_command: str = "") -> str:
     """Ingest a document (PDF, paper, text) into the knowledge graph.
 
@@ -777,7 +867,7 @@ def ingest(file_path: str, llm_command: str = "") -> str:
     })
 
 
-@_mcp.tool()
+@nexus_tool
 def bridges(top_n: int = 10) -> str:
     """Find bridge nodes connecting separate communities.
 
@@ -792,7 +882,7 @@ def bridges(top_n: int = 10) -> str:
     return to_json(to_dict(results))
 
 
-@_mcp.tool()
+@nexus_tool
 def callers(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
     """Get functions that call this symbol.
 
@@ -808,7 +898,7 @@ def callers(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
     return to_json(to_dict(q.callers(node_id, transitive=transitive, max_depth=max_depth)))
 
 
-@_mcp.tool()
+@nexus_tool
 def callees(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
     """Get functions that this symbol calls.
 
@@ -824,7 +914,7 @@ def callees(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
     return to_json(to_dict(q.callees(node_id, transitive=transitive, max_depth=max_depth)))
 
 
-@_mcp.tool()
+@nexus_tool
 def verification_audit(
     group_by: str = "",
     include_tests: bool = False,
@@ -857,7 +947,7 @@ def verification_audit(
     return to_json(to_dict(result))
 
 
-@_mcp.tool()
+@nexus_tool
 def verification_gaps(
     module: str = "",
     level: str = "",

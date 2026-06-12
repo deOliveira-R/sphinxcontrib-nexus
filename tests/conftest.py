@@ -9,3 +9,10 @@ pytest_plugins = "sphinx.testing.fixtures"
 # the outer sys.path.
 collect_ignore_glob = ["roots/**", "fixtures/**"]
 collect_ignore = ["roots", "fixtures"]
+
+
+@pytest.fixture(autouse=True)
+def _no_usage_journal(monkeypatch):
+    """Keep test tool calls out of the developer's real usage journal
+    (~/.nexus/usage.jsonl). Journal tests re-point this themselves."""
+    monkeypatch.setenv("NEXUS_USAGE_LOG", "")

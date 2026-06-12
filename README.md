@@ -150,6 +150,14 @@ Nexus works with any Python project:
 - **`workspaces`** — list every checkout of the project (main tree + linked git worktrees) with branch, graph presence, and build provenance
 - **`use_workspace`** — switch the server to the graph built inside another checkout, referenced by worktree name, branch name, or absolute root path (per-session; auto-reload follows)
 
+### Usage journal
+
+Every tool call appends one JSON line to `~/.nexus/usage.jsonl`
+(timestamp, tool, args, duration, outcome, active workspace) so tool
+adoption can be evaluated from recorded behavior. Set
+`NEXUS_USAGE_LOG=<path>` to relocate it, or set it empty to disable.
+Journaling never blocks or fails a tool call.
+
 ## MCP Resources (4)
 
 | Resource | Content |
