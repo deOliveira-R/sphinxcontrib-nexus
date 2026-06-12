@@ -411,10 +411,18 @@ class GraphQuery:
     """
 
     def __init__(self, graph: KnowledgeGraph | nx.MultiDiGraph) -> None:
-        if isinstance(graph, KnowledgeGraph):
-            self._g = graph.nxgraph
-        else:
-            self._g = graph
+        self._kg = (
+            graph if isinstance(graph, KnowledgeGraph) else KnowledgeGraph(graph)
+        )
+        self._g = self._kg.nxgraph
+
+    @property
+    def knowledge_graph(self) -> KnowledgeGraph:
+        """The :class:`KnowledgeGraph` this query reads — including its
+        ``metadata`` (provenance stamp, schema version). Mutating
+        consumers (ingest) operate on this object rather than
+        reconstructing a wrapper around the bare NetworkX graph."""
+        return self._kg
 
     def _node_result(self, node_id: str) -> NodeResult:
         """Build a NodeResult from a node ID."""

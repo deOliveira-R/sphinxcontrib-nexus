@@ -651,3 +651,23 @@ def test_gaps_missing_err_catchers_empty_when_no_catalog():
     q = GraphQuery(_gaps_graph())
     result = q.verification_gaps()
     assert result.missing_err_catchers == []
+
+
+def test_knowledge_graph_preserved_with_metadata():
+    """GraphQuery keeps the KnowledgeGraph it was built from —
+    metadata (provenance stamp, schema version) included — so mutating
+    consumers like ingest get the real object, not a bare-graph
+    reconstruction."""
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    kg = KnowledgeGraph()
+    kg.metadata["provenance"] = {"git_branch": "main"}
+    q = GraphQuery(kg)
+    assert q.knowledge_graph is kg
+    assert q.knowledge_graph.metadata["provenance"]["git_branch"] == "main"
+
+
+def test_knowledge_graph_wraps_raw_nxgraph(sample_graph):
+    """A raw MultiDiGraph gets wrapped: same underlying graph object."""
+    q = GraphQuery(sample_graph)
+    assert q.knowledge_graph.nxgraph is sample_graph

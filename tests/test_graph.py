@@ -108,3 +108,19 @@ def test_enum_stored_as_string():
     assert isinstance(kg.nxgraph.nodes["n"]["type"], str)
     edge_data = next(iter(kg.nxgraph.edges("n", data=True, keys=True)))[3]
     assert isinstance(edge_data["type"], str)
+
+
+def test_wrap_existing_graph_continues_edge_keys():
+    """Wrapping must not reset the edge-key counter: a reset counter
+    makes add_edge silently UPDATE an existing parallel edge (same
+    source, target, key) instead of adding a new one."""
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="a", type=NodeType.FILE, name="a"))
+    kg.add_node(GraphNode(id="b", type=NodeType.FILE, name="b"))
+    kg.add_edge(GraphEdge(source="a", target="b", type=EdgeType.CONTAINS))
+    kg.add_edge(GraphEdge(source="a", target="b", type=EdgeType.REFERENCES))
+
+    wrapped = KnowledgeGraph(kg.nxgraph)
+    wrapped.add_edge(GraphEdge(source="a", target="b", type=EdgeType.CITES))
+
+    assert wrapped.edge_count == 3

@@ -642,10 +642,7 @@ def ingest(file_path: str, llm_command: str = "") -> str:
     from sphinxcontrib.nexus.ingest import ingest_file
 
     q = _get_query()
-    # Get the KnowledgeGraph from the query's internal graph
-    from sphinxcontrib.nexus.graph import KnowledgeGraph
-    kg = KnowledgeGraph()
-    kg._graph = q._g
+    kg = q.knowledge_graph
 
     p = Path(file_path)
     root = _active_root()

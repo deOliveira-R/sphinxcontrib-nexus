@@ -44,8 +44,7 @@ def graph_to_dict(graph: KnowledgeGraph) -> dict:
 def dict_to_graph(data: dict) -> KnowledgeGraph:
     """Load a KnowledgeGraph from networkx node-link format."""
     nxg = nx.node_link_graph(data, edges="edges")
-    kg = KnowledgeGraph()
-    kg._graph = nxg
+    kg = KnowledgeGraph(nxg)
     kg.metadata = data.get("graph", {})
     return kg
 

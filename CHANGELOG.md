@@ -79,6 +79,16 @@ release makes the mismatch visible and switchable.
   boundary** — an invalid value now returns a self-describing error
   payload instead of leaking a bare string into ``Literal``-typed
   query internals.
+- **Edge-key collision when wrapping an existing graph.**
+  ``KnowledgeGraph`` now accepts an existing ``nx.MultiDiGraph`` and
+  continues the auto-incremented edge-key sequence past its highest
+  integer key; previously both wrap sites (``dict_to_graph`` and the
+  MCP ``ingest`` tool's private-attribute poke) reset the counter to
+  0, so a later ``add_edge`` between an already-connected pair could
+  silently UPDATE an existing parallel edge instead of adding one.
+  ``GraphQuery`` keeps the ``KnowledgeGraph`` it was built from
+  (``knowledge_graph`` property, metadata included) so the ``ingest``
+  tool mutates the real object instead of reconstructing a wrapper.
 
 ### Changed
 

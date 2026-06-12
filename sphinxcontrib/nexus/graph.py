@@ -73,10 +73,21 @@ class KnowledgeGraph:
     for clean serialization.
     """
 
-    def __init__(self) -> None:
-        self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
+    def __init__(self, graph: nx.MultiDiGraph | None = None) -> None:
+        """Start empty, or wrap an existing NetworkX graph.
+
+        Wrapping continues the auto-incremented edge-key sequence past
+        the wrapped graph's highest integer key, so later
+        :meth:`add_edge` calls cannot collide with (and silently
+        update) an existing parallel edge.
+        """
+        self._graph: nx.MultiDiGraph = graph if graph is not None else nx.MultiDiGraph()
         self.metadata: dict[str, Any] = {}
-        self._edge_key: int = 0
+        int_keys = [
+            key for _, _, key in self._graph.edges(keys=True)
+            if isinstance(key, int)
+        ]
+        self._edge_key: int = max(int_keys, default=-1) + 1
 
     @property
     def nxgraph(self) -> nx.MultiDiGraph:
