@@ -58,6 +58,16 @@ release makes the mismatch visible and switchable.
   graphs of their own — the wrong-tree tripwire fires on the
   session's first turn instead of never.
 - **CLI ``nexus workspaces``** — same discovery, human-readable.
+- **MCP tool ``node_at(file, line)``** — map a file position to the
+  innermost enclosing graph node (module-scope positions return the
+  module node). The bridge from position-speaking tools — language
+  servers, stack traces, editors — into the graph: resolve a symbol
+  precisely with LSP, then hand its position here and continue with
+  ``context`` / ``impact`` / ``provenance_chain`` for the
+  cross-domain picture LSP cannot see. Tool count is now 28.
+- **CI runs pyright** alongside the pytest matrix (which now includes
+  Python 3.14); the type check builds the same ``./.venv`` layout
+  ``pyrightconfig.json`` points at locally.
 - **Roots-based workspace auto-alignment.** ``session_briefing`` asks
   the client (MCP ``roots/list``) which directory the session was
   launched from; when that lies inside a different checkout that has

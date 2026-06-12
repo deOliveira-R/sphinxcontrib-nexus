@@ -207,6 +207,37 @@ def query(text: str, node_types: str = "", limit: int = 20) -> str:
 
 
 @_mcp.tool()
+def node_at(file: str, line: int) -> str:
+    """Map a file position to the graph node enclosing it.
+
+    The bridge from position-speaking tools into the graph: language
+    servers, stack traces, and editors report (file, line); the graph
+    speaks node IDs. Feed a position from goToDefinition /
+    findReferences / a traceback here, get the innermost enclosing
+    function / method / class node (module-scope positions return the
+    module node), then continue with ``context``, ``impact``,
+    ``provenance_chain``, ``callers`` for the wider picture.
+
+    Args:
+        file: File path, absolute or relative to the project root.
+        line: 1-based line number, as editors and LSP report it.
+    """
+    q = _get_query()
+    result = q.node_at(file, line, project_root=_active_root())
+    if result is None:
+        return to_json({
+            "error": f"No graph node encloses {file}:{line}",
+            "hint": (
+                "Either the file is outside the analyzed tree, or the "
+                "graph predates it — rebuild (sphinx-build / nexus "
+                "analyze) and retry. Line numbers shift with edits: a "
+                "stale graph maps positions to the wrong symbol."
+            ),
+        })
+    return to_json(to_dict(result))
+
+
+@_mcp.tool()
 def context(node_id: str) -> str:
     """Get a 360-degree view of a node: its attributes and all connections.
 

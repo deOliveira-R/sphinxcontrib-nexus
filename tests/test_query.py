@@ -671,3 +671,67 @@ def test_knowledge_graph_wraps_raw_nxgraph(sample_graph):
     """A raw MultiDiGraph gets wrapped: same underlying graph object."""
     q = GraphQuery(sample_graph)
     assert q.knowledge_graph.nxgraph is sample_graph
+
+
+# ---------------------------------------------------------------------------
+# node_at — the position → node bridge (LSP / stack-trace handoff)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def positioned_graph(tmp_path):
+    """A real analyze_directory pass over a file with module-level
+    code, a nested function, and a class with a method — so lineno /
+    end_lineno attributes are the analyzer's own, not hand-faked."""
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / "mod.py").write_text(
+        "import os\n"                  # 1  module scope
+        "\n"                           # 2
+        "def outer():\n"               # 3
+        "    def inner():\n"           # 4
+        "        return os.sep\n"      # 5
+        "    return inner\n"           # 6
+        "\n"                           # 7
+        "class Thing:\n"               # 8
+        "    label = 'x'\n"            # 9  class scope, not in method
+        "    def act(self):\n"         # 10
+        "        return self.label\n"  # 11
+    )
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+    kg = analyze_directory(src)
+    return GraphQuery(kg), src / "mod.py"
+
+
+def test_node_at_function_body(positioned_graph):
+    """Nested defs are not extracted (closures are not importable
+    API), so the innermost EXISTING node for a line inside ``inner``
+    is ``outer`` — node_at answers from the graph's granularity."""
+    q, file = positioned_graph
+    node = q.node_at(file, 5)
+    assert node is not None and node.name.endswith("outer")
+
+
+def test_node_at_method_vs_class(positioned_graph):
+    q, file = positioned_graph
+    method = q.node_at(file, 11)
+    assert method is not None and method.name.endswith("act")
+    class_scope = q.node_at(file, 9)
+    assert class_scope is not None and class_scope.type == "class"
+
+
+def test_node_at_module_scope_falls_back_to_module(positioned_graph):
+    q, file = positioned_graph
+    node = q.node_at(file, 1)
+    assert node is not None and node.type == "module"
+
+
+def test_node_at_relative_path_with_root(positioned_graph, tmp_path):
+    q, file = positioned_graph
+    node = q.node_at("pkg/mod.py", 5, project_root=tmp_path)
+    assert node is not None and node.name.endswith("outer")
+
+
+def test_node_at_unknown_file_is_none(positioned_graph, tmp_path):
+    q, _ = positioned_graph
+    assert q.node_at(tmp_path / "elsewhere.py", 1) is None

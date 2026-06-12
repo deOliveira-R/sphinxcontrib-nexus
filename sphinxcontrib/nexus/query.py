@@ -455,6 +455,60 @@ class GraphQuery:
             return None
         return self._node_result(node_id)
 
+    def node_at(
+        self,
+        file_path: Path | str,
+        line: int,
+        project_root: Path | str | None = None,
+    ) -> NodeResult | None:
+        """The graph node enclosing a file position.
+
+        The bridge from position-speaking tools (language servers,
+        stack traces, editors) into the graph: AST nodes carry
+        ``file_path`` / ``lineno`` / ``end_lineno``, so a position maps
+        to the INNERMOST function / method / class whose span contains
+        it.  A position in module scope (imports, constants, between
+        defs) maps to the module node.  ``None`` when the file is not
+        in the graph at all.
+
+        Args:
+            file_path: File of interest; relative paths resolve
+                against ``project_root``.
+            line: 1-based line number, as editors and LSP report it.
+            project_root: Base for resolving relative paths (both the
+                query's and any relative paths stored in the graph).
+        """
+        root = Path(project_root) if project_root is not None else None
+
+        def _norm(p: Path | str) -> Path:
+            p = Path(p)
+            if not p.is_absolute() and root is not None:
+                p = root / p
+            return p.resolve()
+
+        wanted = _norm(file_path)
+        spanning: list[tuple[int, int, str]] = []  # (span, -lineno, node_id)
+        module_id: str | None = None
+        for node_id, attrs in self._g.nodes(data=True):
+            stored = attrs.get("file_path", "")
+            if not stored or _norm(stored) != wanted:
+                continue
+            if attrs.get("type") == "module":
+                module_id = node_id
+                continue
+            lineno, end_lineno = attrs.get("lineno"), attrs.get("end_lineno")
+            if lineno is None or end_lineno is None:
+                continue
+            if lineno <= line <= end_lineno:
+                # Innermost = smallest span; tie-break on the latest
+                # start (a nested def starts after its encloser).
+                spanning.append((end_lineno - lineno, -lineno, node_id))
+        if spanning:
+            return self._node_result(min(spanning)[2])
+        if module_id is not None:
+            return self._node_result(module_id)
+        return None
+
     def neighbors(
         self,
         node_id: str,

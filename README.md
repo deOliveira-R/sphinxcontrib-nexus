@@ -112,10 +112,11 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (27)
+## MCP Tools (28)
 
 ### Exploration
 - **`query`** — keyword search across node names
+- **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node
 - **`context`** — 360-degree view of a symbol (all connections grouped by type)
 - **`neighbors`** — direct connections with direction and type filtering
 - **`callers`** — functions that call a given node (optionally transitive)
