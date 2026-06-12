@@ -717,10 +717,14 @@ def _run_setup(args: argparse.Namespace) -> int:
             mcp_json.write_text(json.dumps({"mcpServers": {"nexus": nexus_server_config}}, indent=2) + "\n")
             print(f"\nCreated {mcp_json} with nexus MCP server (project-level)")
 
-    # Install PostToolUse hook for auto-rebuild after git commit
+    # Suggest a PostToolUse hook for auto-rebuild after git commit.
+    # Field semantics per the Claude Code hooks schema: "if" filters
+    # with permission-rule syntax on the individual hook entry;
+    # "async" runs without blocking (no shell '&' needed); "timeout"
+    # is in SECONDS (default 600) so it is omitted here.
     settings_dir = Path.cwd() / ".claude"
     settings_dir.mkdir(exist_ok=True)
-    print(f"\nTo auto-rebuild the graph after git commits, add this hook to .claude/settings.json:")
+    print("\nTo auto-rebuild the graph after git commits, add this hook to .claude/settings.json:")
     print("""
   "hooks": {
     "PostToolUse": [
@@ -730,8 +734,7 @@ def _run_setup(args: argparse.Namespace) -> int:
           {
             "type": "command",
             "if": "Bash(git commit:*)",
-            "command": ".venv/bin/python -m sphinx -b html docs docs/_build/html -q 2>/dev/null &",
-            "timeout": 5000,
+            "command": ".venv/bin/python -m sphinx -b html docs docs/_build/html -q",
             "async": true,
             "statusMessage": "Rebuilding knowledge graph..."
           }
