@@ -41,6 +41,7 @@ from sphinxcontrib.nexus.workspace import (
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    default_branch,
     discover,
     git_provenance,
     list_worktrees,
@@ -263,6 +264,42 @@ def test_discover_degrades_without_root(tmp_path):
     assert len(statuses) == 1
     assert statuses[0].is_active
     assert statuses[0].workspace.root is None
+
+
+# ---------------------------------------------------------------------------
+# default_branch — the integration target for branch-scope diffs
+# ---------------------------------------------------------------------------
+
+
+def test_default_branch_local_main(repo):
+    assert default_branch(repo) == "main"
+
+
+def test_default_branch_local_master(tmp_path):
+    root = tmp_path / "legacy"
+    root.mkdir()
+    _git(root, "init", "-b", "master")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "Test")
+    (root / "f.txt").write_text("x\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "initial")
+    assert default_branch(root) == "master"
+
+
+def test_default_branch_from_origin_head(repo, tmp_path):
+    """A clone resolves via the origin/HEAD symbolic ref — correct even
+    for unconventionally named defaults."""
+    _git(repo, "branch", "-m", "main", "trunk")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", str(repo), str(clone))
+    assert default_branch(clone) == "trunk"
+
+
+def test_default_branch_non_repo(tmp_path):
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    assert default_branch(plain) is None
 
 
 # ---------------------------------------------------------------------------

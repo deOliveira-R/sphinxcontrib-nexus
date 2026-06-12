@@ -15,6 +15,7 @@ from typing import Any, Literal
 import networkx as nx
 
 from sphinxcontrib.nexus.graph import KnowledgeGraph
+from sphinxcontrib.nexus.workspace import default_branch
 
 
 @dataclass
@@ -762,7 +763,8 @@ class GraphQuery:
         Args:
             project_root: Root of the git repository.
             scope: "staged" (git diff --cached), "unstaged" (git diff),
-                   "all" (both), or "branch" (diff against main/master).
+                   "all" (both), or "branch" (diff against the
+                   merge-base with the repository's default branch).
         """
         project_root = Path(project_root)
         changed_files = self._git_changed_files(project_root, scope)
@@ -833,11 +835,14 @@ class GraphQuery:
         if scope in ("unstaged", "all"):
             _run_diff(["diff", "--name-status"])
         if scope == "branch":
-            # Diff against main or master
-            for base in ("main", "master"):
+            # Three-dot diff = changes since the merge-base with the
+            # repository's default branch (origin/HEAD when set, else
+            # main/master). The old fallback chain conflated "ref does
+            # not exist" with "no .py files changed" and never saw
+            # unconventionally named defaults.
+            base = default_branch(project_root)
+            if base is not None:
                 _run_diff(["diff", f"{base}...HEAD", "--name-status"])
-                if files:
-                    break
 
         return files
 
@@ -1704,13 +1709,15 @@ class GraphQuery:
         """Rank recently-changed, high-degree nodes as likely next queries.
 
         ``recent_changes`` in the briefing is computed from a git diff of
-        the current branch vs its merge base on main/master (see
-        :meth:`detect_changes` with ``scope="branch"``). This function uses
-        the same data — there is no separate time/commit window.
+        the current branch vs its merge base on the repository's default
+        branch (see :meth:`detect_changes` with ``scope="branch"``). This
+        function uses the same data — there is no separate time/commit
+        window.
         """
         description = (
             "Nodes most likely to be queried in this session. Computed from "
-            "symbols changed in the current branch vs main/master, filtered "
+            "symbols changed in the current branch vs the default branch, "
+            "filtered "
             "to those with degree above the graph median (so 'hot' means "
             "both recent and central). Empty on a fresh branch or when all "
             "changes land on obscure leaf symbols."

@@ -79,6 +79,13 @@ release makes the mismatch visible and switchable.
   boundary** — an invalid value now returns a self-describing error
   payload instead of leaking a bare string into ``Literal``-typed
   query internals.
+- **Branch-scope diffs resolve the repository's actual default
+  branch.** ``detect_changes`` / ``retest`` / ``session_briefing``
+  with ``scope="branch"`` used a hardcoded ``main``-then-``master``
+  fallback that conflated "ref does not exist" with "no .py files
+  changed" and never saw unconventionally named defaults. The base is
+  now ``workspace.default_branch()``: the ``origin/HEAD`` symbolic
+  ref when set, else the first of ``main``/``master`` that exists.
 - **Edge-key collision when wrapping an existing graph.**
   ``KnowledgeGraph`` now accepts an existing ``nx.MultiDiGraph`` and
   continues the auto-incremented edge-key sequence past its highest

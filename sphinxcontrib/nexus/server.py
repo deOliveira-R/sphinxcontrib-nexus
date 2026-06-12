@@ -331,7 +331,8 @@ def detect_changes(scope: str = "all") -> str:
     Maps git changes to graph symbols and computes upstream impact.
 
     Args:
-        scope: "staged", "unstaged", "all", or "branch" (diff vs main).
+        scope: "staged", "unstaged", "all", or "branch" (diff vs the
+            merge-base with the repository's default branch).
     """
     q = _get_query()
     root = _active_root()

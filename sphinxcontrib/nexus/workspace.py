@@ -105,6 +105,23 @@ def git_provenance(root: Path) -> GitProvenance | None:
     )
 
 
+def default_branch(root: Path) -> str | None:
+    """The repository's default branch (integration target).
+
+    Resolution order: the ``origin/HEAD`` symbolic ref (set on clone,
+    correct even for unconventionally named defaults), then the first
+    of ``main`` / ``master`` that exists locally.  ``None`` when
+    nothing resolves — no git, no remote, unusual naming.
+    """
+    out = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if out and out.strip():
+        return out.strip().removeprefix("origin/")
+    for name in ("main", "master"):
+        if _git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"):
+            return name
+    return None
+
+
 def stamp_provenance(graph: KnowledgeGraph, source_root: Path) -> None:
     """Record which tree this graph was built from.
 
