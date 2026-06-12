@@ -271,6 +271,8 @@ Schema errors raise `RegistryError` at build time with a path-and-field context.
 
 Every path above produces the same `EdgeType.TESTS` / `EdgeType.IMPLEMENTS` edges, so the audit tools don't care which source they came from. The `source` attribute distinguishes `pytest.mark.verifies`, `directive`, `registry`, and the fallback `inferred` heuristic.
 
+**Tier calibration caveat** (#5): the `declared` tier is the precision instrument; the heuristic tiers are a best-effort safety net. When an equation's `implements` anchor lands on a low-level primitive (token overlap favors it), tests that exercise the equation through a user-facing driver get credited as `heuristic-multihop` rather than `heuristic-1hop` — the coverage is real, but the confidence label reads weaker than it is. Measured on a mature declared-tier project (ORPHEUS, 972 test-bearing entries): 2 equations (0.2%) show this signature. The remedy is an explicit `@pytest.mark.verifies("label")` on the driver tests, not heuristic tuning — if a multihop-only count surprises you, declare the link.
+
 ```python
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.export import load_sqlite
