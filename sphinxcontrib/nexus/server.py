@@ -14,8 +14,9 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from sphinxcontrib.nexus._serialize import (
     assemble_communities,
@@ -33,6 +34,7 @@ from sphinxcontrib.nexus.workspace import (
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    checkout_containing,
     discover,
     resolve_checkout_root,
 )
@@ -421,8 +423,73 @@ def staleness() -> str:
     return to_json(to_dict(result))
 
 
+def _briefing_payload() -> dict[str, Any]:
+    """Briefing body shared by the tool and the ``nexus://briefing``
+    resource."""
+    q = _get_query()
+    result = q.session_briefing(_active_root())
+    payload = to_dict(result)
+    if _workspace is not None:
+        payload["workspace"] = _workspace_payload()
+    return payload
+
+
+def _path_from_file_uri(uri: str) -> Path | None:
+    parsed = urlparse(uri)
+    if parsed.scheme != "file" or not parsed.path:
+        return None
+    return Path(unquote(parsed.path))
+
+
+async def _auto_align_workspace(ctx: Context) -> dict[str, Any] | None:
+    """Roots-based wrong-tree self-correction.
+
+    Claude Code answers the MCP ``roots/list`` request with the
+    directory the SESSION was launched from — which, for a session
+    working in a git worktree, differs from the main checkout this
+    server was spawned against. When a reported root lies inside a
+    sibling checkout that has a graph, switch to it; when it has no
+    graph, report that instead of switching to nothing.
+
+    Returns an info block describing what happened, or ``None`` when
+    there is nothing to do (roots unsupported by the client, root
+    outside every checkout, or already aligned). Roots updates on
+    mid-session worktree entry are undocumented, so the manual
+    ``use_workspace`` tool remains the fallback.
+    """
+    if _workspace is None or _workspace.root is None:
+        return None
+    try:
+        roots = (await ctx.session.list_roots()).roots
+    except Exception:
+        return None  # client does not support roots — nothing to detect
+    for root in roots:
+        session_path = _path_from_file_uri(str(root.uri))
+        if session_path is None:
+            continue
+        checkout = checkout_containing(_workspace, session_path)
+        if checkout is None:
+            continue
+        if checkout == _workspace.root.resolve():
+            return None  # session works in the active checkout
+        outcome = _switch_workspace(checkout)
+        info: dict[str, Any] = {
+            "session_root": str(session_path),
+            "detected_checkout": str(checkout),
+        }
+        if outcome.get("switched"):
+            info["switched"] = True
+        else:
+            info["switched"] = False
+            info["reason"] = outcome.get("error")
+            if "hint" in outcome:
+                info["hint"] = outcome["hint"]
+        return info
+    return None
+
+
 @_mcp.tool()
-def session_briefing() -> str:
+async def session_briefing(ctx: Context) -> str:
     """Generate a structured briefing for starting a new session.
 
     Combines: graph stats, most connected nodes, stale docs,
@@ -431,12 +498,18 @@ def session_briefing() -> str:
     active graph was built from — with warnings when the graph no
     longer matches the checkout or when sibling git worktrees carry
     graphs of their own.
+
+    Asks the client (via MCP roots) which directory the session was
+    launched from and, when that lies inside a DIFFERENT checkout that
+    has a graph, switches to it automatically — the briefing then
+    answers from the session's own tree and reports the switch under
+    ``workspace.auto_align``. Sessions that enter a worktree later
+    still switch manually with ``use_workspace``.
     """
-    q = _get_query()
-    result = q.session_briefing(_active_root())
-    payload = to_dict(result)
-    if _workspace is not None:
-        payload["workspace"] = _workspace_payload()
+    auto_align = await _auto_align_workspace(ctx)
+    payload = _briefing_payload()
+    if auto_align is not None:
+        payload.setdefault("workspace", {})["auto_align"] = auto_align
     return to_json(payload)
 
 
@@ -480,21 +553,34 @@ def use_workspace(root: str) -> str:
             location as the active database
             (e.g. ``docs/_build/html/_nexus/graph.db``).
     """
-    global _query, _workspace, _db_mtime
     if _workspace is None:
         return to_json({"error": "Graph not loaded. Call serve() first."})
     try:
         target_root = resolve_checkout_root(_workspace, root)
     except WorkspaceResolutionError as e:
         return to_json({"error": str(e)})
+    return to_json(_switch_workspace(target_root))
+
+
+def _switch_workspace(target_root: Path) -> dict[str, Any]:
+    """Atomically re-point the server at ``target_root``'s graph.
+
+    The shared switch core behind the ``use_workspace`` tool and the
+    roots-based auto-alignment.  Every failure path returns an error
+    payload BEFORE any state is assigned, so the active graph is
+    untouched by a failed switch.
+    """
+    global _query, _workspace, _db_mtime
+    if _workspace is None:
+        return {"error": "Graph not loaded. Call serve() first."}
     if not target_root.is_dir():
-        return to_json({"error": f"Not a directory: {target_root}"})
+        return {"error": f"Not a directory: {target_root}"}
     try:
         target = _workspace.sibling(target_root)
     except WorkspaceLayoutError as e:
-        return to_json({"error": str(e)})
+        return {"error": str(e)}
     if not target.db_path.is_file():
-        return to_json({
+        return {
             "error": f"No graph database at {target.db_path}",
             "hint": (
                 "Build the graph inside that checkout first — for a "
@@ -502,12 +588,12 @@ def use_workspace(root: str) -> str:
                 "written by sphinx-build), or run `nexus analyze` — "
                 "then call use_workspace again."
             ),
-        })
+        }
     with _reload_lock:
         try:
             kg = load_sqlite(target.db_path)
         except Exception as e:
-            return to_json({"error": f"Failed to load {target.db_path}: {e}"})
+            return {"error": f"Failed to load {target.db_path}: {e}"}
         _query = GraphQuery(kg)
         _workspace = target
         _db_mtime = target.db_path.stat().st_mtime
@@ -515,12 +601,12 @@ def use_workspace(root: str) -> str:
         "Switched workspace to %s (%d nodes, %d edges)",
         target.root, kg.node_count, kg.edge_count,
     )
-    return to_json({
+    return {
         "switched": True,
         "nodes": kg.node_count,
         "edges": kg.edge_count,
         "workspace": _workspace_payload(),
-    })
+    }
 
 
 @_mcp.tool()
@@ -793,12 +879,7 @@ def resource_communities() -> str:
 @_mcp.resource("nexus://briefing")
 def resource_briefing() -> str:
     """Session briefing: what you need to know right now."""
-    q = _get_query()
-    result = q.session_briefing(_active_root())
-    payload = to_dict(result)
-    if _workspace is not None:
-        payload["workspace"] = _workspace_payload()
-    return to_json(payload)
+    return to_json(_briefing_payload())
 
 
 @_mcp.resource("nexus://graph/schema")

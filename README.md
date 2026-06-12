@@ -266,7 +266,7 @@ A graph database is a snapshot of **one** checkout. Agent harnesses
 (e.g. Claude Code) spawn the MCP server against the main checkout and
 keep it running when a session moves into a git worktree — so without
 help, worktree sessions silently query the wrong branch's graph.
-Nexus closes that hole in three layers:
+Nexus closes that hole in four layers:
 
 1. **Provenance stamping.** Every graph write (Sphinx build, `nexus
    analyze`) stamps `metadata["provenance"]` with `source_root`,
@@ -277,15 +277,23 @@ Nexus closes that hole in three layers:
    have graphs, on which branch, built from where.
 3. **Switching + tripwire.** `use_workspace(root)` re-points the
    server at another checkout's graph (one server per agent session,
-   so the switch is session-scoped). `session_briefing` carries a
-   `workspace` block that warns when the graph's branch no longer
-   matches the checkout or when sibling worktrees have graphs of
-   their own — the wrong-tree mismatch surfaces on the session's
+   so the switch is session-scoped); it accepts a worktree directory
+   name, a branch name, or an absolute root path. `session_briefing`
+   carries a `workspace` block that warns when the graph's branch no
+   longer matches the checkout or when sibling worktrees have graphs
+   of their own — the wrong-tree mismatch surfaces on the session's
    first turn.
+4. **Roots auto-alignment.** `session_briefing` asks the client (MCP
+   `roots/list`) which directory the session was launched from; when
+   that lies inside a different checkout that has a graph, the server
+   switches to it automatically and reports the switch under
+   `workspace.auto_align`. Sessions *launched inside* a worktree need
+   no manual step at all.
 
-Recommended agent protocol: after entering a worktree, build its docs
-(or run `nexus analyze`) inside the worktree, then call
-`use_workspace(<worktree root>)`.
+Recommended agent protocol for sessions that enter a worktree
+*mid-session* (roots updates there are client-dependent): build the
+docs (or run `nexus analyze`) inside the worktree, then call
+`use_workspace(<worktree name>)`.
 
 ## Storage
 

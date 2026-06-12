@@ -58,6 +58,18 @@ release makes the mismatch visible and switchable.
   graphs of their own — the wrong-tree tripwire fires on the
   session's first turn instead of never.
 - **CLI ``nexus workspaces``** — same discovery, human-readable.
+- **Roots-based workspace auto-alignment.** ``session_briefing`` asks
+  the client (MCP ``roots/list``) which directory the session was
+  launched from; when that lies inside a different checkout that has
+  a graph, the server switches to it automatically and reports the
+  switch under ``workspace.auto_align`` (or the build-it-first hint
+  when the checkout has no graph). Failure-tolerant: clients without
+  roots support, foreign paths, and already-aligned sessions all
+  degrade to "no block, no switch". Verified over real MCP stdio
+  against ORPHEUS: a roots-advertising client launched in a worktree
+  gets that worktree's graph on its first briefing with no manual
+  call; mid-session worktree entry still uses ``use_workspace``
+  (roots updates there are undocumented client behavior).
 
 ### Fixed
 

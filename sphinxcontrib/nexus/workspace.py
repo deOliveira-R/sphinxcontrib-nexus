@@ -188,6 +188,26 @@ def list_worktrees(root: Path) -> list[WorktreeEntry]:
     return entries
 
 
+def checkout_containing(active: Workspace, path: Path) -> Path | None:
+    """Root of the project checkout that contains ``path``.
+
+    Picks the DEEPEST match among the ``git worktree list`` entries:
+    Claude Code session worktrees live under
+    ``<main root>/.claude/worktrees/<name>``, so a path inside one is
+    inside the main checkout too — the nested worktree is the checkout
+    the session actually works in.  ``None`` when ``path`` lies
+    outside every checkout, or when there is no known root / git.
+    """
+    if active.root is None:
+        return None
+    path = path.resolve()
+    containing = [
+        root for root in (e.path.resolve() for e in list_worktrees(active.root))
+        if root == path or root in path.parents
+    ]
+    return max(containing, key=lambda root: len(root.parts), default=None)
+
+
 def resolve_checkout_root(active: Workspace, ref: str) -> Path:
     """Resolve a checkout reference to a checkout root path.
 

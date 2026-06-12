@@ -41,6 +41,7 @@ from sphinxcontrib.nexus.workspace import (
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    checkout_containing,
     default_branch,
     discover,
     git_provenance,
@@ -303,6 +304,28 @@ def test_default_branch_non_repo(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# checkout_containing — which checkout does a path live in?
+# ---------------------------------------------------------------------------
+
+
+def test_checkout_containing_prefers_nested_worktree(repo):
+    """Claude Code worktrees live UNDER the main root — a path inside
+    one is inside both checkouts; the deepest (the worktree) wins."""
+    nested = repo / ".claude" / "worktrees" / "nested-wt"
+    _git(repo, "worktree", "add", str(nested), "-b", "nested")
+    inside = nested / "src"
+    inside.mkdir(parents=True)
+    active = Workspace(db_path=repo / DB_RELPATH, root=repo)
+    assert checkout_containing(active, inside) == nested.resolve()
+    assert checkout_containing(active, repo / "docs") == repo.resolve()
+
+
+def test_checkout_containing_outside_every_checkout(repo, tmp_path):
+    active = Workspace(db_path=repo / DB_RELPATH, root=repo)
+    assert checkout_containing(active, tmp_path / "elsewhere") is None
+
+
+# ---------------------------------------------------------------------------
 # resolve_checkout_root — name / branch / path forms
 # ---------------------------------------------------------------------------
 
@@ -479,6 +502,85 @@ def test_briefing_workspace_block_quiet_when_matching(server_on_main):
     """No worktrees, graph built on the current branch: no warnings."""
     block = server_mod._workspace_payload()
     assert "warnings" not in block
+
+
+# ---------------------------------------------------------------------------
+# Roots-based auto-alignment — the session tells us where it lives
+# ---------------------------------------------------------------------------
+
+
+class _RootsClient:
+    """Stub of the Context surface ``_auto_align_workspace`` touches:
+    ``ctx.session.list_roots()`` returning ``.roots[*].uri``."""
+
+    def __init__(self, uris: list[str] | None = None):
+        self._uris = uris
+
+    @property
+    def session(self):
+        return self
+
+    async def list_roots(self):
+        if self._uris is None:
+            raise RuntimeError("client does not support roots")
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            roots=[SimpleNamespace(uri=u) for u in self._uris]
+        )
+
+
+def _auto_align(ctx) -> dict | None:
+    import asyncio
+    return asyncio.run(server_mod._auto_align_workspace(ctx))
+
+
+def test_auto_align_switches_to_session_worktree(server_on_main, worktree):
+    """A session launched inside a worktree (Claude Code reports its
+    launch dir via roots) gets that worktree's graph without any
+    manual use_workspace call."""
+    _write_graph(worktree, "feature_node")
+    info = _auto_align(_RootsClient([worktree.as_uri()]))
+    assert info is not None and info["switched"] is True
+    ws = server_mod._workspace
+    assert ws is not None and ws.root == worktree.resolve()
+
+
+def test_auto_align_reports_missing_graph_without_switching(
+    server_on_main, worktree,
+):
+    info = _auto_align(_RootsClient([worktree.as_uri()]))
+    assert info is not None and info["switched"] is False
+    assert "hint" in info
+    ws = server_mod._workspace
+    assert ws is not None and ws.root == server_on_main  # untouched
+
+
+def test_auto_align_quiet_when_session_in_active_checkout(server_on_main):
+    subdir = server_on_main / "docs"
+    subdir.mkdir(exist_ok=True)
+    assert _auto_align(_RootsClient([subdir.as_uri()])) is None
+
+
+def test_auto_align_quiet_without_roots_support(server_on_main):
+    assert _auto_align(_RootsClient(None)) is None
+
+
+def test_auto_align_quiet_for_foreign_paths(server_on_main, tmp_path):
+    elsewhere = tmp_path / "unrelated"
+    elsewhere.mkdir()
+    assert _auto_align(_RootsClient([elsewhere.as_uri()])) is None
+
+
+def test_session_briefing_reports_auto_align(server_on_main, worktree):
+    import asyncio
+    _write_graph(worktree, "feature_node")
+    payload = json.loads(
+        asyncio.run(server_mod.session_briefing(_RootsClient([worktree.as_uri()])))
+    )
+    align = payload["workspace"]["auto_align"]
+    assert align["switched"] is True
+    # The briefing itself already answers from the switched-to tree.
+    assert payload["workspace"]["active"]["branch"] == "feature"
 
 
 # ---------------------------------------------------------------------------
