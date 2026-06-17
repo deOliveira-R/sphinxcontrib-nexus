@@ -137,6 +137,31 @@ def _get_query() -> GraphQuery:
     return _query
 
 
+def _get_runtime_store():
+    """The runtime-overlay sidecar store (``_nexus/traces/``), beside the
+    active graph DB. Dynamic-trace runs live here, NOT in ``graph.db``
+    (which is rebuilt on every ``sphinx-build``), and re-bind to the live
+    graph by node-ID at query time."""
+    from sphinxcontrib.nexus.runtime import RuntimeStore
+
+    if _workspace is None:
+        raise RuntimeError("No active workspace. Call serve() first.")
+    return RuntimeStore(_workspace.db_path.parent / "traces")
+
+
+def _load_run(name: str):
+    """Load a stored run, or raise a clear error naming the alternatives."""
+    store = _get_runtime_store()
+    run = store.load(name)
+    if run is None:
+        available = [r["name"] for r in store.list_runs()]
+        raise ValueError(
+            f"no runtime run {name!r}; available: {available or '(none — '
+            f'ingest one with runtime_ingest)'}"
+        )
+    return run
+
+
 def _active_root() -> Path | None:
     """Project root of the active workspace (``None`` when serving a
     bare database with no known root)."""
@@ -686,6 +711,131 @@ def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 50
     q = _get_query()
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
     results = q.protocol_conformers(min_methods=min_methods, exclude=toks, limit=limit)
+    return to_json(to_dict(results))
+
+
+# ------------------------------------------------------------------
+# Runtime overlay — dynamic execution-flow on the static graph
+# ------------------------------------------------------------------
+
+
+@nexus_tool
+def runtime_ingest(
+    artifact: str, kind: str = "cprofile", run: str = "default",
+    source_prefix: str = "", command: str = "",
+) -> str:
+    """Ingest a runtime trace and overlay it on the static graph by node-ID.
+
+    The static graph is *what can run*; a runtime overlay is *what actually
+    ran* — call counts, time, which edges fired, which polymorphic impl was
+    reached, which branches were taken. Capture is consumer-side: run a
+    canonical workload under a tracer, then hand the artifact here. Stored in
+    `_nexus/traces/<run>.json` (a sidecar — never in graph.db, which is rebuilt
+    on every sphinx-build) and re-bound to the live graph at query time.
+
+    Args:
+        artifact: Path to the trace file — a `cProfile`/`pstats` dump
+            (`kind=cprofile`) or a `coverage json --branch` report
+            (`kind=coverage`).
+        kind: "cprofile" (counts + time + call edges) or "coverage" (line /
+            branch coverage → the missing-type branch signal).
+        run: Name to store under (re-ingesting the same name overwrites).
+        source_prefix: Keep only trace records under this path prefix (drops
+            stdlib / third-party frames). Recommended: your package's src dir.
+        command: Free-text note of the workload, recorded in run metadata.
+    """
+    from sphinxcontrib.nexus import runtime as rt
+
+    q = _get_query()
+    prefix = source_prefix or None
+    meta = {"command": command} if command else {}
+    if kind == rt.KIND_CPROFILE:
+        r = rt.ingest_cprofile(artifact, q.knowledge_graph, run,
+                               meta=meta, source_prefix=prefix)
+    elif kind == rt.KIND_COVERAGE:
+        r = rt.ingest_coverage(artifact, q.knowledge_graph, run,
+                               meta=meta, source_prefix=prefix)
+    else:
+        return to_json({"error": f"kind must be cprofile|coverage, got {kind!r}"})
+    _get_runtime_store().write(r)
+    return to_json({
+        "run": r.name, "kind": r.kind,
+        "nodes": len(r.calls) or len(r.coverage),
+        "edges": len(r.edges), "unresolved": r.unresolved,
+    })
+
+
+@nexus_tool
+def runtime_runs() -> str:
+    """List ingested runtime runs (name, kind, metadata, node/edge counts)."""
+    return to_json(_get_runtime_store().list_runs())
+
+
+@nexus_tool
+def runtime_hotspots(run: str = "default", by: str = "cumtime", limit: int = 20) -> str:
+    """Nodes ranked by an observed runtime metric — the dynamic stage DAG.
+
+    `by="cumtime"` is the dominant OBSERVED call chain (better than the static
+    `processes` out-degree heuristic for a traced run); `by="ncalls"` the
+    iteration-count / recompute smell (a property called 10k×/run = a caching
+    opportunity); `by="tottime"` self-time hotspots. Needs a `cprofile` run.
+
+    Args:
+        run: Stored run name (default "default").
+        by: "cumtime" | "ncalls" | "tottime".
+        limit: Max nodes (default 20; 0 = all).
+    """
+    q = _get_query()
+    results = q.runtime_hotspots(_load_run(run), by=by, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def runtime_edges(
+    run: str = "default", mode: str = "dynamic_only", node: str = "", limit: int = 50,
+) -> str:
+    """Overlay a run's call edges on the static CALLS edges.
+
+    `mode="dynamic_only"`: fired edges with NO static counterpart — the
+    dispatch the static resolver can't see (annotation-mediated dispatch via
+    `self`/typed locals, issue #16) and the resolved face of polymorphism
+    (which concrete impl ran). `mode="fired"`: static edges confirmed live,
+    with call counts. `mode="dead"`: static edges among run-reachable nodes
+    that never fired (dead in THIS run — union several runs for a real
+    verdict). Needs a `cprofile` run.
+
+    Args:
+        run: Stored run name.
+        mode: "dynamic_only" | "fired" | "dead".
+        node: Restrict to edges whose source id contains this substring.
+        limit: Max edges (default 50; 0 = all).
+    """
+    q = _get_query()
+    results = q.runtime_edges(_load_run(run), mode=mode, node=node, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def runtime_branches(
+    run: str = "default", node: str = "", partial_only: bool = True, limit: int = 50,
+) -> str:
+    """Per-node branch coverage — the accidental-vs-essential / missing-type signal.
+
+    A node with `branches_hit < branches_total` didn't take every conditional
+    outcome in the run. Nodes that ALSO `discriminates_on` a tag are flagged
+    and ranked first: a discrimination always taken one way is a type the code
+    fakes with a conditional — the dynamic counterpart of the static
+    `discriminations` smell. Needs a `coverage` run (`coverage json --branch`).
+
+    Args:
+        run: Stored run name.
+        node: Restrict to node ids containing this substring.
+        partial_only: Keep only nodes with an unexercised branch (default True).
+        limit: Max nodes (default 50; 0 = all).
+    """
+    q = _get_query()
+    results = q.runtime_branches(
+        _load_run(run), node=node, partial_only=partial_only, limit=limit)
     return to_json(to_dict(results))
 
 

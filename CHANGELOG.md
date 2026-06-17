@@ -4,6 +4,46 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+## 0.15.0 — 2026-06-17
+
+### Runtime overlay — dynamic execution-flow on the static graph (issue #26)
+
+The static graph is *what can run*; a **runtime** overlay is *what actually
+ran*. A new `runtime.py` ingests a trace of a canonical workload and overlays
+it on the graph **by node-ID**, the dynamic counterpart to the static
+"missing abstraction" family (`native_place` / `twin_paths` /
+`discriminations`). Five MCP tools + `nexus runtime-*` CLI (MCP tools 33 → 38).
+
+- **The join works — 97% on a real solve.** Trace records map onto static
+  node IDs by `(file_path, lineno)`. The one gotcha: `cProfile`'s
+  `co_firstlineno` points at the first *decorator* line while the AST records
+  the *def* line, so a naive range check drops every decorated function /
+  property — a decorator-window rule fixes it (measured 68% → 97%; the
+  residual is lambdas/closures that by design have no node).
+- **Sidecar, never `graph.db`.** Runs live in `_nexus/traces/<run>.json`
+  (one JSON each) and re-bind to the live graph at query time — so they
+  survive the `sphinx-build` rebuild that regenerates `graph.db`.
+- **`runtime_ingest`** — `cProfile`/`pstats` (counts + self/cumulative time +
+  call edges) or `coverage json --branch` (line/branch coverage). Metrics
+  aggregate by node-ID (a node may own several code objects); `source_prefix`
+  drops stdlib/third-party frames.
+- **`runtime_hotspots`** (`by` = cumtime/ncalls/tottime) — the dominant
+  *observed* call chain (the dynamic stage DAG, better than `processes`'
+  static heuristic for a traced run) and the iteration-count / recompute
+  smell.
+- **`runtime_edges`** (`mode` = dynamic_only/fired/dead) — `dynamic_only`
+  recovers the dispatch the static resolver can't see: annotation-mediated
+  dispatch through `self`/typed locals (issue #16) and the resolved face of
+  polymorphism (which concrete impl actually ran). On a real ORPHEUS SN solve
+  this surfaced `_OneDimScanWalk._apply_walk` dispatching to
+  `DiamondDifference` / `MorelMontryAngularSweep` ×10,992 — edges with **zero**
+  static counterpart. `dead` is dead *in this run* (union runs for a verdict).
+- **`runtime_branches`** (a `coverage --branch` run) — nodes that didn't take
+  every conditional outcome, with those that also `discriminates_on` a tag
+  ranked first: a discrimination always taken one way is a missing type, the
+  dynamic counterpart of `discriminations`.
+- **`runtime_runs`** — list ingested runs.
+
 ## 0.14.0 — 2026-06-17
 
 ### `dead_functions` + `protocol_conformers` diagnostics

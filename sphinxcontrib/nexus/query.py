@@ -10,13 +10,16 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import networkx as nx
 
 from sphinxcontrib.nexus.fingerprint import jaccard
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 from sphinxcontrib.nexus.workspace import default_branch
+
+if TYPE_CHECKING:
+    from sphinxcontrib.nexus.runtime import RuntimeRun
 
 
 @dataclass
@@ -221,6 +224,59 @@ class ProtocolConformerResult:
     protocol: NodeResult
     methods: list[str]
     conformers: list[NodeResult]
+
+
+@dataclass
+class HotspotResult:
+    """A node ranked by a runtime metric — the dynamic stage DAG / hot path.
+
+    ``cumtime`` (cumulative, incl. callees) surfaces the dominant *observed*
+    chain; ``ncalls`` surfaces iteration counts and the recompute/caching
+    smell (a property called tens of thousands of times per run); ``tottime``
+    surfaces self-time hotspots.
+    """
+
+    node: NodeResult
+    ncalls: int
+    tottime: float
+    cumtime: float
+
+
+@dataclass
+class RuntimeEdgeResult:
+    """A runtime call edge overlaid on the static graph.
+
+    ``in_static`` distinguishes the three overlay modes: ``dynamic_only``
+    edges (``in_static`` False) are calls the static resolver could not see —
+    annotation-mediated dispatch through ``self``/typed locals (issue #16) and
+    the resolved face of polymorphism; ``fired`` edges (True) are static edges
+    confirmed to execute, now carrying a call ``count``; ``dead`` edges
+    (``count`` 0) are static edges among run-reachable nodes that never fired.
+    """
+
+    source: NodeResult
+    target: NodeResult
+    count: int
+    in_static: bool
+
+
+@dataclass
+class BranchCoverageResult:
+    """A node's branch coverage in a run — the missing-type signal.
+
+    A node with ``branches_hit < branches_total`` did not exercise every
+    conditional outcome in the canonical run. When that node also
+    ``discriminates_on`` a tag (``discriminates`` non-empty), it is the
+    strongest accidental-vs-essential / missing-type suspect: a discrimination
+    always taken one way is a type the code is faking with a conditional.
+    """
+
+    node: NodeResult
+    lines_hit: int
+    lines_total: int
+    branches_hit: int
+    branches_total: int
+    discriminates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2706,6 +2762,167 @@ class GraphQuery:
 
         out.sort(key=lambda r: (len(r.conformers), r.protocol.name), reverse=True)
         return out if limit <= 0 else out[:limit]
+
+    # ------------------------------------------------------------------
+    # Runtime overlay — join a RuntimeRun onto the static graph
+    # ------------------------------------------------------------------
+
+    def runtime_hotspots(
+        self,
+        run: "RuntimeRun",
+        by: str = "cumtime",
+        limit: int = 20,
+    ) -> list[HotspotResult]:
+        """Nodes ranked by an observed runtime metric — the dynamic stage DAG.
+
+        ``by="cumtime"`` gives the dominant *observed* call chain (strictly
+        better than the static ``processes`` out-degree heuristic for traced
+        runs); ``by="ncalls"`` the iteration-count / recompute smell;
+        ``by="tottime"`` self-time hotspots. Reads ``run.calls`` (a cProfile
+        run); a coverage run has no timing and returns ``[]``.
+        """
+        if by not in ("cumtime", "ncalls", "tottime"):
+            raise ValueError(f"by must be cumtime|ncalls|tottime, got {by!r}")
+        out = [
+            HotspotResult(
+                node=self._node_result(node_id),
+                ncalls=int(m["ncalls"]),
+                tottime=m["tottime"],
+                cumtime=m["cumtime"],
+            )
+            for node_id, m in run.calls.items()
+            if node_id in self._g
+        ]
+        out.sort(key=lambda r: getattr(r, by), reverse=True)
+        return out if limit <= 0 else out[:limit]
+
+    def runtime_edges(
+        self,
+        run: "RuntimeRun",
+        mode: str = "dynamic_only",
+        node: str = "",
+        limit: int = 50,
+    ) -> list[RuntimeEdgeResult]:
+        """Overlay a run's call edges on the static CALLS edges.
+
+        ``mode``:
+
+        * ``dynamic_only`` — fired edges with NO static counterpart: the
+          dispatch the static resolver can't see (annotation-mediated dispatch
+          through ``self``/typed locals, issue #16) and the resolved face of
+          polymorphism (which concrete impl actually ran). Ranked by count.
+        * ``fired`` — fired edges that DO match a static edge, now carrying
+          their call count (static structure confirmed live).
+        * ``dead`` — static CALLS edges among run-reachable nodes that never
+          fired (``count`` 0). A single run's dead set is "dead in THIS run",
+          not dead code — union several canonical runs for a real verdict.
+
+        ``node`` (a node-id substring) restricts to edges whose source matches.
+        Reads ``run.edges`` (a cProfile run).
+        """
+        if mode not in ("dynamic_only", "fired", "dead"):
+            raise ValueError(
+                f"mode must be dynamic_only|fired|dead, got {mode!r}"
+            )
+        static_calls = {
+            (u, v) for u, v, d in self._g.edges(data=True)
+            if d.get("type") == EdgeType.CALLS
+        }
+        dyn = {(u, v): c for u, v, c in run.edges}
+
+        def keep(u: str) -> bool:
+            return not node or node in u
+
+        out: list[RuntimeEdgeResult] = []
+        if mode == "dead":
+            reachable = {u for u, _, _ in run.edges} | {v for _, v, _ in run.edges}
+            reachable |= set(run.calls)
+            for u, v in static_calls:
+                if u in reachable and v in reachable and (u, v) not in dyn and keep(u):
+                    out.append(self._runtime_edge(u, v, 0, in_static=True))
+            out.sort(key=lambda r: r.source.name)
+        else:
+            want_static = mode == "fired"
+            for (u, v), count in dyn.items():
+                # Endpoints came from the sidecar, resolved at INGEST time; the
+                # graph is rebuilt between ingest and query (the re-bind the
+                # sidecar exists for), so a node may have been renamed/removed.
+                # Skip stale endpoints — _node_result on a missing node yields
+                # an unserializable degree view. (The `dead` branch is safe:
+                # its endpoints come from the live static_calls.)
+                if u not in self._g or v not in self._g:
+                    continue
+                if ((u, v) in static_calls) == want_static and keep(u):
+                    out.append(self._runtime_edge(u, v, count, in_static=want_static))
+            out.sort(key=lambda r: r.count, reverse=True)
+        return out if limit <= 0 else out[:limit]
+
+    def _runtime_edge(
+        self, source: str, target: str, count: int, in_static: bool,
+    ) -> RuntimeEdgeResult:
+        return RuntimeEdgeResult(
+            source=self._node_result(source),
+            target=self._node_result(target),
+            count=count,
+            in_static=in_static,
+        )
+
+    def runtime_branches(
+        self,
+        run: "RuntimeRun",
+        node: str = "",
+        partial_only: bool = True,
+        limit: int = 50,
+    ) -> list[BranchCoverageResult]:
+        """Branch coverage per node — the accidental-vs-essential signal.
+
+        A node with ``branches_hit < branches_total`` did not take every
+        conditional outcome in the run. Nodes that also ``discriminates_on`` a
+        tag are flagged (``discriminates`` populated) and ranked first: a
+        discrimination always taken one way is a missing type, the dynamic
+        counterpart of the static ``discriminations`` smell. Reads
+        ``run.coverage`` (a coverage run).
+
+        ``partial_only`` (default) keeps only nodes with an unexercised branch;
+        ``node`` restricts to node-ids containing the substring.
+        """
+        discriminated = self._discriminating_tags()
+        out: list[BranchCoverageResult] = []
+        for node_id, c in run.coverage.items():
+            if node_id not in self._g:
+                continue
+            if node and node not in node_id:
+                continue
+            total, hit = c["branches_total"], c["branches_hit"]
+            if partial_only and not (total >= 2 and hit < total):
+                continue
+            out.append(BranchCoverageResult(
+                node=self._node_result(node_id),
+                lines_hit=c["lines_hit"],
+                lines_total=c["lines_total"],
+                branches_hit=hit,
+                branches_total=total,
+                discriminates=sorted(discriminated.get(node_id, set())),
+            ))
+        # missing-type suspects (discriminate + partial) first, then by the
+        # count of unexercised branches.
+        out.sort(
+            key=lambda r: (
+                bool(r.discriminates),
+                r.branches_total - r.branches_hit,
+            ),
+            reverse=True,
+        )
+        return out if limit <= 0 else out[:limit]
+
+    def _discriminating_tags(self) -> dict[str, set[str]]:
+        """node_id -> set of tag names it discriminates on (DISCRIMINATES_ON)."""
+        out: dict[str, set[str]] = {}
+        for src, tgt, data in self._g.edges(data=True):
+            if data.get("type") == EdgeType.DISCRIMINATES_ON:
+                name = self._g.nodes.get(tgt, {}).get("name", tgt)
+                out.setdefault(src, set()).add(name)
+        return out
 
     # ------------------------------------------------------------------
     # Graph Query (Cypher-like)
