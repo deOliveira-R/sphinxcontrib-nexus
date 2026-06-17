@@ -132,6 +132,19 @@ class NativePlaceResult:
     cross_module: bool
     private: bool
     excluded_callers: int = 0
+    likely_free_primitive: bool = field(init=False)
+    """A *public* function tested at least as much as it is used in
+    production (``excluded_callers >= caller_count``): an independently
+    verified free-function primitive that is *correctly* free, not a
+    relocation candidate. Derived, not set — these rows are kept but
+    ranked last so the suppression is explicit, not implicit in the
+    numbers. Private helpers never flag (a private symbol used by one
+    class is a genuine relocation signal regardless of test coverage)."""
+
+    def __post_init__(self) -> None:
+        self.likely_free_primitive = (
+            not self.private and self.excluded_callers >= self.caller_count
+        )
 
 
 @dataclass
@@ -2207,8 +2220,12 @@ class GraphQuery:
                 contains one is ignored, on top of the ``is_test`` flag.
                 Use for non-test-but-non-production trees (e.g.
                 ``("scratch", "derivations")``).
-            limit: Maximum candidates to return (0 = all). Sorted
-                cross-module-first, then by caller count.
+            limit: Maximum candidates to return (0 = all). Ranked
+                lexicographically by descending strength: genuine
+                relocations before ``likely_free_primitive`` rows, then
+                cross-module before same-module, private before public,
+                fewer excluded (test) callers, and finally more
+                single-class callers (stronger coupling) as a tiebreak.
         """
         def dropped(node_id: str) -> bool:
             if self._g.nodes.get(node_id, {}).get("is_test"):
@@ -2263,8 +2280,20 @@ class GraphQuery:
                 excluded_callers=len(all_callers) - len(considered),
             ))
 
+        # Descending strength. Every term reads "larger = stronger" so a
+        # single reverse=True orders them all; the lone "fewer is stronger"
+        # axis (test callers) is negated to fit that convention. The
+        # leading term sinks tested free-primitives below genuine
+        # relocations — the old caller-count-first key buried single-caller
+        # relocations under noisier, well-tested primitives.
         out.sort(
-            key=lambda r: (r.cross_module, r.caller_count, r.private),
+            key=lambda r: (
+                not r.likely_free_primitive,
+                r.cross_module,
+                r.private,
+                -r.excluded_callers,
+                r.caller_count,
+            ),
             reverse=True,
         )
         return out if limit <= 0 else out[:limit]

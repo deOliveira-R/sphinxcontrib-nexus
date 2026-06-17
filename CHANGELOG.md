@@ -11,12 +11,20 @@ New read-only `GraphQuery.native_place_candidates()`, exposed as the
 module-level functions whose every non-test caller is a method of a SINGLE
 class — candidates to move into that class.
 
-- **Cross-module** candidates (function and class in different modules) rank
-  first; same-module private helpers are weaker (an accepted idiom).
+- Ranked lexicographically by descending strength: genuine relocations
+  before tested free-primitives, then **cross-module** before same-module,
+  private before public, fewer excluded (test) callers, and finally more
+  single-class callers (stronger coupling) as a tiebreak.
+- Derived flag **`likely_free_primitive`** — a *public* function tested at
+  least as much as it is used in production (`excluded_callers >=
+  caller_count`) is an independently verified free-function primitive that
+  is *correctly* free, not a relocation candidate. Such rows are kept but
+  ranked last, so the suppression is explicit rather than implicit in the
+  numbers. Private helpers never flag (a private symbol used by one class is
+  a genuine relocation signal regardless of test coverage).
 - Test callers are recognised via the `is_test` node flag (from
   `nexus_test_patterns`), excluded from the single-class criterion, and
-  reported as `excluded_callers` — which also flags pure, independently-tested
-  free-function primitives that are *correctly* free (high excluded count).
+  reported as `excluded_callers`.
 - Knobs: `min_callers`, `exclude` (extra substrings on top of `is_test`),
   `limit`.
 

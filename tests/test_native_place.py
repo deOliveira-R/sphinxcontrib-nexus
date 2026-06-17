@@ -29,6 +29,19 @@ def _graph() -> nx.MultiDiGraph:
     g.add_edge("py:method:m1.C.do", "py:function:m3.pure_rule", type="calls")
     g.add_edge("py:function:tests.t.test_it", "py:function:m3.pure_rule", type="calls")
 
+    # _priv_rule (module m4): PRIVATE, called by C.do + TWO tests. A private
+    # helper used by one class is a genuine relocation signal regardless of
+    # test coverage -> must NOT flag as likely_free_primitive.
+    g.add_node("py:function:m4._priv_rule", type="function",
+               name="m4._priv_rule", domain="py")
+    g.add_node("py:function:tests.t.test_p1", type="function",
+               name="tests.t.test_p1", domain="py", is_test=True)
+    g.add_node("py:function:tests.t.test_p2", type="function",
+               name="tests.t.test_p2", domain="py", is_test=True)
+    g.add_edge("py:method:m1.C.do", "py:function:m4._priv_rule", type="calls")
+    g.add_edge("py:function:tests.t.test_p1", "py:function:m4._priv_rule", type="calls")
+    g.add_edge("py:function:tests.t.test_p2", "py:function:m4._priv_rule", type="calls")
+
     # shared (module m1): called by methods of TWO classes -> NOT a candidate
     g.add_node("py:function:m1.shared", type="function", name="m1.shared", domain="py")
     g.add_edge("py:method:m1.C.do", "py:function:m1.shared", type="calls")
@@ -78,3 +91,28 @@ def test_min_callers_and_cross_module_ranking():
 def test_exclude_substring_drops_candidate():
     res = GraphQuery(_graph()).native_place_candidates(exclude=("m2.",))
     assert all(r.function.id != "py:function:m2.helper" for r in res)
+
+
+def test_likely_free_primitive_flag():
+    by_id = {r.function.id: r for r in GraphQuery(_graph()).native_place_candidates()}
+
+    # public, tested at least as much as used in production (1 prod + 1 test)
+    assert by_id["py:function:m3.pure_rule"].likely_free_primitive is True
+    # public but NOT independently tested (excluded_callers 0 < caller_count 1)
+    assert by_id["py:function:m2.helper"].likely_free_primitive is False
+    # private helper: never auto-suppressed, even with 2 test callers
+    priv = by_id["py:function:m4._priv_rule"]
+    assert priv.private is True
+    assert priv.excluded_callers == 2
+    assert priv.likely_free_primitive is False
+
+
+def test_genuine_candidates_rank_above_free_primitives():
+    res = GraphQuery(_graph()).native_place_candidates()
+    ids = [r.function.id for r in res]
+    # the tested free-primitive sinks below the genuine relocations
+    free = ids.index("py:function:m3.pure_rule")
+    assert free > ids.index("py:function:m2.helper")
+    assert free > ids.index("py:function:m4._priv_rule")
+    # private cross-module helper outranks the public cross-module one
+    assert ids.index("py:function:m4._priv_rule") < ids.index("py:function:m2.helper")
