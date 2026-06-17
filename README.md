@@ -76,7 +76,7 @@ Nexus works with any Python project:
 
 ## What the Graph Contains
 
-### Node Types (14)
+### Node Types (15)
 
 | Type | Source | Example |
 |------|--------|---------|
@@ -94,6 +94,7 @@ Nexus works with any Python project:
 | `type` | Sphinx | Type aliases |
 | `external` | Auto-detected | stdlib, builtins, installed packages (numpy, scipy, ...) |
 | `unresolved` | Auto-detected | Referenced but not documented symbols |
+| `tag` | AST | A string/enum value a function discriminates on (`"spherical"`), target of `discriminates_on` |
 
 ### Edge Types (13)
 
@@ -349,6 +350,8 @@ The graph is stored in two formats:
 
 - **SQLite** (primary) — indexed queries, FTS5 full-text search, 0.05ms neighbor lookups. Written with a `schema_version` row in the `metadata` table. `load_sqlite` rejects databases written by a future nexus release with `SchemaVersionError`, so downgrading consumers fail loud instead of silently misreading.
 - **JSON** (secondary) — human-readable, NetworkX node-link format.
+
+Runtime overlays (`runtime_ingest`) are stored separately, one JSON per run under `_nexus/traces/<run>.json` — a sidecar keyed by node-ID, never written into `graph.db` (which `sphinx-build` regenerates), so a trace survives graph rebuilds and re-binds to the live graph at query time.
 
 ## Python API
 
