@@ -95,7 +95,7 @@ Nexus works with any Python project:
 | `external` | Auto-detected | stdlib, builtins, installed packages (numpy, scipy, ...) |
 | `unresolved` | Auto-detected | Referenced but not documented symbols |
 
-### Edge Types (12)
+### Edge Types (13)
 
 | Edge | Meaning | Source |
 |------|---------|--------|
@@ -111,8 +111,9 @@ Nexus works with any Python project:
 | `type_uses` | Function → type (from annotations) | AST |
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
+| `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
 
-## MCP Tools (30)
+## MCP Tools (31)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -135,6 +136,7 @@ Nexus works with any Python project:
 - **`bridges`** — find architectural hotspots connecting communities
 - **`native_place`** — functions that may belong inside a class (Feature-Envy / "native place"): every non-test caller is a method of one class. Ranked by strength (genuine relocations first, cross-module before same-module, private before public); public functions tested at least as much as used in production are flagged `likely_free_primitive` and ranked last (a verified free-function primitive is *correctly* free)
 - **`twin_paths`** — independent implementations of the same computation (Type-2/3 clones / single-source-of-truth violations): function bodies sharing a high fraction of AST structural shingles where neither calls the other. The fingerprint captures the array math (`@`, `einsum`, slicing) the call graph cannot see; cross-module pairs ranked first
+- **`discriminations`** — tags discriminated at multiple sites (candidate missing types): the same string/enum tag (`if geometry == "..."`, `match kind:`) branched on by many functions. Makes the coding-elegance smell "a repeated conditional is a missing type — discriminate once, at the boundary" machine-checkable; ranked by site fan-in
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability

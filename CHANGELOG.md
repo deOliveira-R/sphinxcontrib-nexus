@@ -4,6 +4,29 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### `discriminates_on` edge + `discriminations` diagnostic
+
+New AST edge type **`discriminates_on`** (`function → tag`) and the
+`discriminations` MCP tool / `nexus discriminations` CLI command. Makes the
+coding-elegance smell *"a repeated conditional is a missing type —
+discriminate once, at the boundary"* machine-checkable.
+
+- The extractor emits `function --discriminates_on--> tag` whenever a function
+  branches on a string/enum **tag**: `if x == "lit"` / `x == Enum.MEMBER`,
+  `x in ("a", "b")`, or `match x:` over literal/enum/class patterns, where `x`
+  is a name or attribute (the leaf name keys the tag, so `self.geometry` and
+  `mesh.geometry` share one `tag:geometry` node). Synthetic `tag` nodes are a
+  new node type; the matched case labels ride on the edge as `cases`.
+- One edge records one site; **repetition is counted by the query** —
+  `discriminations(min_sites=2)` ranks tags by how many distinct functions
+  discriminate on them (the smell: one dispatch / type should replace the
+  repeated tests). The raw edge is also queryable via
+  `graph_query "function -discriminates_on-> tag"`.
+- Validated on ORPHEUS: `geometry`/coord discriminated across 13 sites, plus
+  stringly-typed solver-dispatch tags (`inner_solver`, `inner_schedule`)
+  surface as multi-site fan-in.
+- Re-analyze required (built during AST analysis). Edge-types schema 12 → 13.
+
 ### `twin_paths` — twin-path / clone diagnostic + AST body fingerprint
 
 New read-only `GraphQuery.twin_paths()`, exposed as the `twin_paths` MCP tool

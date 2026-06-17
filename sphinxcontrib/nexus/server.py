@@ -610,6 +610,33 @@ def twin_paths(
 
 
 @nexus_tool
+def discriminations(min_sites: int = 2, exclude: str = "", limit: int = 50) -> str:
+    """Find tags discriminated at multiple sites — candidate missing types.
+
+    A function that branches on a string/enum tag (`if geometry ==
+    "spherical"`, `match kind:`) discriminates on it. The SAME tag
+    discriminated by many functions is the coding-elegance smell "a repeated
+    conditional is a missing type — discriminate once, at the boundary": the
+    repeated tests should usually collapse to one dispatch (a type / single
+    registry / polymorphic call).
+
+    Surfaces candidates; judgment decides. A genuinely open set with no shared
+    behaviour (axis labels, a one-off parse) may legitimately stay a tag.
+
+    Args:
+        min_sites: Minimum distinct discriminating functions to report a tag
+            (default 2).
+        exclude: Comma-separated substrings; discriminating functions whose id
+            contains any are ignored, on top of the built-in is_test flag.
+        limit: Max tags (default 50; 0 = all).
+    """
+    q = _get_query()
+    toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
+    results = q.discriminations(min_sites=min_sites, exclude=toks, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
 def detect_changes(scope: str = "all") -> str:
     """Detect which symbols changed in git and what they affect.
 

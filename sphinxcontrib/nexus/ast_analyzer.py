@@ -475,6 +475,128 @@ def _resolve_call_target(node: ast.Call, imports: ImportTracker) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Tag discrimination — "a repeated conditional is a missing type"
+# ---------------------------------------------------------------------------
+#
+# A function that branches on a string/enum *tag* (``if geometry ==
+# "spherical"``, ``match kind:``) is discriminating on that tag. Recording
+# ``function --discriminates_on--> tag`` makes the coding-elegance smell
+# queryable: the SAME tag discriminated at many sites is a missing type /
+# absent single dispatch. The edge records one site; repetition is counted
+# by the query (fan-in), so detection stays cheap and local.
+
+
+def _discriminant_name(node: ast.expr) -> str | None:
+    """Leaf name of a discriminant (plain variable or attribute).
+
+    ``self.geometry`` and ``mesh.geometry`` both reduce to ``geometry`` so
+    sites discriminating on the same concept share one tag node. Call
+    results (``x.kind()``) are not discriminants.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _tag_literal(node: ast.expr) -> str | None:
+    """The case label if ``node`` is a string literal or an enum member."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    # Enum member access — a Capitalized base, e.g. Geometry.SPHERICAL.
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id[:1].isupper()
+    ):
+        return f"{node.value.id}.{node.attr}"
+    return None
+
+
+def _if_discrimination(test: ast.expr) -> tuple[str, tuple[str, ...]] | None:
+    """``(tag, cases)`` if ``test`` is a tag comparison, else ``None``.
+
+    Recognizes ``x == "lit"`` / ``x == Enum.MEMBER`` and ``x in
+    ("a", "b")`` (plus the ``not in`` form), where ``x`` is a name or
+    attribute. ``elif`` chains are separate ``ast.If`` nodes and are walked
+    by the caller.
+    """
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+        return None
+    name = _discriminant_name(test.left)
+    if name is None:
+        return None
+    op = test.ops[0]
+    right = test.comparators[0]
+    if isinstance(op, ast.Eq):
+        lit = _tag_literal(right)
+        if lit is not None:
+            return name, (lit,)
+    elif isinstance(op, (ast.In, ast.NotIn)) and isinstance(
+        right, (ast.Tuple, ast.List, ast.Set)
+    ):
+        labels = [_tag_literal(e) for e in right.elts]
+        if labels and all(lab is not None for lab in labels):
+            return name, tuple(lab for lab in labels if lab is not None)
+    return None
+
+
+def _case_patterns(pattern: ast.pattern):
+    """Flatten ``case A | B`` alternatives into their leaf patterns."""
+    if isinstance(pattern, ast.MatchOr):
+        for sub in pattern.patterns:
+            yield from _case_patterns(sub)
+    else:
+        yield pattern
+
+
+def _match_discrimination(node: ast.Match) -> tuple[str, tuple[str, ...]] | None:
+    """``(tag, cases)`` if a ``match`` dispatches a name/attribute on
+    literal/enum/class patterns; ``None`` for a pure capture/wildcard match."""
+    name = _discriminant_name(node.subject)
+    if name is None:
+        return None
+    cases: set[str] = set()
+    matched = False
+    for case in node.cases:
+        for pattern in _case_patterns(case.pattern):
+            if isinstance(pattern, ast.MatchValue):
+                lit = _tag_literal(pattern.value)
+                if lit is not None:
+                    cases.add(lit)
+                matched = True
+            elif isinstance(pattern, ast.MatchClass):
+                matched = True
+    if not matched:
+        return None
+    return name, tuple(sorted(cases))
+
+
+def _discriminated_tags(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, tuple[str, ...]]:
+    """Map each tag discriminated in ``func`` to its case labels.
+
+    Walks the whole function body, matching the analyzer's CALLS model:
+    nested functions are not separate nodes here, so a nested helper's tag
+    dispatch is attributed to the enclosing function (just as its calls
+    are). Multiple sites for one tag union their cases.
+    """
+    found: dict[str, set[str]] = {}
+    for node in ast.walk(func):
+        result = None
+        if isinstance(node, ast.If):
+            result = _if_discrimination(node.test)
+        elif isinstance(node, ast.Match):
+            result = _match_discrimination(node)
+        if result is not None:
+            tag, cases = result
+            found.setdefault(tag, set()).update(cases)
+    return {tag: tuple(sorted(cases)) for tag, cases in found.items()}
+
+
+# ---------------------------------------------------------------------------
 # CodeVisitor — single-pass AST visitor per file
 # ---------------------------------------------------------------------------
 
@@ -500,6 +622,9 @@ class CodeVisitor(ast.NodeVisitor):
         # decorator metadata (module lowest, function highest precedence).
         self._module_pytest_meta: dict[str, object] = {}
         self._current_class_pytest_meta: dict[str, object] = {}
+        # Synthetic tag nodes are shared across the functions that
+        # discriminate on them; emit each at most once per file.
+        self._tags_emitted: set[str] = set()
 
         # Create module node
         self.nodes.append(GraphNode(
@@ -772,6 +897,25 @@ class CodeVisitor(ast.NodeVisitor):
             source=parent_id, target=func_id, type=EdgeType.CONTAINS,
             metadata={"source": "ast"},
         ))
+
+        # DISCRIMINATES_ON — tags this function branches on (one edge per
+        # tag; the query counts cross-function fan-in).
+        for tag, cases in _discriminated_tags(node).items():
+            tag_id = self._node_id("tag", tag)
+            if tag_id not in self._tags_emitted:
+                self._tags_emitted.add(tag_id)
+                self.nodes.append(GraphNode(
+                    id=tag_id,
+                    type=NodeType.TAG,
+                    name=tag,
+                    display_name=tag,
+                    domain="py",
+                    metadata={"source": "ast"},
+                ))
+            self.edges.append(GraphEdge(
+                source=func_id, target=tag_id, type=EdgeType.DISCRIMINATES_ON,
+                metadata={"source": "ast", "cases": cases},
+            ))
 
         # TYPE_USES from parameter annotations
         for arg in (

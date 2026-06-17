@@ -855,3 +855,106 @@ def test_trivial_body_has_no_fingerprint():
     v = _visit_source("def p():\n    pass\n")
     fn = next(n for n in v.nodes if n.name.endswith("p"))
     assert "body_shingles" not in fn.metadata
+
+
+# ---------------------------------------------------------------------------
+# discriminates_on (tag dispatch — "a repeated conditional is a missing type")
+# ---------------------------------------------------------------------------
+
+
+def _disc_edges(v):
+    return [
+        (e.source, e.target, tuple(e.metadata.get("cases", ())))
+        for e in v.edges
+        if (e.type.value if hasattr(e.type, "value") else e.type) == "discriminates_on"
+    ]
+
+
+def test_discriminates_on_eq_string_literal():
+    v = _visit_source(
+        "def f(geometry):\n"
+        "    if geometry == 'spherical':\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    assert ("py:function:testmod.f", "py:tag:geometry", ("spherical",)) in _disc_edges(v)
+    tag = next(n for n in v.nodes if n.id == "py:tag:geometry")
+    assert (tag.type.value if hasattr(tag.type, "value") else tag.type) == "tag"
+
+
+def test_discriminates_on_elif_chain_unions_cases():
+    v = _visit_source(
+        "def f(self):\n"
+        "    if self.kind == 'a':\n"
+        "        return 1\n"
+        "    elif self.kind == 'b':\n"
+        "        return 2\n"
+        "    return 0\n"
+    )
+    edges = {(s, t): c for s, t, c in _disc_edges(v)}
+    assert edges[("py:function:testmod.f", "py:tag:kind")] == ("a", "b")
+
+
+def test_discriminates_on_in_collection():
+    v = _visit_source(
+        "def f(mode):\n"
+        "    if mode in ('jacobi', 'gauss_seidel'):\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    edges = {(s, t): c for s, t, c in _disc_edges(v)}
+    assert set(edges[("py:function:testmod.f", "py:tag:mode")]) == {"jacobi", "gauss_seidel"}
+
+
+def test_discriminates_on_enum_member():
+    v = _visit_source(
+        "def f(g):\n"
+        "    if g == Geometry.SPHERICAL:\n"
+        "        return 1\n"
+        "    return 0\n"
+    )
+    edges = {(s, t): c for s, t, c in _disc_edges(v)}
+    assert edges[("py:function:testmod.f", "py:tag:g")] == ("Geometry.SPHERICAL",)
+
+
+def test_discriminates_on_match():
+    v = _visit_source(
+        "def f(self):\n"
+        "    match self.coord:\n"
+        "        case 'spherical':\n"
+        "            return 1\n"
+        "        case 'cylindrical':\n"
+        "            return 2\n"
+    )
+    edges = {(s, t): c for s, t, c in _disc_edges(v)}
+    assert set(edges[("py:function:testmod.f", "py:tag:coord")]) == {"spherical", "cylindrical"}
+
+
+def test_no_discrimination_for_non_tag_comparisons():
+    v = _visit_source(
+        "def f(x, y):\n"
+        "    if x == 5:\n"          # numeric literal, not a tag
+        "        return 1\n"
+        "    if x == y:\n"          # variable, not a literal
+        "        return 2\n"
+        "    if x() == 'a':\n"      # call result, not a discriminant
+        "        return 3\n"
+        "    return 0\n"
+    )
+    assert _disc_edges(v) == []
+
+
+def test_nested_discrimination_attributed_to_enclosing_function():
+    # Nested functions are not separate nodes in this analyzer (it walks the
+    # whole body and attributes nested calls to the enclosing function);
+    # discriminations follow the same model.
+    v = _visit_source(
+        "def outer(z):\n"
+        "    def inner(kind):\n"
+        "        if kind == 'a':\n"
+        "            return 1\n"
+        "        return 0\n"
+        "    return inner\n"
+    )
+    edges = {(s, t): c for s, t, c in _disc_edges(v)}
+    assert edges[("py:function:testmod.outer", "py:tag:kind")] == ("a",)

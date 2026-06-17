@@ -24,6 +24,7 @@ class NodeType(str, Enum):
     TYPE = "type"
     EXTERNAL = "external"
     UNRESOLVED = "unresolved"
+    TAG = "tag"
 
 
 class EdgeType(str, Enum):
@@ -39,6 +40,7 @@ class EdgeType(str, Enum):
     TYPE_USES = "type_uses"
     TESTS = "tests"
     DERIVES = "derives"
+    DISCRIMINATES_ON = "discriminates_on"
 
 
 @dataclass

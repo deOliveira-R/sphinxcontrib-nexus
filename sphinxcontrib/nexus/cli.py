@@ -494,6 +494,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Max pairs (default: 50; 0 = all).",
     )
 
+    # --- discriminations ---
+    disc_cmd = sub.add_parser(
+        "discriminations",
+        help="Tags discriminated at multiple sites — candidate missing types (JSON)",
+    )
+    disc_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    disc_cmd.add_argument(
+        "--min-sites", type=int, default=2,
+        help="Minimum distinct discriminating functions per tag (default: 2).",
+    )
+    disc_cmd.add_argument(
+        "--exclude", type=str, default="",
+        help="Comma-separated substrings to drop, on top of is_test "
+             "(e.g. 'derivations,scratch').",
+    )
+    disc_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max tags (default: 50; 0 = all).",
+    )
+
     # --- processes ---
     processes_cmd = sub.add_parser(
         "processes",
@@ -698,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
         "god-nodes": _run_god_nodes,
         "native-place": _run_native_place,
         "twin-paths": _run_twin_paths,
+        "discriminations": _run_discriminations,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
@@ -1153,6 +1176,16 @@ def _run_twin_paths(args: argparse.Namespace) -> int:
     results = q.twin_paths(
         min_similarity=args.min_similarity, min_tokens=args.min_tokens,
         exclude=toks, limit=args.limit,
+    )
+    return _json_out(to_dict(results))
+
+
+def _run_discriminations(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
+    results = q.discriminations(
+        min_sites=args.min_sites, exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
 

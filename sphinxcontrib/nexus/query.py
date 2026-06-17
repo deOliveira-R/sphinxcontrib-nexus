@@ -167,6 +167,23 @@ class TwinPathResult:
 
 
 @dataclass
+class DiscriminationResult:
+    """A tag discriminated at multiple sites — a candidate missing type.
+
+    ``tag`` (e.g. ``geometry``, ``inner_solver``) is branched on by
+    ``site_count`` distinct functions via ``if``/``match`` over its
+    ``cases``. The coding-elegance smell "a repeated conditional is a
+    missing type — discriminate once, at the boundary": one dispatch (a
+    type / single registry) should usually replace the repeated tag tests.
+    """
+
+    tag: str
+    site_count: int
+    cases: list[str]
+    sites: list[NodeResult]
+
+
+@dataclass
 class ChangeEntry:
     """A symbol affected by a git change."""
 
@@ -2424,6 +2441,63 @@ class GraphQuery:
             ))
 
         out.sort(key=lambda r: (r.similarity, r.cross_module), reverse=True)
+        return out if limit <= 0 else out[:limit]
+
+    def discriminations(
+        self,
+        min_sites: int = 2,
+        exclude: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> list[DiscriminationResult]:
+        """Tags discriminated at multiple sites — candidate missing types.
+
+        A function that branches on a string/enum *tag* (``if geometry ==
+        "spherical"``, ``match kind:``) carries a ``discriminates_on`` edge to
+        that tag (emitted by the AST extractor). The same tag discriminated by
+        many functions is the coding-elegance smell "a repeated conditional is
+        a missing type — discriminate once, at the boundary": the repeated
+        tests should usually collapse to one dispatch (a type / single
+        registry / polymorphic call).
+
+        This is a read-only heuristic that SURFACES candidates; judgment
+        decides. A genuinely open set with no shared behaviour (axis labels, a
+        one-off parse) may legitimately stay a tag. Read the sites before
+        concluding a type is missing.
+
+        Args:
+            min_sites: Minimum distinct discriminating functions to report a
+                tag (default 2 — a single site is not yet a repetition).
+            exclude: Substrings; a discriminating function whose node id
+                contains one is ignored, on top of the ``is_test`` flag.
+            limit: Maximum tags to return (0 = all). Sorted by descending
+                site count, then tag name.
+        """
+        def dropped(node_id: str) -> bool:
+            if self._g.nodes.get(node_id, {}).get("is_test"):
+                return True
+            return any(tok in node_id for tok in exclude)
+
+        # tag node -> {function id: case labels}
+        sites: dict[str, dict[str, tuple[str, ...]]] = {}
+        for src, tgt, data in self._g.edges(data=True):
+            if data.get("type") != EdgeType.DISCRIMINATES_ON or dropped(src):
+                continue
+            sites.setdefault(tgt, {})[src] = tuple(data.get("cases", ()))
+
+        out: list[DiscriminationResult] = []
+        for tag_id, by_func in sites.items():
+            if len(by_func) < min_sites:
+                continue
+            cases = sorted({c for labels in by_func.values() for c in labels})
+            tag_name = self._g.nodes.get(tag_id, {}).get("name", tag_id)
+            out.append(DiscriminationResult(
+                tag=tag_name,
+                site_count=len(by_func),
+                cases=cases,
+                sites=[self._node_result(f) for f in sorted(by_func)],
+            ))
+
+        out.sort(key=lambda r: (r.site_count, r.tag), reverse=True)
         return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------
