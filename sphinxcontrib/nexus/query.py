@@ -184,6 +184,46 @@ class DiscriminationResult:
 
 
 @dataclass
+class DeadFunctionResult:
+    """A function with no static callers — a dead-code candidate.
+
+    This is a CANDIDATE, not a verdict: the static call graph cannot see
+    dynamic dispatch (registry / ``getattr`` / callback passed to scipy),
+    and public entry points are legitimately uncalled internally. The
+    flags below carry that uncertainty so judgment, not the tool, decides.
+    """
+
+    function: NodeResult
+    is_method: bool
+    public: bool
+    """No leading underscore — likely public API / an entry point, so
+    being uncalled internally is expected. Private + uncalled is the
+    stronger dead signal."""
+    decorated: bool
+    """Carries a decorator — often registry/route/property/dispatch
+    machinery that invokes it indirectly (invisible to the call graph)."""
+
+
+@dataclass
+class ProtocolConformerResult:
+    """A Protocol whose method-set is satisfied by classes that don't
+    declare conformance.
+
+    Python ``Protocol``s are satisfied *structurally*; the AST ``inherits``
+    edge only records *explicit* subclassing, so a structural conformer has
+    no edge to be missing. This matches by method NAME set (signatures
+    ignored), so it is a heuristic — the authoritative check is a type
+    checker (pyright / LSP ``goToImplementation``). The conformers are
+    candidates to either declare conformance or confirm the Protocol is
+    load-bearing.
+    """
+
+    protocol: NodeResult
+    methods: list[str]
+    conformers: list[NodeResult]
+
+
+@dataclass
 class ChangeEntry:
     """A symbol affected by a git change."""
 
@@ -486,6 +526,20 @@ def _module_of(graph: nx.MultiDiGraph, node_id: str) -> str:
     """
     name = graph.nodes.get(node_id, {}).get("name", "")
     return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _leaf_name(graph: nx.MultiDiGraph, node_id: str) -> str:
+    """Final dotted component of a code node's qualified name.
+
+    ``orpheus.sn.axis.SNMesh.trace`` → ``trace``. The leaf is what reveals
+    privacy (leading ``_``), dunders, and method-name conformance.
+    """
+    name = graph.nodes.get(node_id, {}).get("name", "")
+    return name.rsplit(".", 1)[-1] if name else node_id
+
+
+def _is_dunder(leaf: str) -> bool:
+    return leaf.startswith("__") and leaf.endswith("__")
 
 
 class GraphQuery:
@@ -2498,6 +2552,159 @@ class GraphQuery:
             ))
 
         out.sort(key=lambda r: (r.site_count, r.tag), reverse=True)
+        return out if limit <= 0 else out[:limit]
+
+    def dead_functions(
+        self,
+        exclude: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> list[DeadFunctionResult]:
+        """Functions/methods with no static callers — dead-code candidates.
+
+        A function with zero incoming ``calls`` edges (from non-test, non-
+        excluded code) is a candidate for removal. This is a **candidate
+        list, not a verdict**: the static call graph cannot see dynamic
+        dispatch (registry / ``getattr`` / a callback handed to ``solve_ivp``),
+        and public entry points are legitimately uncalled internally. Each
+        result carries ``public`` and ``decorated`` flags so judgment can
+        weigh those false-positive sources; the strongest signal — a
+        *private, undecorated* function with no caller — is ranked first.
+
+        Dunder methods are excluded (they are invoked implicitly by the
+        language, never via an explicit call edge, so they always look dead).
+
+        Args:
+            exclude: Substrings; a function whose node id contains one, OR a
+                *caller* whose id contains one, is ignored — on top of the
+                ``is_test`` flag (a function called only by tests still reads
+                as dead).
+            limit: Maximum results (0 = all). Ranked private/undecorated/
+                plain-function first.
+        """
+        def dropped(node_id: str) -> bool:
+            if self._g.nodes.get(node_id, {}).get("is_test"):
+                return True
+            return any(tok in node_id for tok in exclude)
+
+        # Callees that have at least one non-dropped (non-test) caller.
+        called: set[str] = set()
+        for src, tgt, data in self._g.edges(data=True):
+            if data.get("type") == EdgeType.CALLS and not dropped(src):
+                called.add(tgt)
+
+        out: list[DeadFunctionResult] = []
+        for node_id, attrs in self._g.nodes(data=True):
+            ntype = attrs.get("type")
+            if ntype not in (NodeType.FUNCTION, NodeType.METHOD):
+                continue
+            if dropped(node_id) or node_id in called:
+                continue
+            leaf = _leaf_name(self._g, node_id)
+            if _is_dunder(leaf):
+                continue
+            out.append(DeadFunctionResult(
+                function=self._node_result(node_id),
+                is_method=ntype == NodeType.METHOD,
+                public=not leaf.startswith("_"),
+                decorated=bool(attrs.get("decorators")),
+            ))
+
+        # private → undecorated → plain function first (strongest dead signal);
+        # name as a stable tiebreak.
+        out.sort(key=lambda r: (r.public, r.decorated, r.is_method, r.function.name))
+        return out if limit <= 0 else out[:limit]
+
+    def protocol_conformers(
+        self,
+        min_methods: int = 2,
+        exclude: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> list[ProtocolConformerResult]:
+        """Classes that satisfy a Protocol's method-set without declaring it.
+
+        Python ``Protocol``s are satisfied *structurally*, but the AST
+        ``inherits`` edge records only *explicit* subclassing — so a
+        structural conformer has no edge, and "is every implementation
+        connected to its Protocol?" is unanswerable from ``inherits`` alone.
+        This matches a class to a Protocol when the class defines (by NAME)
+        every non-dunder method the Protocol declares yet does not inherit it.
+
+        A heuristic, not authoritative: it compares method *names*, not
+        signatures, and only direct methods (not those inherited from a
+        mixin). The definitive check is a type checker — pyright or LSP
+        ``goToImplementation``. Use this to find classes to either declare
+        conformance on, or as evidence a Protocol is load-bearing.
+
+        Args:
+            min_methods: Minimum Protocol method-set size to consider
+                (default 2 — single-method Protocols match too broadly).
+            exclude: Substrings; a Protocol or candidate class whose node id
+                contains one is ignored, on top of the ``is_test`` flag.
+            limit: Maximum Protocols to return (0 = all). Sorted by
+                descending conformer count.
+        """
+        def dropped(node_id: str) -> bool:
+            if self._g.nodes.get(node_id, {}).get("is_test"):
+                return True
+            return any(tok in node_id for tok in exclude)
+
+        inherits: dict[str, set[str]] = {}
+        methods_of: dict[str, set[str]] = {}
+        for src, tgt, data in self._g.edges(data=True):
+            etype = data.get("type")
+            if etype == EdgeType.INHERITS:
+                inherits.setdefault(src, set()).add(tgt)
+            elif etype == EdgeType.CONTAINS:
+                if self._g.nodes.get(tgt, {}).get("type") == NodeType.METHOD:
+                    leaf = _leaf_name(self._g, tgt)
+                    if not _is_dunder(leaf):
+                        methods_of.setdefault(src, set()).add(leaf)
+
+        def is_protocol(class_id: str) -> bool:
+            return any(
+                _leaf_name(self._g, p) == "Protocol"
+                for p in inherits.get(class_id, ())
+            )
+
+        def ancestors(class_id: str) -> set[str]:
+            seen: set[str] = set()
+            stack = list(inherits.get(class_id, ()))
+            while stack:
+                parent = stack.pop()
+                if parent in seen:
+                    continue
+                seen.add(parent)
+                stack.extend(inherits.get(parent, ()))
+            return seen
+
+        classes = [
+            n for n, a in self._g.nodes(data=True)
+            if a.get("type") == NodeType.CLASS and not dropped(n)
+        ]
+        anc = {c: ancestors(c) for c in classes}
+
+        out: list[ProtocolConformerResult] = []
+        for proto in classes:
+            if not is_protocol(proto):
+                continue
+            proto_methods = methods_of.get(proto, set())
+            if len(proto_methods) < min_methods:
+                continue
+            conformers = [
+                c for c in classes
+                if c != proto
+                and not is_protocol(c)
+                and proto not in anc[c]               # doesn't already declare it
+                and proto_methods <= methods_of.get(c, set())
+            ]
+            if conformers:
+                out.append(ProtocolConformerResult(
+                    protocol=self._node_result(proto),
+                    methods=sorted(proto_methods),
+                    conformers=[self._node_result(c) for c in sorted(conformers)],
+                ))
+
+        out.sort(key=lambda r: (len(r.conformers), r.protocol.name), reverse=True)
         return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------

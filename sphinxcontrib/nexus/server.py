@@ -637,6 +637,59 @@ def discriminations(min_sites: int = 2, exclude: str = "", limit: int = 50) -> s
 
 
 @nexus_tool
+def dead_functions(exclude: str = "", limit: int = 50) -> str:
+    """Find functions/methods with no static callers — dead-code candidates.
+
+    Zero incoming `calls` edges (from non-test, non-excluded code) = a removal
+    candidate. This is a CANDIDATE list, not a verdict: dynamic dispatch
+    (registry / `getattr` / a callback passed to a solver) is invisible to the
+    static call graph, and public entry points are legitimately uncalled
+    internally. Each result carries `public` and `decorated` flags for those
+    false-positive sources; the strongest signal — a private, undecorated
+    function with no caller — is ranked first. Dunders are excluded (invoked
+    implicitly).
+
+    Args:
+        exclude: Comma-separated substrings; a function OR a caller whose id
+            contains any is ignored, on top of the built-in is_test flag.
+        limit: Max results (default 50; 0 = all).
+    """
+    q = _get_query()
+    toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
+    results = q.dead_functions(exclude=toks, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 50) -> str:
+    """Find classes that satisfy a Protocol's method-set without declaring it.
+
+    Python Protocols are satisfied structurally, but the AST `inherits` edge
+    records only explicit subclassing — so a structural conformer has no edge,
+    and "is every implementation connected to its Protocol?" is unanswerable
+    from `inherits` alone. This matches a class to a Protocol when the class
+    defines (by NAME) every non-dunder method the Protocol declares yet does
+    not inherit it.
+
+    A heuristic: it compares method NAMES, not signatures, and only direct
+    methods. The authoritative check is a type checker (pyright / LSP
+    goToImplementation). Use it to find classes to declare conformance on, or
+    as evidence a Protocol is load-bearing.
+
+    Args:
+        min_methods: Minimum Protocol method-set size (default 2;
+            single-method Protocols match too broadly).
+        exclude: Comma-separated substrings; a Protocol or candidate class
+            whose id contains any is ignored, on top of the is_test flag.
+        limit: Max Protocols (default 50; 0 = all).
+    """
+    q = _get_query()
+    toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
+    results = q.protocol_conformers(min_methods=min_methods, exclude=toks, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
 def detect_changes(scope: str = "all") -> str:
     """Detect which symbols changed in git and what they affect.
 

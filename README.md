@@ -113,7 +113,7 @@ Nexus works with any Python project:
 | `derives` | Derivation → equation | AST |
 | `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
 
-## MCP Tools (31)
+## MCP Tools (33)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -137,6 +137,8 @@ Nexus works with any Python project:
 - **`native_place`** — functions that may belong inside a class (Feature-Envy / "native place"): every non-test caller is a method of one class. Ranked by strength (genuine relocations first, cross-module before same-module, private before public); public functions tested at least as much as used in production are flagged `likely_free_primitive` and ranked last (a verified free-function primitive is *correctly* free)
 - **`twin_paths`** — independent implementations of the same computation (Type-2/3 clones / single-source-of-truth violations): function bodies sharing a high fraction of AST structural shingles where neither calls the other. The fingerprint captures the array math (`@`, `einsum`, slicing) the call graph cannot see; cross-module pairs ranked first
 - **`discriminations`** — tags discriminated at multiple sites (candidate missing types): the same string/enum tag (`if geometry == "..."`, `match kind:`) branched on by many functions. Makes the coding-elegance smell "a repeated conditional is a missing type — discriminate once, at the boundary" machine-checkable; ranked by site fan-in
+- **`dead_functions`** — functions/methods with no static callers (dead-code candidates): zero incoming `calls` edges from non-test code. A candidate list, not a verdict (dynamic dispatch is invisible to the static graph); `public`/`decorated` flags carry the false-positive sources, private+undecorated ranked first
+- **`protocol_conformers`** — classes satisfying a `Protocol`'s method-set without declaring it: `Protocol`s are satisfied structurally but `inherits` records only explicit subclassing, so a structural conformer has no edge. Matches by method-name set (a heuristic — the type checker / LSP `goToImplementation` is authoritative)
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability

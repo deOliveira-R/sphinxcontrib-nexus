@@ -756,6 +756,12 @@ class CodeVisitor(ast.NodeVisitor):
             "end_lineno": node.end_lineno,
             "source": "ast",
         }
+        # Any class in a test module is test code (test doubles / fakes that
+        # conform to a Protocol have arbitrary names, so unlike test
+        # functions there is no name convention to key on — the file is the
+        # signal). Lets class-level diagnostics drop the test tree by default.
+        if self._is_test_file:
+            class_meta["is_test"] = True
         if node.decorator_list:
             class_meta["decorators"] = tuple(
                 _render_decorator(dec) for dec in node.decorator_list

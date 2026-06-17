@@ -516,6 +516,45 @@ def main(argv: list[str] | None = None) -> int:
         help="Max tags (default: 50; 0 = all).",
     )
 
+    # --- dead-functions ---
+    dead_cmd = sub.add_parser(
+        "dead-functions",
+        help="Functions/methods with no static callers — dead-code candidates (JSON)",
+    )
+    dead_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    dead_cmd.add_argument(
+        "--exclude", type=str, default="",
+        help="Comma-separated substrings to drop (function or caller), on top "
+             "of is_test (e.g. 'derivations,scratch').",
+    )
+    dead_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max results (default: 50; 0 = all).",
+    )
+
+    # --- protocol-conformers ---
+    pc_cmd = sub.add_parser(
+        "protocol-conformers",
+        help="Classes satisfying a Protocol's method-set without declaring it (JSON)",
+    )
+    pc_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    pc_cmd.add_argument(
+        "--min-methods", type=int, default=2,
+        help="Minimum Protocol method-set size (default: 2).",
+    )
+    pc_cmd.add_argument(
+        "--exclude", type=str, default="",
+        help="Comma-separated substrings to drop, on top of is_test.",
+    )
+    pc_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max Protocols (default: 50; 0 = all).",
+    )
+
     # --- processes ---
     processes_cmd = sub.add_parser(
         "processes",
@@ -721,6 +760,8 @@ def main(argv: list[str] | None = None) -> int:
         "native-place": _run_native_place,
         "twin-paths": _run_twin_paths,
         "discriminations": _run_discriminations,
+        "dead-functions": _run_dead_functions,
+        "protocol-conformers": _run_protocol_conformers,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
@@ -1186,6 +1227,24 @@ def _run_discriminations(args: argparse.Namespace) -> int:
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.discriminations(
         min_sites=args.min_sites, exclude=toks, limit=args.limit,
+    )
+    return _json_out(to_dict(results))
+
+
+def _run_dead_functions(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
+    results = q.dead_functions(exclude=toks, limit=args.limit)
+    return _json_out(to_dict(results))
+
+
+def _run_protocol_conformers(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
+    results = q.protocol_conformers(
+        min_methods=args.min_methods, exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
 

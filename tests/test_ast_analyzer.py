@@ -958,3 +958,21 @@ def test_nested_discrimination_attributed_to_enclosing_function():
     )
     edges = {(s, t): c for s, t, c in _disc_edges(v)}
     assert edges[("py:function:testmod.outer", "py:tag:kind")] == ("a",)
+
+
+def test_class_in_test_file_marked_is_test():
+    v = _visit_source(
+        "class FakeOp:\n    def apply(self):\n        return 1\n",
+        is_test_file=True,
+    )
+    cls = next(n for n in v.nodes if n.id == "py:class:testmod.FakeOp")
+    assert cls.metadata.get("is_test") is True
+
+
+def test_class_in_production_file_not_is_test():
+    v = _visit_source(
+        "class RealOp:\n    def apply(self):\n        return 1\n",
+        is_test_file=False,
+    )
+    cls = next(n for n in v.nodes if n.id == "py:class:testmod.RealOp")
+    assert "is_test" not in cls.metadata

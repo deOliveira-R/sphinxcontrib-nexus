@@ -4,6 +4,30 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### `dead_functions` + `protocol_conformers` diagnostics
+
+Two more read-only diagnostics in the "missing abstraction" family, both over
+existing edges (no re-analyze): `dead_functions` / `nexus dead-functions` and
+`protocol_conformers` / `nexus protocol-conformers` (MCP tools 31 → 33).
+
+- **`dead_functions`** — functions/methods with no static callers (zero
+  incoming `calls` from non-test, non-excluded code) = dead-code candidates.
+  A **candidate list, not a verdict**: dynamic dispatch (registry /
+  `getattr` / callbacks) is invisible to the static call graph, and public
+  entry points are legitimately uncalled internally. Dunders are excluded
+  (invoked implicitly); each result carries `public` + `decorated` flags for
+  the false-positive sources, and a private/undecorated/plain function with no
+  caller — the strongest signal — is ranked first.
+- **`protocol_conformers`** — classes that define (by name) every non-dunder
+  method a `Protocol` declares yet do not inherit it. `Protocol`s are
+  satisfied *structurally*, but the `inherits` edge records only explicit
+  subclassing, so a structural conformer has no edge — "is every
+  implementation connected to its Protocol?" is otherwise unanswerable. A
+  method-NAME-set heuristic (signatures ignored, direct methods only); the
+  authoritative check is a type checker (pyright / LSP `goToImplementation`).
+  On ORPHEUS it cleanly recovers the `LinearOperator` Protocol's conformers
+  (operators that inherit a mixin, not the Protocol).
+
 ### `discriminates_on` edge + `discriminations` diagnostic
 
 New AST edge type **`discriminates_on`** (`function → tag`) and the
