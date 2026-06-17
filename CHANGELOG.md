@@ -4,6 +4,8 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+## 0.14.0 — 2026-06-17
+
 ### `dead_functions` + `protocol_conformers` diagnostics
 
 Two more read-only diagnostics in the "missing abstraction" family, both over
