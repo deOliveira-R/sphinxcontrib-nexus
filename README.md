@@ -112,7 +112,7 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (29)
+## MCP Tools (30)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -134,6 +134,7 @@ Nexus works with any Python project:
 - **`graph_query`** — Cypher-like pattern matching (`"function -calls-> function"`)
 - **`bridges`** — find architectural hotspots connecting communities
 - **`native_place`** — functions that may belong inside a class (Feature-Envy / "native place"): every non-test caller is a method of one class. Ranked by strength (genuine relocations first, cross-module before same-module, private before public); public functions tested at least as much as used in production are flagged `likely_free_primitive` and ranked last (a verified free-function primitive is *correctly* free)
+- **`twin_paths`** — independent implementations of the same computation (Type-2/3 clones / single-source-of-truth violations): function bodies sharing a high fraction of AST structural shingles where neither calls the other. The fingerprint captures the array math (`@`, `einsum`, slicing) the call graph cannot see; cross-module pairs ranked first
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability

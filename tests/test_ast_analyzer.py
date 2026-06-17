@@ -812,3 +812,46 @@ def test_exclude_patterns_fnmatch_semantics(tmp_path):
     assert "py:function:a.a" in nids
     assert not any("vendored" in n for n in nids)
     assert not any("conf" in n and "docs" in n for n in nids)
+
+
+# ---------------------------------------------------------------------------
+# Body fingerprint (twin-path clone seed)
+# ---------------------------------------------------------------------------
+
+
+def test_function_emits_body_fingerprint():
+    v = _visit_source(
+        "def kernel(a, b):\n"
+        "    out = np.zeros_like(a)\n"
+        "    for i in range(len(a)):\n"
+        "        out[i] = a[i] * b[i] + b[i - 1]\n"
+        "    return out\n"
+    )
+    fn = next(n for n in v.nodes if n.name.endswith("kernel"))
+    shingles = fn.metadata.get("body_shingles")
+    assert shingles and all(isinstance(s, int) for s in shingles)
+    assert fn.metadata.get("body_ntokens", 0) > 4
+
+
+def test_renamed_functions_get_equal_fingerprints():
+    v = _visit_source(
+        "def alpha(psi, mu):\n"
+        "    s = 0.0\n"
+        "    for i in range(len(psi)):\n"
+        "        s = s + mu[i] * psi[i]\n"
+        "    return s\n"
+        "def beta(flux, w):\n"
+        "    t = 0.0\n"
+        "    for k in range(len(flux)):\n"
+        "        t = t + w[k] * flux[k]\n"
+        "    return t\n"
+    )
+    a = next(n for n in v.nodes if n.name.endswith("alpha"))
+    b = next(n for n in v.nodes if n.name.endswith("beta"))
+    assert a.metadata["body_shingles"] == b.metadata["body_shingles"]
+
+
+def test_trivial_body_has_no_fingerprint():
+    v = _visit_source("def p():\n    pass\n")
+    fn = next(n for n in v.nodes if n.name.endswith("p"))
+    assert "body_shingles" not in fn.metadata

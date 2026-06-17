@@ -571,6 +571,45 @@ def native_place(min_callers: int = 1, exclude: str = "", limit: int = 50) -> st
 
 
 @nexus_tool
+def twin_paths(
+    min_similarity: float = 0.7,
+    min_tokens: int = 35,
+    exclude: str = "",
+    limit: int = 50,
+) -> str:
+    """Find twin paths — independent implementations of the same computation.
+
+    Two functions whose AST bodies share a high fraction of structural
+    shingles (a Type-2/3 clone) but where neither calls the other: the
+    coding-elegance Pattern-2 / single-source-of-truth smell. The fingerprint
+    captures the array math (`@`, `einsum`, slicing) the call graph cannot
+    see. Cross-module pairs are the strongest signal.
+
+    Surfaces candidates; judgment decides. Symmetric-by-design pairs
+    (`apply`/`apply_transpose`, `domain`/`codomain`) and shared small
+    templates (a one-line convergence check) legitimately resemble each other.
+
+    Args:
+        min_similarity: Minimum Jaccard shingle overlap, 0.0-1.0 (default
+            0.7). Genuine duplicates score >= 0.8; lower to ~0.6 to surface
+            structurally-similar siblings.
+        min_tokens: Minimum body token count; thinner stubs are ignored
+            (default 35).
+        exclude: Comma-separated substrings; functions whose id contains any
+            are ignored, on top of the built-in is_test flag (e.g.
+            "derivations,scratch").
+        limit: Max pairs (default 50; 0 = all).
+    """
+    q = _get_query()
+    toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
+    results = q.twin_paths(
+        min_similarity=min_similarity, min_tokens=min_tokens,
+        exclude=toks, limit=limit,
+    )
+    return to_json(to_dict(results))
+
+
+@nexus_tool
 def detect_changes(scope: str = "all") -> str:
     """Detect which symbols changed in git and what they affect.
 

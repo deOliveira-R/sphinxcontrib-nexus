@@ -467,6 +467,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Max candidates (default: 50; 0 = all).",
     )
 
+    # --- twin-paths ---
+    tp_cmd = sub.add_parser(
+        "twin-paths",
+        help="Independent implementations of the same computation — twin paths (JSON)",
+    )
+    tp_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    tp_cmd.add_argument(
+        "--min-similarity", type=float, default=0.7,
+        help="Minimum Jaccard shingle overlap, 0.0-1.0 (default: 0.7; "
+             "lower to ~0.6 for structurally-similar siblings).",
+    )
+    tp_cmd.add_argument(
+        "--min-tokens", type=int, default=35,
+        help="Minimum body token count; thinner stubs ignored (default: 35).",
+    )
+    tp_cmd.add_argument(
+        "--exclude", type=str, default="",
+        help="Comma-separated substrings to drop, on top of is_test "
+             "(e.g. 'derivations,scratch').",
+    )
+    tp_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max pairs (default: 50; 0 = all).",
+    )
+
     # --- processes ---
     processes_cmd = sub.add_parser(
         "processes",
@@ -670,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         "bridges": _run_bridges,
         "god-nodes": _run_god_nodes,
         "native-place": _run_native_place,
+        "twin-paths": _run_twin_paths,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
@@ -1114,6 +1142,17 @@ def _run_native_place(args: argparse.Namespace) -> int:
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.native_place_candidates(
         min_callers=args.min_callers, exclude=toks, limit=args.limit,
+    )
+    return _json_out(to_dict(results))
+
+
+def _run_twin_paths(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
+    results = q.twin_paths(
+        min_similarity=args.min_similarity, min_tokens=args.min_tokens,
+        exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
 

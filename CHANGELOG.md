@@ -4,6 +4,29 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### `twin_paths` — twin-path / clone diagnostic + AST body fingerprint
+
+New read-only `GraphQuery.twin_paths()`, exposed as the `twin_paths` MCP tool
+and the `nexus twin-paths` CLI command. Surfaces **twin paths** — two
+functions whose bodies independently implement the same computation (a
+Type-2/3 clone), the coding-elegance Pattern-2 / single-source-of-truth smell.
+
+- Backed by a new **AST body fingerprint** (`sphinxcontrib/nexus/fingerprint.py`):
+  each function/method node now carries normalized k-gram structural shingles
+  (`body_shingles`) + a token count (`body_ntokens`) in its metadata, stamped
+  by the extractor. Identifiers and literals are normalized (rename-invariant,
+  Type-2), while operators (`@`), attribute/method names (`einsum`, `solve`)
+  and subscripting are kept — capturing the array math the **call graph cannot
+  see** (operator overloads and indexing produce no call edges).
+- Pairs are ranked by descending Jaccard shingle overlap, cross-module first.
+  Functions that directly call each other are dropped (delegation, not an
+  independent reimplementation); a minimum-token gate removes thin stubs.
+- Validated on a real graph (ORPHEUS): found genuine cross-module duplicates
+  (a per-axis cosine accessor reimplemented across modules at similarity 1.0;
+  a BC-registry resolver copied across two solvers at 0.9) while leaving
+  symmetric-by-design pairs (`apply`/`apply_transpose`) for human judgment.
+- Knobs: `min_similarity` (default 0.7), `min_tokens` (35), `exclude`, `limit`.
+
 ### `native_place` — Feature-Envy / "native place" diagnostic
 
 New read-only `GraphQuery.native_place_candidates()`, exposed as the

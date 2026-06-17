@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 import networkx as nx
 
+from sphinxcontrib.nexus.fingerprint import jaccard
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 from sphinxcontrib.nexus.workspace import default_branch
 
@@ -145,6 +146,24 @@ class NativePlaceResult:
         self.likely_free_primitive = (
             not self.private and self.excluded_callers >= self.caller_count
         )
+
+
+@dataclass
+class TwinPathResult:
+    """Two functions that independently implement the same computation.
+
+    Twin-path / Type-2-3 clone: the bodies of ``a`` and ``b`` share a high
+    fraction of structural shingles (:attr:`similarity`) yet neither calls
+    the other — the coding-elegance Pattern-2 smell. ``cross_module`` pairs
+    (the two live in different modules) are the strongest signal; a duplicate
+    that drifted across a module boundary is the classic single-source-of-
+    truth violation.
+    """
+
+    a: NodeResult
+    b: NodeResult
+    similarity: float
+    cross_module: bool
 
 
 @dataclass
@@ -439,6 +458,17 @@ class VerificationGapsResult:
     unverified_equations: list[VerificationGap] = field(default_factory=list)
     missing_err_catchers: list[VerificationGap] = field(default_factory=list)
     filters: dict[str, str | int | None] = field(default_factory=dict)
+
+
+def _module_of(graph: nx.MultiDiGraph, node_id: str) -> str:
+    """Dotted module of a code node, i.e. its qualified name minus the leaf.
+
+    ``orpheus.sn.axis.SNMesh.trace`` → ``orpheus.sn.axis.SNMesh``. Used to
+    decide whether two nodes are cross-module; an empty/leaf name returns
+    itself.
+    """
+    name = graph.nodes.get(node_id, {}).get("name", "")
+    return name.rsplit(".", 1)[0] if "." in name else name
 
 
 class GraphQuery:
@@ -2245,10 +2275,6 @@ class GraphQuery:
             elif etype == EdgeType.CALLS:
                 callers.setdefault(tgt, set()).add(src)
 
-        def module_of(node_id: str) -> str:
-            name = self._g.nodes.get(node_id, {}).get("name", "")
-            return name.rsplit(".", 1)[0] if "." in name else name
-
         out: list[NativePlaceResult] = []
         for node_id, attrs in self._g.nodes(data=True):
             if attrs.get("type") != NodeType.FUNCTION or dropped(node_id):
@@ -2275,7 +2301,7 @@ class GraphQuery:
                 function=self._node_result(node_id),
                 target_class=self._node_result(target),
                 caller_count=len(considered),
-                cross_module=module_of(node_id) != module_of(target),
+                cross_module=_module_of(self._g, node_id) != _module_of(self._g, target),
                 private=short.startswith("_"),
                 excluded_callers=len(all_callers) - len(considered),
             ))
@@ -2296,6 +2322,108 @@ class GraphQuery:
             ),
             reverse=True,
         )
+        return out if limit <= 0 else out[:limit]
+
+    def twin_paths(
+        self,
+        min_similarity: float = 0.7,
+        min_tokens: int = 35,
+        exclude: tuple[str, ...] = (),
+        limit: int = 50,
+        max_bucket: int = 40,
+    ) -> list[TwinPathResult]:
+        """Pairs of functions that independently implement the same computation.
+
+        A **twin path** is two functions whose bodies share a high fraction of
+        structural shingles (a Type-2/3 clone) but where neither calls the
+        other — the coding-elegance Pattern-2 / single-source-of-truth smell.
+        The shingles come from the AST body fingerprint
+        (:mod:`sphinxcontrib.nexus.fingerprint`) stamped on each function at
+        build time, so this captures the array math — ``@``, ``einsum``,
+        slicing — that the call graph cannot see.
+
+        This is a read-only heuristic that SURFACES candidates; judgment
+        decides. Symmetric-by-design pairs (``apply``/``apply_transpose``,
+        ``domain``/``codomain``) and shared small templates (a one-line
+        ``residual < tol`` convergence check) legitimately resemble each other
+        — read the bodies before declaring a duplication.
+
+        Functions that directly call each other are dropped (one delegating to
+        the other is not an independent reimplementation); the minimum-token
+        gate removes thin stubs whose structure is too sparse to compare.
+
+        Args:
+            min_similarity: Minimum Jaccard shingle overlap to report
+                (0.0–1.0). Higher is stricter; genuine duplicates score
+                ``>= 0.8`` while structurally-similar siblings sit near 0.6.
+            min_tokens: Minimum body token count; functions below it are
+                ignored (too trivial to judge).
+            exclude: Extra substrings; a function whose node id contains one
+                is ignored, on top of the ``is_test`` flag. Use for
+                non-production trees (e.g. ``("derivations", "scratch")``).
+            limit: Maximum pairs to return (0 = all). Sorted by descending
+                similarity, cross-module pairs first on ties.
+            max_bucket: Skip shingles shared by more than this many functions
+                when generating candidate pairs — these ubiquitous fragments
+                (loop/return boilerplate) would explode the pair count without
+                adding signal. Similarity is still computed over the FULL
+                shingle sets, so precision is unaffected; a genuine twin shares
+                rarer shingles too and is still generated.
+        """
+        def dropped(node_id: str) -> bool:
+            if self._g.nodes.get(node_id, {}).get("is_test"):
+                return True
+            return any(tok in node_id for tok in exclude)
+
+        # Functions with a substantial fingerprint.
+        fps: dict[str, set[int]] = {}
+        for node_id, attrs in self._g.nodes(data=True):
+            if attrs.get("type") not in (NodeType.FUNCTION, NodeType.METHOD):
+                continue
+            if dropped(node_id):
+                continue
+            shingles = attrs.get("body_shingles")
+            if not shingles or attrs.get("body_ntokens", 0) < min_tokens:
+                continue
+            fps[node_id] = set(shingles)
+
+        # Direct call adjacency — a pair where one calls the other is a
+        # delegation, not an independent twin.
+        calls: set[tuple[str, str]] = set()
+        for src, tgt, data in self._g.edges(data=True):
+            if data.get("type") == EdgeType.CALLS:
+                calls.add((src, tgt))
+
+        # Candidate pairs: functions sharing at least one non-ubiquitous
+        # shingle. Inverted index keeps this near-linear instead of O(n^2).
+        inverted: dict[int, list[str]] = {}
+        for node_id, shingles in fps.items():
+            for s in shingles:
+                inverted.setdefault(s, []).append(node_id)
+        candidates: set[tuple[str, str]] = set()
+        for ids in inverted.values():
+            if not 1 < len(ids) <= max_bucket:
+                continue
+            ids.sort()
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    candidates.add((ids[i], ids[j]))
+
+        out: list[TwinPathResult] = []
+        for a, b in candidates:
+            if (a, b) in calls or (b, a) in calls:
+                continue
+            sim = jaccard(fps[a], fps[b])
+            if sim < min_similarity:
+                continue
+            out.append(TwinPathResult(
+                a=self._node_result(a),
+                b=self._node_result(b),
+                similarity=round(sim, 4),
+                cross_module=_module_of(self._g, a) != _module_of(self._g, b),
+            ))
+
+        out.sort(key=lambda r: (r.similarity, r.cross_module), reverse=True)
         return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------

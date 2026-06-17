@@ -15,6 +15,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from sphinxcontrib.nexus.fingerprint import body_fingerprint
 from sphinxcontrib.nexus.graph import (
     EdgeType,
     GraphEdge,
@@ -743,6 +744,14 @@ class CodeVisitor(ast.NodeVisitor):
                 _render_decorator(dec) for dec in node.decorator_list
             )
             meta.update(_parse_pytest_markers(node.decorator_list))
+
+        # Structural body fingerprint — the seed for twin-path (clone)
+        # detection. Stored only when the body has enough substance to
+        # compare; trivial stubs carry no shingles.
+        body_shingles, body_ntokens = body_fingerprint(node)
+        if body_shingles:
+            meta["body_shingles"] = body_shingles
+            meta["body_ntokens"] = body_ntokens
 
         self.nodes.append(GraphNode(
             id=func_id,
