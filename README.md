@@ -112,7 +112,7 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 
-## MCP Tools (28)
+## MCP Tools (29)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -133,6 +133,7 @@ Nexus works with any Python project:
 - **`communities`** — detect functional groupings with cohesion scores
 - **`graph_query`** — Cypher-like pattern matching (`"function -calls-> function"`)
 - **`bridges`** — find architectural hotspots connecting communities
+- **`native_place`** — functions that may belong inside a class (Feature-Envy / "native place"): every non-test caller is a method of one class; cross-module candidates ranked first
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability

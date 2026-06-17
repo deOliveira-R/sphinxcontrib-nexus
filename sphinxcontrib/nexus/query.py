@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 import networkx as nx
 
-from sphinxcontrib.nexus.graph import KnowledgeGraph
+from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 from sphinxcontrib.nexus.workspace import default_branch
 
 
@@ -116,6 +116,22 @@ class BridgeResult:
     node: NodeResult
     communities_connected: list[int]
     betweenness: float
+
+
+@dataclass
+class NativePlaceResult:
+    """A function that may belong inside a class.
+
+    Feature-Envy / "native place" candidate: every considered (non-test)
+    caller of ``function`` is a method of the single class ``target_class``.
+    """
+
+    function: NodeResult
+    target_class: NodeResult
+    caller_count: int
+    cross_module: bool
+    private: bool
+    excluded_callers: int = 0
 
 
 @dataclass
@@ -2155,6 +2171,103 @@ class GraphQuery:
                 break
 
         return results
+
+    # ------------------------------------------------------------------
+    # Native-place / Feature-Envy diagnostic
+    # ------------------------------------------------------------------
+
+    def native_place_candidates(
+        self,
+        min_callers: int = 1,
+        exclude: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> list[NativePlaceResult]:
+        """Functions whose every caller is a method of a SINGLE class.
+
+        A module-level function called only by methods of one class ``C`` is
+        a Feature-Envy / "native place" candidate — logically coupled to
+        ``C`` and possibly belonging inside it. **Cross-module** candidates
+        (function and class in different modules) are the strongest signal;
+        same-module private helpers are weaker (an accepted idiom).
+
+        This is a read-only structural heuristic that SURFACES candidates;
+        judgment decides. A pure, independently-tested *free function*
+        consumed by one class is usually correct as-is (a primitive, not a
+        method) — a high ``excluded_callers`` count (e.g. direct test calls)
+        is exactly that signal, so weight such rows down.
+
+        Test callers are recognised via each node's ``is_test`` flag (set
+        from ``nexus_test_patterns``); they never count toward the
+        single-class criterion and are reported in ``excluded_callers``.
+
+        Args:
+            min_callers: Minimum considered (non-test) method callers
+                required to surface a candidate.
+            exclude: Extra substrings; a function OR caller whose node id
+                contains one is ignored, on top of the ``is_test`` flag.
+                Use for non-test-but-non-production trees (e.g.
+                ``("scratch", "derivations")``).
+            limit: Maximum candidates to return (0 = all). Sorted
+                cross-module-first, then by caller count.
+        """
+        def dropped(node_id: str) -> bool:
+            if self._g.nodes.get(node_id, {}).get("is_test"):
+                return True
+            return any(tok in node_id for tok in exclude)
+
+        # method -> owning class (CONTAINS: class contains method);
+        # callee -> caller ids (CALLS). Single pass over edges.
+        method_class: dict[str, str] = {}
+        callers: dict[str, set[str]] = {}
+        for src, tgt, data in self._g.edges(data=True):
+            etype = data.get("type")
+            if etype == EdgeType.CONTAINS:
+                if (self._g.nodes.get(src, {}).get("type") == NodeType.CLASS
+                        and self._g.nodes.get(tgt, {}).get("type") == NodeType.METHOD):
+                    method_class[tgt] = src
+            elif etype == EdgeType.CALLS:
+                callers.setdefault(tgt, set()).add(src)
+
+        def module_of(node_id: str) -> str:
+            name = self._g.nodes.get(node_id, {}).get("name", "")
+            return name.rsplit(".", 1)[0] if "." in name else name
+
+        out: list[NativePlaceResult] = []
+        for node_id, attrs in self._g.nodes(data=True):
+            if attrs.get("type") != NodeType.FUNCTION or dropped(node_id):
+                continue
+            all_callers = callers.get(node_id, set())
+            considered = [c for c in all_callers if not dropped(c)]
+            if len(considered) < min_callers:
+                continue
+            # every considered caller must be a method of one same class
+            owners: set[str] = set()
+            ok = True
+            for c in considered:
+                cattrs = self._g.nodes.get(c, {})
+                if cattrs.get("type") == NodeType.METHOD and c in method_class:
+                    owners.add(method_class[c])
+                else:
+                    ok = False
+                    break
+            if not ok or len(owners) != 1:
+                continue
+            target = next(iter(owners))
+            short = attrs.get("name", "").rsplit(".", 1)[-1]
+            out.append(NativePlaceResult(
+                function=self._node_result(node_id),
+                target_class=self._node_result(target),
+                caller_count=len(considered),
+                cross_module=module_of(node_id) != module_of(target),
+                private=short.startswith("_"),
+                excluded_callers=len(all_callers) - len(considered),
+            ))
+
+        out.sort(
+            key=lambda r: (r.cross_module, r.caller_count, r.private),
+            reverse=True,
+        )
+        return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------
     # Graph Query (Cypher-like)

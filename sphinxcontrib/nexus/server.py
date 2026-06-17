@@ -545,6 +545,32 @@ def communities(min_size: int = 3) -> str:
 
 
 @nexus_tool
+def native_place(min_callers: int = 1, exclude: str = "", limit: int = 50) -> str:
+    """Find functions that may belong inside a class (Feature-Envy / 'native place').
+
+    A module-level function whose every non-test caller is a method of a
+    SINGLE class is a candidate to move into that class. Cross-module
+    candidates are the strongest; same-module private helpers are weaker
+    (often a fine idiom). A pure, independently-tested free function consumed
+    by one class is usually correct as-is — a high `excluded_callers` count
+    flags that case, so weight it down.
+
+    Args:
+        min_callers: Minimum considered (non-test) method callers (default 1).
+        exclude: Comma-separated substrings; functions/callers whose id
+            contains any are ignored, on top of the built-in is_test flag
+            (e.g. "scratch,derivations").
+        limit: Max candidates (default 50; 0 = all).
+    """
+    q = _get_query()
+    toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
+    results = q.native_place_candidates(
+        min_callers=min_callers, exclude=toks, limit=limit,
+    )
+    return to_json(to_dict(results))
+
+
+@nexus_tool
 def detect_changes(scope: str = "all") -> str:
     """Detect which symbols changed in git and what they affect.
 

@@ -445,6 +445,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Number of nodes to return (default: 10).",
     )
 
+    # --- native-place ---
+    np_cmd = sub.add_parser(
+        "native-place",
+        help="Functions that may belong inside a class — Feature Envy / 'native place' (JSON)",
+    )
+    np_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    np_cmd.add_argument(
+        "--min-callers", type=int, default=1,
+        help="Minimum considered (non-test) method callers (default: 1).",
+    )
+    np_cmd.add_argument(
+        "--exclude", type=str, default="",
+        help="Comma-separated substrings to drop, on top of is_test "
+             "(e.g. 'scratch,derivations').",
+    )
+    np_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max candidates (default: 50; 0 = all).",
+    )
+
     # --- processes ---
     processes_cmd = sub.add_parser(
         "processes",
@@ -647,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
         "communities": _run_communities,
         "bridges": _run_bridges,
         "god-nodes": _run_god_nodes,
+        "native-place": _run_native_place,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
@@ -1083,6 +1106,16 @@ def _run_briefing(args: argparse.Namespace) -> int:
     q = _load_query(args.db)
     project_root = args.project_root or Path.cwd()
     return _json_out(to_dict(q.session_briefing(project_root)))
+
+
+def _run_native_place(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
+    results = q.native_place_candidates(
+        min_callers=args.min_callers, exclude=toks, limit=args.limit,
+    )
+    return _json_out(to_dict(results))
 
 
 def _run_context(args: argparse.Namespace) -> int:

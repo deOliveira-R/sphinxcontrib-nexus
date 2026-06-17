@@ -2,6 +2,24 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## Unreleased
+
+### `native_place` — Feature-Envy / "native place" diagnostic
+
+New read-only `GraphQuery.native_place_candidates()`, exposed as the
+`native_place` MCP tool and the `nexus native-place` CLI command. Surfaces
+module-level functions whose every non-test caller is a method of a SINGLE
+class — candidates to move into that class.
+
+- **Cross-module** candidates (function and class in different modules) rank
+  first; same-module private helpers are weaker (an accepted idiom).
+- Test callers are recognised via the `is_test` node flag (from
+  `nexus_test_patterns`), excluded from the single-class criterion, and
+  reported as `excluded_callers` — which also flags pure, independently-tested
+  free-function primitives that are *correctly* free (high excluded count).
+- Knobs: `min_callers`, `exclude` (extra substrings on top of `is_test`),
+  `limit`.
+
 ## 0.13.0 — 2026-06-12
 
 Token-budgeted tool outputs and the LSP↔graph parity oracle.
