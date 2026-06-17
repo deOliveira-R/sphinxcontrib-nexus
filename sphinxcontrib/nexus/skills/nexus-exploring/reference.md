@@ -3,7 +3,7 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (34)
+## Tools (35)
 
 ### Exploration
 | Tool | What it answers | Key args |
@@ -39,14 +39,15 @@ This file is shared across all nexus-* skills.
 | `protocol_conformers` | Classes satisfying a Protocol's method-set without declaring it | `min_methods`, `exclude`, `limit` |
 
 ### Runtime Overlay (dynamic execution-flow — the smell family's dynamic counterpart)
-The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then `runtime_ingest` joins the artifact onto node-IDs and stores it in a sidecar (`_nexus/traces/<run>.json`) — never in `graph.db`, which is rebuilt on every `sphinx-build`.
+The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then `runtime_ingest` joins the artifact onto node-IDs and stores it in a sidecar (`_nexus/traces/<run>.json`) — never in `graph.db`, which is rebuilt on every `sphinx-build`. The query tools take `run` as one name OR comma-separated names to **union the canonical suite**.
 | Tool | What it answers | Key args |
 |------|----------------|----------|
-| `runtime_ingest` | Overlay a `cProfile`/`coverage --branch` trace on the graph | `artifact`, `kind`, `run`, `source_prefix` |
+| `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` trace on the graph | `artifact`, `kind`, `run`, `source_prefix` |
 | `runtime_runs` | List ingested runs | — |
 | `runtime_hotspots` | Hot path / iteration counts (the dynamic stage DAG) | `run`, `by` (cumtime/ncalls/tottime), `limit` |
-| `runtime_edges` | Fired-vs-static edges: `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `limit` |
+| `runtime_edges` | Fired-vs-static edges: `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only`, `limit` |
 | `runtime_branches` | Partial-branch nodes; discriminators ranked first (missing-type suspects) | `run`, `node`, `partial_only`, `limit` |
+| `runtime_timeline` | Observed execution sequence (a viztracer run): nodes by first entry | `run`, `max_depth`, `limit` |
 
 ### Code+Doc Fusion
 | Tool | What it answers | Key args |
@@ -139,11 +140,12 @@ nexus processes --db <path> [--min-length 3]
 nexus shortest-path <source> <target> --db <path> [--max-hops 8]
 nexus graph-query "<pattern>" --db <path> [--limit 50]
 nexus trace <test_node_id> --db <path>
-nexus runtime-ingest <artifact> --db <path> [--kind cprofile|coverage] [--run NAME] [--source-prefix PFX] [--note TEXT]
+nexus runtime-ingest <artifact> --db <path> [--kind cprofile|coverage|viztracer] [--run NAME] [--source-prefix PFX] [--note TEXT]
 nexus runtime-runs --db <path>
-nexus runtime-hotspots --db <path> [--run NAME] [--by cumtime|ncalls|tottime] [--limit 20]
-nexus runtime-edges --db <path> [--run NAME] [--mode dynamic_only|fired|dead] [--node SUBSTR] [--limit 50]
-nexus runtime-branches --db <path> [--run NAME] [--node SUBSTR] [--all] [--limit 50]
+nexus runtime-hotspots --db <path> [--run NAME[,NAME...]] [--by cumtime|ncalls|tottime] [--limit 20]
+nexus runtime-edges --db <path> [--run NAME[,NAME...]] [--mode dynamic_only|fired|dead] [--node SUBSTR] [--substantive-only] [--limit 50]
+nexus runtime-branches --db <path> [--run NAME[,NAME...]] [--node SUBSTR] [--all] [--limit 50]
+nexus runtime-timeline --db <path> [--run NAME] [--max-depth N] [--limit 50]
 nexus retest --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
 nexus changes --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
 nexus rename <old> <new> --db <path> [--project-root .] [--apply]

@@ -30,6 +30,7 @@ No Sphinx import; usable standalone with a loaded graph.
 from __future__ import annotations
 
 import json
+import re
 from bisect import bisect_right
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -50,6 +51,8 @@ DECORATOR_WINDOW = 8
 
 KIND_CPROFILE = "cprofile"
 KIND_COVERAGE = "coverage"
+KIND_VIZTRACER = "viztracer"
+KIND_MERGED = "merged"
 
 
 # ── The join: (file, line) trace record → static node id ────────────
@@ -114,8 +117,13 @@ def resolve_node(
 class RuntimeRun:
     """One ingested trace, keyed by static node-ID, joined at query time.
 
-    Exactly one of the metric families is populated, per ``kind``:
-    ``cprofile`` fills ``calls`` + ``edges``; ``coverage`` fills ``coverage``.
+    A **bag of orthogonal overlays**, not a tagged union: each ingest kind
+    fills the families it can measure (``cprofile`` → ``calls`` + ``edges``;
+    ``coverage`` → ``coverage``; ``viztracer`` → ``timeline``), and
+    :func:`merge_runs` legitimately produces a run carrying *several* families
+    at once. ``kind`` records provenance — it does not gate which families are
+    present. A query reads only the family it needs (and returns empty if the
+    run never measured it).
     """
 
     name: str
@@ -128,7 +136,11 @@ class RuntimeRun:
     #: node_id -> {"lines_hit","lines_total","branches_hit","branches_total",
     #:             "missing_arcs"}  (coverage)
     coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: trace records (orpheus-source) that found no node — recall-gap audit
+    #: node_id -> {"first_ts","count","min_depth"}  (viztracer; first_ts is
+    #: milliseconds from the start of the trace, min_depth the shallowest
+    #: call-stack depth the node appeared at)
+    timeline: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: trace records (in-scope) that found no node — recall-gap audit
     unresolved: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,8 +155,84 @@ class RuntimeRun:
             calls=data.get("calls", {}),
             edges=[tuple(e) for e in data.get("edges", [])],
             coverage=data.get("coverage", {}),
+            timeline=data.get("timeline", {}),
             unresolved=data.get("unresolved", 0),
         )
+
+
+# ── Multi-run union ─────────────────────────────────────────────────
+
+
+def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
+    """Union several runs into one — the canonical-suite aggregate.
+
+    A single run answers "dead in THIS run"; the union answers "fired in NO
+    canonical run", the real dead-code signal that corroborates the static
+    ``dead_functions``. Whatever metric families the inputs carry are unioned:
+
+    * **calls** — ncalls/tottime sum, cumtime takes the max.
+    * **edges** — call counts sum (an edge present in any run is present).
+    * **coverage** — a branch is *hit* if hit in any run, so the merged
+      ``missing_arcs`` is the INTERSECTION of each run's missing arcs (arcs no
+      run ever took); ``branches_total`` is structural (max across runs).
+    * **timeline** — NOT merged (timestamps are per-run and incomparable);
+      use a single run for ``runtime_timeline``.
+
+    A single-run list returns that run unchanged.
+    """
+    if len(runs) == 1:
+        return runs[0]
+    if not runs:
+        return RuntimeRun(name=name, kind=KIND_MERGED)
+    merged = RuntimeRun(name=name, kind=KIND_MERGED,
+                        meta={"merged_from": [r.name for r in runs]})
+
+    for run in runs:
+        for node_id, m in run.calls.items():
+            agg = merged.calls.setdefault(
+                node_id, {"ncalls": 0, "tottime": 0.0, "cumtime": 0.0})
+            agg["ncalls"] += m["ncalls"]
+            agg["tottime"] += m["tottime"]
+            agg["cumtime"] = max(agg["cumtime"], m["cumtime"])
+        merged.unresolved += run.unresolved
+
+    edge_counts: dict[tuple[str, str], int] = {}
+    for run in runs:
+        for u, v, c in run.edges:
+            edge_counts[(u, v)] = edge_counts.get((u, v), 0) + c
+    merged.edges = [(u, v, c) for (u, v), c in edge_counts.items()]
+
+    # coverage: a node's still-missing arcs are those missing in EVERY run.
+    cov_nodes = {n for run in runs for n in run.coverage}
+    for node_id in cov_nodes:
+        present = [run.coverage[node_id] for run in runs if node_id in run.coverage]
+        total = max(c["branches_total"] for c in present)
+        missing_sets = [
+            {tuple(a) for a in c["missing_arcs"]} for c in present
+        ]
+        still_missing = set.intersection(*missing_sets) if missing_sets else set()
+        lines_total = max(c["lines_total"] for c in present)
+        # lines_hit: per-run max is an approximation (we store the count, not
+        # the hit-line set, so a true union isn't reconstructable). The branch
+        # union above IS exact — it's the arc set, which we do store.
+        lines_hit = max(c["lines_hit"] for c in present)
+        merged.coverage[node_id] = {
+            "lines_hit": lines_hit,
+            "lines_total": lines_total,
+            "branches_hit": total - len(still_missing),
+            "branches_total": total,
+            "missing_arcs": [list(a) for a in sorted(still_missing)],
+        }
+    return merged
+
+
+def load_and_merge(names: str, load) -> RuntimeRun:
+    """Load one run, or merge a comma-separated set (the canonical-suite
+    aggregate). ``load`` is a ``name -> RuntimeRun`` callable — the server and
+    CLI bind their own (workspace-store / db-path) loader and share this
+    split+merge convention rather than each re-deriving it."""
+    wanted = [n.strip() for n in names.split(",") if n.strip()]
+    return merge_runs([load(n) for n in wanted], name=",".join(wanted))
 
 
 # ── cProfile backend ────────────────────────────────────────────────
@@ -284,6 +372,101 @@ def ingest_coverage(
     )
 
 
+# ── viztracer backend (temporal order) ──────────────────────────────
+
+#: viztracer names a function event ``"funcname (/abs/path.py:LINENO)"``.
+_VIZ_NAME = re.compile(r"\((?P<file>.+):(?P<line>\d+)\)\s*$")
+
+
+def _parse_viztracer_name(name: str) -> tuple[str, int] | None:
+    m = _VIZ_NAME.search(name)
+    if not m:
+        return None
+    return m.group("file"), int(m.group("line"))
+
+
+def overlay_viztracer(
+    events: list[dict[str, Any]],
+    index: dict[str, list[tuple[int, int, str]]],
+    name: str,
+    meta: dict[str, Any] | None = None,
+    source_prefix: str | None = None,
+) -> RuntimeRun:
+    """Join viztracer ``traceEvents`` onto node IDs, keeping temporal order.
+
+    The unique thing viztracer adds over cProfile is *order*: it timestamps
+    every call, so the overlay is the observed execution sequence (mesh →
+    discretize → sweep → iterate → result) rather than aggregate counts.
+    Complete (``ph == "X"``) events carry ``ts`` (µs) and ``dur``; call-stack
+    **depth** is reconstructed by interval nesting (an event whose span is
+    contained in another is its child). Per node we keep the first entry time
+    (ms from trace start), the event count, and the shallowest depth seen — so
+    ``runtime_timeline`` can show just the high-level stages.
+
+    Depth assumes the strict nesting a real tracer produces: a callee's
+    ``[ts, ts+dur)`` lies inside its caller's, and distinct frames have
+    distinct ``ts`` (µs-resolution). The ``(ts, -dur)`` sort puts a container
+    before its content even at an equal ``ts``; frames are popped when closed
+    (``end <= ts``). Pathological identical intervals (same ts AND dur) are
+    degenerate and not produced by viztracer.
+    """
+    run = RuntimeRun(name=name, kind=KIND_VIZTRACER, meta=dict(meta or {}))
+    calls = [
+        e for e in events
+        if e.get("ph") == "X" and "ts" in e and "name" in e
+    ]
+    if not calls:
+        return run
+    calls.sort(key=lambda e: (e["ts"], -e.get("dur", 0.0)))
+    t0 = calls[0]["ts"]
+
+    open_ends: list[float] = []  # stack of end-times of currently-open frames
+    for e in calls:
+        ts = e["ts"]
+        end = ts + e.get("dur", 0.0)
+        while open_ends and open_ends[-1] <= ts:
+            open_ends.pop()
+        depth = len(open_ends)
+        open_ends.append(end)
+
+        parsed = _parse_viztracer_name(e["name"])
+        if parsed is None:
+            continue
+        filename, lineno = parsed
+        if source_prefix is not None and not filename.startswith(source_prefix):
+            continue
+        node_id = resolve_node(index, filename, lineno)
+        if node_id is None:
+            run.unresolved += 1
+            continue
+        rel_ms = (ts - t0) / 1000.0
+        slot = run.timeline.get(node_id)
+        if slot is None:
+            run.timeline[node_id] = {
+                "first_ts": rel_ms, "count": 1, "min_depth": depth,
+            }
+        else:
+            slot["count"] += 1
+            slot["min_depth"] = min(slot["min_depth"], depth)
+            slot["first_ts"] = min(slot["first_ts"], rel_ms)
+    return run
+
+
+def ingest_viztracer(
+    artifact: Path | str,
+    graph: KnowledgeGraph | nx.MultiDiGraph,
+    name: str,
+    meta: dict[str, Any] | None = None,
+    source_prefix: str | None = None,
+) -> RuntimeRun:
+    """Load a viztracer JSON artifact (Chrome-trace format) and overlay it."""
+    data = json.loads(Path(artifact).read_text())
+    return overlay_viztracer(
+        data.get("traceEvents", []), build_node_index(graph), name,
+        meta=meta, source_prefix=source_prefix,
+    )
+
+
 # ── Sidecar store: _nexus/traces/<run>.json ─────────────────────────
 
 
@@ -318,11 +501,13 @@ class RuntimeStore:
                 data = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
+            nodes = (data.get("calls") or data.get("coverage")
+                     or data.get("timeline") or {})
             out.append({
                 "name": data.get("name", path.stem),
                 "kind": data.get("kind", ""),
                 "meta": data.get("meta", {}),
-                "nodes": len(data.get("calls") or data.get("coverage") or {}),
+                "nodes": len(nodes),
                 "edges": len(data.get("edges", [])),
             })
         return out

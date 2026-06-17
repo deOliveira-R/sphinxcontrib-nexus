@@ -561,9 +561,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Ingest a cProfile/coverage trace and overlay it on the graph",
     )
     rt_ing.add_argument("artifact", type=Path,
-                        help="cProfile/pstats dump, or coverage json --branch report.")
+                        help="cProfile/pstats dump, coverage json --branch "
+                             "report, or viztracer JSON trace.")
     rt_ing.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
-    rt_ing.add_argument("--kind", choices=["cprofile", "coverage"], default="cprofile")
+    rt_ing.add_argument("--kind", choices=["cprofile", "coverage", "viztracer"],
+                        default="cprofile")
     rt_ing.add_argument("--run", type=str, default="default",
                         help="Name to store under (re-ingest overwrites).")
     rt_ing.add_argument("--source-prefix", type=str, default="",
@@ -583,7 +585,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Nodes ranked by an observed runtime metric — the dynamic stage DAG (JSON)",
     )
     rt_hot.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
-    rt_hot.add_argument("--run", type=str, default="default")
+    rt_hot.add_argument("--run", type=str, default="default",
+                        help="Run name, or comma-separated names to union.")
     rt_hot.add_argument("--by", choices=["cumtime", "ncalls", "tottime"],
                         default="cumtime")
     rt_hot.add_argument("--limit", type=int, default=20,
@@ -594,11 +597,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Runtime call edges overlaid on static CALLS — dispatch/dead detection (JSON)",
     )
     rt_edges.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
-    rt_edges.add_argument("--run", type=str, default="default")
+    rt_edges.add_argument("--run", type=str, default="default",
+                          help="Run name, or comma-separated names to union "
+                               "(real cross-suite dead-code for --mode dead).")
     rt_edges.add_argument("--mode", choices=["dynamic_only", "fired", "dead"],
                           default="dynamic_only")
     rt_edges.add_argument("--node", type=str, default="",
                           help="Restrict to edges whose source id contains this.")
+    rt_edges.add_argument("--substantive-only", action="store_true",
+                          help="Drop edges where either endpoint is a property/"
+                               "trivial accessor (surfaces polymorphic dispatch).")
     rt_edges.add_argument("--limit", type=int, default=50,
                           help="Max edges (default: 50; 0 = all).")
 
@@ -607,12 +615,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Per-node branch coverage — the missing-type / accidental-branch signal (JSON)",
     )
     rt_br.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
-    rt_br.add_argument("--run", type=str, default="default")
+    rt_br.add_argument("--run", type=str, default="default",
+                       help="Run name, or comma-separated names to union.")
     rt_br.add_argument("--node", type=str, default="",
                        help="Restrict to node ids containing this substring.")
     rt_br.add_argument("--all", action="store_true",
                        help="Include fully-covered nodes (default: partial only).")
     rt_br.add_argument("--limit", type=int, default=50,
+                       help="Max nodes (default: 50; 0 = all).")
+
+    rt_tl = sub.add_parser(
+        "runtime-timeline",
+        help="Observed execution sequence from a viztracer run — the stage DAG (JSON)",
+    )
+    rt_tl.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_tl.add_argument("--run", type=str, default="default")
+    rt_tl.add_argument("--max-depth", type=int, default=-1,
+                       help="Keep nodes with stack depth <= this (-1 = all; "
+                            "small values give high-level stages).")
+    rt_tl.add_argument("--limit", type=int, default=50,
                        help="Max nodes (default: 50; 0 = all).")
 
     # --- processes ---
@@ -827,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime-hotspots": _run_runtime_hotspots,
         "runtime-edges": _run_runtime_edges,
         "runtime-branches": _run_runtime_branches,
+        "runtime-timeline": _run_runtime_timeline,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
         "graph-query": _run_graph_query,
@@ -1330,6 +1352,12 @@ def _runtime_load(db_path: Path, name: str):
     return run
 
 
+def _runtime_load_many(db_path: Path, names: str):
+    """Load one run, or merge a comma-separated set (canonical-suite union)."""
+    from sphinxcontrib.nexus.runtime import load_and_merge
+    return load_and_merge(names, lambda n: _runtime_load(db_path, n))
+
+
 def _run_runtime_ingest(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus import runtime as rt
     if not args.artifact.exists():
@@ -1356,7 +1384,7 @@ def _run_runtime_runs(args: argparse.Namespace) -> int:
 def _run_runtime_hotspots(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args.db)
-    run = _runtime_load(args.db, args.run)
+    run = _runtime_load_many(args.db, args.run)
     results = q.runtime_hotspots(run, by=args.by, limit=args.limit)
     return _json_out(to_dict(results))
 
@@ -1364,17 +1392,27 @@ def _run_runtime_hotspots(args: argparse.Namespace) -> int:
 def _run_runtime_edges(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args.db)
-    run = _runtime_load(args.db, args.run)
-    results = q.runtime_edges(run, mode=args.mode, node=args.node, limit=args.limit)
+    run = _runtime_load_many(args.db, args.run)
+    results = q.runtime_edges(
+        run, mode=args.mode, node=args.node,
+        substantive_only=args.substantive_only, limit=args.limit)
     return _json_out(to_dict(results))
 
 
 def _run_runtime_branches(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args.db)
-    run = _runtime_load(args.db, args.run)
+    run = _runtime_load_many(args.db, args.run)
     results = q.runtime_branches(
         run, node=args.node, partial_only=not args.all, limit=args.limit)
+    return _json_out(to_dict(results))
+
+
+def _run_runtime_timeline(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args.db)
+    run = _runtime_load(args.db, args.run)
+    results = q.runtime_timeline(run, max_depth=args.max_depth, limit=args.limit)
     return _json_out(to_dict(results))
 
 

@@ -258,6 +258,26 @@ class RuntimeEdgeResult:
     target: NodeResult
     count: int
     in_static: bool
+    accessor: bool = False
+    """True when either endpoint is a property/trivial accessor — plumbing,
+    not substantive dispatch. ``runtime_edges(substantive_only=True)`` drops
+    these so the architecturally-interesting polymorphic dispatch (the #16
+    payoff) is not buried under property-getter call edges."""
+
+
+@dataclass
+class TimelineEntry:
+    """A node in the observed execution sequence (a viztracer run).
+
+    ``first_ts`` is milliseconds from the start of the trace; ``depth`` the
+    shallowest call-stack depth the node appeared at, so a small ``max_depth``
+    filter yields the high-level stages (mesh → discretize → sweep → …).
+    """
+
+    node: NodeResult
+    first_ts: float
+    count: int
+    depth: int
 
 
 @dataclass
@@ -571,6 +591,12 @@ class VerificationGapsResult:
     unverified_equations: list[VerificationGap] = field(default_factory=list)
     missing_err_catchers: list[VerificationGap] = field(default_factory=list)
     filters: dict[str, str | int | None] = field(default_factory=dict)
+
+
+#: A node body of at most this many lines, with no recognised accessor
+#: decorator, is treated as a trivial getter by ``_is_accessor``. Kept tight
+#: to avoid misclassifying a genuine short polymorphic dispatcher.
+_ACCESSOR_MAX_SPAN = 2
 
 
 def _module_of(graph: nx.MultiDiGraph, node_id: str) -> str:
@@ -2801,6 +2827,7 @@ class GraphQuery:
         run: "RuntimeRun",
         mode: str = "dynamic_only",
         node: str = "",
+        substantive_only: bool = False,
         limit: int = 50,
     ) -> list[RuntimeEdgeResult]:
         """Overlay a run's call edges on the static CALLS edges.
@@ -2818,11 +2845,14 @@ class GraphQuery:
           not dead code — union several canonical runs for a real verdict.
 
         ``node`` (a node-id substring) restricts to edges whose source matches.
-        Reads ``run.edges`` (a cProfile run).
+        ``substantive_only`` drops edges where either endpoint is a
+        property/trivial accessor — so the polymorphic dispatch (the #16
+        payoff) is not buried under property-getter call edges, which dominate
+        ``dynamic_only`` raw. Reads ``run.edges`` (a cProfile run).
         """
         if mode not in ("dynamic_only", "fired", "dead"):
             raise ValueError(
-                f"mode must be dynamic_only|fired|dead, got {mode!r}"
+                f"mode must = dynamic_only|fired|dead, got {mode!r}"
             )
         static_calls = {
             (u, v) for u, v, d in self._g.edges(data=True)
@@ -2855,6 +2885,8 @@ class GraphQuery:
                 if ((u, v) in static_calls) == want_static and keep(u):
                     out.append(self._runtime_edge(u, v, count, in_static=want_static))
             out.sort(key=lambda r: r.count, reverse=True)
+        if substantive_only:
+            out = [e for e in out if not e.accessor]
         return out if limit <= 0 else out[:limit]
 
     def _runtime_edge(
@@ -2865,7 +2897,24 @@ class GraphQuery:
             target=self._node_result(target),
             count=count,
             in_static=in_static,
+            accessor=self._is_accessor(source) or self._is_accessor(target),
         )
+
+    def _is_accessor(self, node_id: str) -> bool:
+        """A property / trivial getter — plumbing, not substantive logic.
+
+        Primary signal is correct-by-construction: a ``@property`` /
+        ``@cached_property`` IS an accessor by definition. The
+        ``_ACCESSOR_MAX_SPAN``-line fallback catches undecorated one-liner
+        getters; it is a heuristic with a known false-negative — a genuine
+        ≤2-line polymorphic dispatcher would be misclassified and dropped by
+        ``substantive_only`` — so keep the span tight.
+        """
+        attrs = self._g.nodes.get(node_id, {})
+        if any("property" in d for d in (attrs.get("decorators") or [])):
+            return True
+        ln, end = attrs.get("lineno"), attrs.get("end_lineno")
+        return bool(ln and end and (end - ln) <= _ACCESSOR_MAX_SPAN)
 
     def runtime_branches(
         self,
@@ -2923,6 +2972,37 @@ class GraphQuery:
                 name = self._g.nodes.get(tgt, {}).get("name", tgt)
                 out.setdefault(src, set()).add(name)
         return out
+
+    def runtime_timeline(
+        self,
+        run: "RuntimeRun",
+        max_depth: int = -1,
+        limit: int = 50,
+    ) -> list[TimelineEntry]:
+        """The observed execution sequence — nodes in order of first entry.
+
+        The unique thing a viztracer run adds over cProfile is *order*: this is
+        the actual stage sequence (mesh → discretize → sweep → iterate →
+        result), not aggregate counts. ``max_depth`` (≥ 0) keeps only nodes at
+        or above that call-stack depth, yielding just the high-level stages;
+        the default ``-1`` keeps every depth. Reads ``run.timeline`` (a
+        viztracer run).
+        """
+        out: list[TimelineEntry] = []
+        for node_id, m in run.timeline.items():
+            if node_id not in self._g:
+                continue
+            depth = int(m["min_depth"])
+            if max_depth >= 0 and depth > max_depth:
+                continue
+            out.append(TimelineEntry(
+                node=self._node_result(node_id),
+                first_ts=m["first_ts"],
+                count=int(m["count"]),
+                depth=depth,
+            ))
+        out.sort(key=lambda e: e.first_ts)
+        return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------
     # Graph Query (Cypher-like)

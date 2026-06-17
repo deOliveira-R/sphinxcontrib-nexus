@@ -113,7 +113,7 @@ Nexus works with any Python project:
 | `derives` | Derivation → equation | AST |
 | `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
 
-## MCP Tools (38)
+## MCP Tools (39)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -141,12 +141,13 @@ Nexus works with any Python project:
 - **`protocol_conformers`** — classes satisfying a `Protocol`'s method-set without declaring it: `Protocol`s are satisfied structurally but `inherits` records only explicit subclassing, so a structural conformer has no edge. Matches by method-name set (a heuristic — the type checker / LSP `goToImplementation` is authoritative)
 
 ### Runtime overlay (dynamic execution-flow)
-The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then ingest the artifact; the overlay is stored in a sidecar (`_nexus/traces/<run>.json`) keyed by node-ID and re-binds to the live graph at query time — it is never written into `graph.db`.
-- **`runtime_ingest`** — ingest a `cProfile`/`pstats` dump (counts + time + call edges) or a `coverage json --branch` report (line/branch coverage) and overlay it on the graph by node-ID, joining on `(file_path, lineno)` with a decorator-window rule (97% join on a real solve). `source_prefix` drops stdlib/third-party frames
+The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then ingest the artifact; the overlay is stored in a sidecar (`_nexus/traces/<run>.json`) keyed by node-ID and re-binds to the live graph at query time — it is never written into `graph.db`. The query tools accept comma-separated run names to **union the canonical suite** (so `dead` means fired in NO run, a branch is missing only if no run took it).
+- **`runtime_ingest`** — ingest a `cProfile`/`pstats` dump (counts + time + call edges), a `coverage json --branch` report (line/branch coverage), or a `viztracer` JSON trace (temporal order) and overlay it on the graph by node-ID, joining on `(file_path, lineno)` with a decorator-window rule (97% join on a real solve). `source_prefix` drops stdlib/third-party frames
 - **`runtime_runs`** — list ingested runs (name, kind, metadata, node/edge counts)
 - **`runtime_hotspots`** — nodes ranked by an observed metric: `cumtime` is the dominant *observed* call chain (the dynamic stage DAG, better than `processes`' static heuristic for a traced run); `ncalls` the iteration-count / recompute smell (a property called 10k×/run = a caching opportunity); `tottime` self-time
-- **`runtime_edges`** — runtime call edges overlaid on static `calls`: `dynamic_only` are fired edges the static resolver couldn't see — annotation-mediated dispatch through `self`/typed locals and the resolved face of polymorphism (which concrete impl ran); `fired` are static edges confirmed live with counts; `dead` are static edges among run-reachable nodes that never fired (dead *in this run* — union several runs for a verdict)
+- **`runtime_edges`** — runtime call edges overlaid on static `calls`: `dynamic_only` are fired edges the static resolver couldn't see — annotation-mediated dispatch through `self`/typed locals and the resolved face of polymorphism (which concrete impl ran); `fired` are static edges confirmed live with counts; `dead` are static edges among run-reachable nodes that never fired. `substantive_only` drops edges where either endpoint is a property/trivial accessor, surfacing the polymorphic dispatch above property-getter noise
 - **`runtime_branches`** — per-node branch coverage (a `coverage --branch` run): nodes that didn't take every conditional outcome, with those that also `discriminates_on` a tag flagged and ranked first — a discrimination always taken one way is a missing type, the dynamic counterpart of `discriminations`
+- **`runtime_timeline`** — the observed execution sequence from a `viztracer` run: nodes in order of first entry (mesh → discretize → sweep → iterate → result), with a `max_depth` filter for just the high-level stages
 
 ### Code + Doc Fusion (unique to Nexus)
 - **`provenance_chain`** — citation → equation → code traceability

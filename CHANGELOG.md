@@ -12,7 +12,7 @@ The static graph is *what can run*; a **runtime** overlay is *what actually
 ran*. A new `runtime.py` ingests a trace of a canonical workload and overlays
 it on the graph **by node-ID**, the dynamic counterpart to the static
 "missing abstraction" family (`native_place` / `twin_paths` /
-`discriminations`). Five MCP tools + `nexus runtime-*` CLI (MCP tools 33 → 38).
+`discriminations`). Six MCP tools + `nexus runtime-*` CLI (MCP tools 33 → 39).
 
 - **The join works — 97% on a real solve.** Trace records map onto static
   node IDs by `(file_path, lineno)`. The one gotcha: `cProfile`'s
@@ -43,6 +43,25 @@ it on the graph **by node-ID**, the dynamic counterpart to the static
   ranked first: a discrimination always taken one way is a missing type, the
   dynamic counterpart of `discriminations`.
 - **`runtime_runs`** — list ingested runs.
+
+Phase 3 rounds out the overlay (still 0.15.0):
+
+- **Multi-run union** — the query tools accept comma-separated run names and
+  union them into the canonical-suite aggregate (`merge_runs`). `dead` then
+  means fired in NO run — the real cross-suite dead-code signal that
+  corroborates the static `dead_functions` — and a branch is *missing* only if
+  no run ever took it (the still-missing arcs are the intersection).
+- **Edge classifier** — `runtime_edges(substantive_only=True)` drops edges
+  where either endpoint is a property / trivial accessor, so the polymorphic
+  dispatch (the #16 payoff) is no longer buried under property-getter call
+  edges, which dominate `dynamic_only` raw. A `@property`/`@cached_property`
+  is an accessor by construction; a conservative ≤2-line-body fallback catches
+  undecorated one-liner getters.
+- **viztracer backend + `runtime_timeline`** — a third capture kind
+  (`kind=viztracer`) keeps temporal order: call-stack depth is reconstructed
+  by interval nesting, and `runtime_timeline` returns nodes in order of first
+  entry — the observed stage sequence (mesh → discretize → sweep → iterate →
+  result) — with a `max_depth` filter for just the high-level stages.
 
 ## 0.14.0 — 2026-06-17
 

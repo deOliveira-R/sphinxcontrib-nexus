@@ -1,9 +1,11 @@
 # Issue #26 — dynamic execution-flow overlay: spike findings
 
-**Status:** spike complete + **Phase 1+2 BUILT in 0.15.0** (2026-06-17) — the
-cProfile and coverage backends, the node-ID sidecar, and the `runtime_*`
-overlay queries. This doc is the originating exploration record; see
-`CHANGELOG.md` 0.15.0 and `sphinxcontrib/nexus/runtime.py` for the shipped API.
+**Status:** spike complete + **Phase 1+2+3 BUILT in 0.15.0** (2026-06-17) — the
+cProfile, coverage, AND viztracer backends; the node-ID sidecar; the `runtime_*`
+overlay queries; multi-run union (`merge_runs`); the accessor edge-classifier
+(`substantive_only`); and `runtime_timeline`. This doc is the originating
+exploration record; see `CHANGELOG.md` 0.15.0 and
+`sphinxcontrib/nexus/runtime.py` for the shipped API.
 **Substrate:** ORPHEUS SN solver (`solve_sn_fixed_source`, sphere reflective, GL-8,
 12 cells, Krylov inner) traced under `cProfile`, joined against the live ORPHEUS
 static graph (`graph.db`: 12,927 nodes, 30,068 CALLS edges, 6,005 fn/method nodes).

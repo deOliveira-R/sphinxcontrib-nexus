@@ -8,8 +8,10 @@ from sphinxcontrib.nexus.runtime import (
     RuntimeStore,
     build_node_index,
     ingest_coverage,
+    merge_runs,
     overlay_coverage,
     overlay_cprofile,
+    overlay_viztracer,
     resolve_node,
 )
 
@@ -197,6 +199,105 @@ def test_store_round_trip(tmp_path):
     assert back is not None
     assert back.calls == run.calls
     assert back.edges == [("a", "b", 5)]      # tuples survive json round-trip
+
+
+# ── multi-run union ─────────────────────────────────────────────────
+
+
+def _cprofile_run(name, calls, edges):
+    return RuntimeRun(name=name, kind="cprofile", calls=calls, edges=edges)
+
+
+def test_merge_single_run_is_identity():
+    r = _cprofile_run("r", {"a": {"ncalls": 1, "tottime": 0.0, "cumtime": 0.0}}, [])
+    assert merge_runs([r]) is r
+
+
+def test_merge_unions_calls_and_edges():
+    r1 = _cprofile_run(
+        "r1",
+        {"a": {"ncalls": 3, "tottime": 0.1, "cumtime": 0.9},
+         "b": {"ncalls": 1, "tottime": 0.2, "cumtime": 0.2}},
+        [("a", "b", 3), ("a", "c", 1)])
+    r2 = _cprofile_run(
+        "r2",
+        {"a": {"ncalls": 5, "tottime": 0.3, "cumtime": 0.4}},
+        [("a", "b", 2)])
+    m = merge_runs([r1, r2])
+    assert m.calls["a"]["ncalls"] == 8                 # 3 + 5 sum
+    assert abs(m.calls["a"]["tottime"] - 0.4) < 1e-9   # 0.1 + 0.3
+    assert m.calls["a"]["cumtime"] == 0.9              # max(0.9, 0.4)
+    edges = {(u, v): c for u, v, c in m.edges}
+    assert edges[("a", "b")] == 5                      # 3 + 2
+    assert edges[("a", "c")] == 1                      # only r1
+
+
+def test_merge_coverage_branch_missing_only_if_missing_in_all():
+    # arc [2,5] missing in r1 but taken in r2 -> hit in union;
+    # arc [3,9] missing in BOTH -> still missing.
+    def cov(missing):
+        return RuntimeRun(name="x", kind="coverage", coverage={
+            "n": {"lines_hit": 1, "lines_total": 2, "branches_hit": 2 - len(missing),
+                  "branches_total": 2, "missing_arcs": missing}})
+    m = merge_runs([cov([[2, 5], [3, 9]]), cov([[3, 9]])])
+    c = m.coverage["n"]
+    assert c["missing_arcs"] == [[3, 9]]               # intersection
+    assert c["branches_hit"] == 1 and c["branches_total"] == 2
+
+
+# ── viztracer overlay (temporal order) ──────────────────────────────
+
+
+def _viz_events():
+    # foo (10-20) outer; bar (30-40) called twice inside; a stdlib frame
+    # (filtered by source_prefix); a ghost in-scope line (unresolved).
+    def ev(name, ts, dur):
+        return {"ph": "X", "name": name, "ts": ts, "dur": dur}
+    return [
+        ev(f"foo ({SRC}:10)", 1000.0, 500.0),
+        ev(f"bar ({SRC}:30)", 1100.0, 100.0),
+        ev(f"bar ({SRC}:30)", 1300.0, 50.0),
+        ev("loads (/usr/lib/json.py:1)", 1000.0, 5.0),   # out of scope
+        ev(f"ghost ({SRC}:999)", 1200.0, 1.0),           # in scope, no node
+        {"ph": "M", "name": "process_name"},             # metadata, ignored
+    ]
+
+
+def test_overlay_viztracer_depth_and_order():
+    idx = build_node_index(_graph())
+    run = overlay_viztracer(_viz_events(), idx, "v", source_prefix=SRC)
+    foo = run.timeline["py:function:mod.foo"]
+    bar = run.timeline["py:function:mod.bar"]
+    assert foo["min_depth"] == 0 and bar["min_depth"] == 1   # bar nested in foo
+    assert foo["first_ts"] == 0.0                            # earliest = t0
+    assert bar["first_ts"] == 0.1                            # (1100-1000)/1000 ms
+    assert bar["count"] == 2
+
+
+def test_overlay_viztracer_scope_and_unresolved():
+    idx = build_node_index(_graph())
+    run = overlay_viztracer(_viz_events(), idx, "v", source_prefix=SRC)
+    # the stdlib frame is dropped silently; the in-scope ghost is counted
+    assert run.unresolved == 1
+    assert set(run.timeline) == {"py:function:mod.foo", "py:function:mod.bar"}
+
+
+def test_overlay_viztracer_depth_shared_start_and_zero_dur():
+    # corner: a child sharing its parent's start ts, plus a zero-duration
+    # event. The (ts, -dur) sort puts the container first; neither breaks the
+    # nesting depth. (Pins the reviewer's concern that the happy-path test only
+    # used cleanly-separated intervals.)
+    def ev(name, ts, dur):
+        return {"ph": "X", "name": name, "ts": ts, "dur": dur}
+    events = [
+        ev(f"foo ({SRC}:10)", 1000.0, 100.0),   # outer [1000,1100]
+        ev(f"bar ({SRC}:30)", 1000.0, 40.0),     # shares START -> still depth 1
+        ev(f"bar ({SRC}:30)", 1050.0, 0.0),      # zero-dur, inside foo -> depth 1
+    ]
+    run = overlay_viztracer(events, build_node_index(_graph()), "v", source_prefix=SRC)
+    assert run.timeline["py:function:mod.foo"]["min_depth"] == 0
+    assert run.timeline["py:function:mod.bar"]["min_depth"] == 1
+    assert run.timeline["py:function:mod.bar"]["count"] == 2
 
 
 def test_store_list_and_delete(tmp_path):

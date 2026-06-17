@@ -17,12 +17,17 @@ def _graph() -> nx.MultiDiGraph:
     """A -> B static call; B -> D static call; A discriminates on tag 'geometry'.
 
     Runtime (below) will fire A->B (matches static), A->C (dynamic-only, no
-    static edge), and leave B->D unfired (dead in the run).
+    static edge), and leave B->D unfired (dead in the run). C is a @property
+    (accessor); A/B/D are substantive (wide line spans).
     """
     g = nx.MultiDiGraph()
+    spans = {"A": (10, 80), "B": (100, 180), "C": (200, 201), "D": (300, 380)}
     for n in "ABCD":
+        lo, hi = spans[n]
         g.add_node(f"py:function:m.{n}", type="function", name=f"m.{n}",
-                   domain="py", file_path="/p/m.py", lineno=ord(n), end_lineno=ord(n))
+                   domain="py", file_path="/p/m.py", lineno=lo, end_lineno=hi)
+    # C is a property -> accessor (the classifier's primary signal)
+    g.nodes["py:function:m.C"]["decorators"] = ["property"]
     g.add_edge("py:function:m.A", "py:function:m.B", key=next(_key), type="calls")
     g.add_edge("py:function:m.B", "py:function:m.D", key=next(_key), type="calls")
     # A discriminates on a tag -> missing-type cross-ref for runtime_branches
@@ -112,6 +117,64 @@ def test_edges_node_filter_and_bad_mode():
     assert q.runtime_edges(_call_run(), mode="dynamic_only", node="m.A")
     with pytest.raises(ValueError):
         q.runtime_edges(_call_run(), mode="bogus")
+
+
+# ── edge classifier (accessor vs substantive) ───────────────────────
+
+
+def test_edges_accessor_flag_set_for_property_target():
+    # A->C: C is a @property -> the edge is plumbing, flagged accessor.
+    res = GraphQuery(_graph()).runtime_edges(_call_run(), mode="dynamic_only")
+    edge = next(r for r in res if r.target.id == "py:function:m.C")
+    assert edge.accessor is True
+
+
+def test_edges_substantive_only_drops_accessor_edges():
+    q = GraphQuery(_graph())
+    full = q.runtime_edges(_call_run(), mode="dynamic_only")
+    subst = q.runtime_edges(_call_run(), mode="dynamic_only", substantive_only=True)
+    assert any(r.target.id == "py:function:m.C" for r in full)      # present raw
+    assert all(r.target.id != "py:function:m.C" for r in subst)     # dropped
+
+
+def test_is_accessor_property_and_tiny_span():
+    q = GraphQuery(_graph())
+    assert q._is_accessor("py:function:m.C") is True       # @property
+    assert q._is_accessor("py:function:m.A") is False      # wide span, no deco
+
+
+# ── runtime_timeline (temporal order) ───────────────────────────────
+
+
+def _viz_run() -> RuntimeRun:
+    return RuntimeRun(
+        name="v", kind="viztracer",
+        timeline={
+            "py:function:m.A": {"first_ts": 0.0, "count": 1, "min_depth": 0},
+            "py:function:m.B": {"first_ts": 0.5, "count": 3, "min_depth": 1},
+            "py:function:m.C": {"first_ts": 0.9, "count": 9, "min_depth": 2},
+        },
+    )
+
+
+def test_timeline_ordered_by_first_entry():
+    res = GraphQuery(_graph()).runtime_timeline(_viz_run())
+    assert [r.node.id for r in res] == [
+        "py:function:m.A", "py:function:m.B", "py:function:m.C"]
+    assert res[1].count == 3 and res[1].depth == 1
+
+
+def test_timeline_max_depth_keeps_high_level_stages():
+    res = GraphQuery(_graph()).runtime_timeline(_viz_run(), max_depth=1)
+    ids = {r.node.id for r in res}
+    assert ids == {"py:function:m.A", "py:function:m.B"}   # depth-2 C dropped
+
+
+def test_timeline_skips_stale_nodes():
+    g = _graph()
+    g.remove_node("py:function:m.C")
+    res = GraphQuery(g).runtime_timeline(_viz_run())
+    assert "py:function:m.C" not in {r.node.id for r in res}
 
 
 # ── runtime_branches ────────────────────────────────────────────────

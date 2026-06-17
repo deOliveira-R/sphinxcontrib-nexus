@@ -150,7 +150,7 @@ def _get_runtime_store():
 
 
 def _load_run(name: str):
-    """Load a stored run, or raise a clear error naming the alternatives."""
+    """Load one stored run, or raise a clear error naming the alternatives."""
     store = _get_runtime_store()
     run = store.load(name)
     if run is None:
@@ -160,6 +160,14 @@ def _load_run(name: str):
             f'ingest one with runtime_ingest)'}"
         )
     return run
+
+
+def _load_runs(names: str):
+    """Load one OR a comma-separated set of runs, merging the set into the
+    canonical-suite aggregate (so `dead` means fired in NO run, etc.)."""
+    from sphinxcontrib.nexus.runtime import load_and_merge
+
+    return load_and_merge(names, _load_run)
 
 
 def _active_root() -> Path | None:
@@ -735,10 +743,11 @@ def runtime_ingest(
 
     Args:
         artifact: Path to the trace file — a `cProfile`/`pstats` dump
-            (`kind=cprofile`) or a `coverage json --branch` report
-            (`kind=coverage`).
-        kind: "cprofile" (counts + time + call edges) or "coverage" (line /
-            branch coverage → the missing-type branch signal).
+            (`kind=cprofile`), a `coverage json --branch` report
+            (`kind=coverage`), or a `viztracer` JSON trace (`kind=viztracer`).
+        kind: "cprofile" (counts + time + call edges), "coverage" (line /
+            branch coverage → the missing-type branch signal), or "viztracer"
+            (temporal order → the observed stage sequence).
         run: Name to store under (re-ingesting the same name overwrites).
         source_prefix: Keep only trace records under this path prefix (drops
             stdlib / third-party frames). Recommended: your package's src dir.
@@ -746,21 +755,22 @@ def runtime_ingest(
     """
     from sphinxcontrib.nexus import runtime as rt
 
+    ingesters = {
+        rt.KIND_CPROFILE: rt.ingest_cprofile,
+        rt.KIND_COVERAGE: rt.ingest_coverage,
+        rt.KIND_VIZTRACER: rt.ingest_viztracer,
+    }
+    if kind not in ingesters:
+        return to_json(
+            {"error": f"kind must be one of {sorted(ingesters)}, got {kind!r}"})
     q = _get_query()
-    prefix = source_prefix or None
     meta = {"command": command} if command else {}
-    if kind == rt.KIND_CPROFILE:
-        r = rt.ingest_cprofile(artifact, q.knowledge_graph, run,
-                               meta=meta, source_prefix=prefix)
-    elif kind == rt.KIND_COVERAGE:
-        r = rt.ingest_coverage(artifact, q.knowledge_graph, run,
-                               meta=meta, source_prefix=prefix)
-    else:
-        return to_json({"error": f"kind must be cprofile|coverage, got {kind!r}"})
+    r = ingesters[kind](artifact, q.knowledge_graph, run,
+                        meta=meta, source_prefix=source_prefix or None)
     _get_runtime_store().write(r)
     return to_json({
         "run": r.name, "kind": r.kind,
-        "nodes": len(r.calls) or len(r.coverage),
+        "nodes": len(r.calls or r.coverage or r.timeline),
         "edges": len(r.edges), "unresolved": r.unresolved,
     })
 
@@ -786,13 +796,14 @@ def runtime_hotspots(run: str = "default", by: str = "cumtime", limit: int = 20)
         limit: Max nodes (default 20; 0 = all).
     """
     q = _get_query()
-    results = q.runtime_hotspots(_load_run(run), by=by, limit=limit)
+    results = q.runtime_hotspots(_load_runs(run), by=by, limit=limit)
     return to_json(to_dict(results))
 
 
 @nexus_tool
 def runtime_edges(
-    run: str = "default", mode: str = "dynamic_only", node: str = "", limit: int = 50,
+    run: str = "default", mode: str = "dynamic_only", node: str = "",
+    substantive_only: bool = False, limit: int = 50,
 ) -> str:
     """Overlay a run's call edges on the static CALLS edges.
 
@@ -801,17 +812,24 @@ def runtime_edges(
     `self`/typed locals, issue #16) and the resolved face of polymorphism
     (which concrete impl ran). `mode="fired"`: static edges confirmed live,
     with call counts. `mode="dead"`: static edges among run-reachable nodes
-    that never fired (dead in THIS run — union several runs for a real
-    verdict). Needs a `cprofile` run.
+    that never fired. A single run's `dead` is "dead in THIS run" — pass
+    several comma-separated runs in `run` to union them into the real
+    cross-suite dead-code signal. Needs `cprofile` run(s).
 
     Args:
-        run: Stored run name.
+        run: Stored run name, or comma-separated names to union (the
+            canonical-suite aggregate).
         mode: "dynamic_only" | "fired" | "dead".
         node: Restrict to edges whose source id contains this substring.
+        substantive_only: Drop edges where either endpoint is a property /
+            trivial accessor, so polymorphic dispatch isn't buried under
+            property-getter call edges (which dominate `dynamic_only` raw).
         limit: Max edges (default 50; 0 = all).
     """
     q = _get_query()
-    results = q.runtime_edges(_load_run(run), mode=mode, node=node, limit=limit)
+    results = q.runtime_edges(
+        _load_runs(run), mode=mode, node=node,
+        substantive_only=substantive_only, limit=limit)
     return to_json(to_dict(results))
 
 
@@ -822,20 +840,42 @@ def runtime_branches(
     """Per-node branch coverage — the accidental-vs-essential / missing-type signal.
 
     A node with `branches_hit < branches_total` didn't take every conditional
-    outcome in the run. Nodes that ALSO `discriminates_on` a tag are flagged
-    and ranked first: a discrimination always taken one way is a type the code
-    fakes with a conditional — the dynamic counterpart of the static
-    `discriminations` smell. Needs a `coverage` run (`coverage json --branch`).
+    outcome. Nodes that ALSO `discriminates_on` a tag are flagged and ranked
+    first: a discrimination always taken one way is a type the code fakes with
+    a conditional — the dynamic counterpart of the static `discriminations`
+    smell. Pass comma-separated runs in `run` to union them (a branch is
+    *missing* only if no run ever took it). Needs `coverage` run(s)
+    (`coverage json --branch`).
 
     Args:
-        run: Stored run name.
+        run: Stored run name, or comma-separated names to union.
         node: Restrict to node ids containing this substring.
         partial_only: Keep only nodes with an unexercised branch (default True).
         limit: Max nodes (default 50; 0 = all).
     """
     q = _get_query()
     results = q.runtime_branches(
-        _load_run(run), node=node, partial_only=partial_only, limit=limit)
+        _load_runs(run), node=node, partial_only=partial_only, limit=limit)
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def runtime_timeline(run: str = "default", max_depth: int = -1, limit: int = 50) -> str:
+    """The observed execution sequence — nodes in order of first entry.
+
+    The unique thing a `viztracer` run adds over cProfile is *order*: this is
+    the actual stage sequence (mesh → discretize → sweep → iterate → result),
+    not aggregate counts. `max_depth` (>= 0) keeps only nodes at/above that
+    call-stack depth — the high-level stages; -1 (default) keeps every depth.
+    Needs a `viztracer` run. (Single run only — timestamps are per-run.)
+
+    Args:
+        run: Stored viztracer run name.
+        max_depth: Keep nodes with stack depth <= this (-1 = all depths).
+        limit: Max nodes (default 50; 0 = all).
+    """
+    q = _get_query()
+    results = q.runtime_timeline(_load_run(run), max_depth=max_depth, limit=limit)
     return to_json(to_dict(results))
 
 
