@@ -777,6 +777,13 @@ class CodeVisitor(ast.NodeVisitor):
         their own markers (module < class < function).
         """
         self._module_pytest_meta = _collect_pytestmark_assignments(node.body)
+        # The module docstring carries references and equation-label
+        # definitions like any other docstring — ORPHEUS derivation
+        # modules keep the entire ``.. math:: :label:`` derivation in
+        # module-level prose.
+        self._add_docstring_refs(
+            node, self._node_id("module", self._module_name),
+        )
         for child in node.body:
             self.visit(child)
 

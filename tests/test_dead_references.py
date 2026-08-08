@@ -168,6 +168,41 @@ def test_docstring_math_label_defines_equation_node(tmp_path):
     assert "gone-label" in dead_names
 
 
+def test_module_docstring_label_and_refs_are_extracted(tmp_path):
+    """Module-level docstrings were never scanned at all — a label
+    defined in module prose (the ORPHEUS derivation-module shape) made
+    every reference to it look dead."""
+    graph = _analyze_source(
+        tmp_path,
+        '"""Derivation module.\n'
+        '\n'
+        '.. math::\n'
+        '   :label: module-level-identity\n'
+        '\n'
+        '   e = mc^2\n'
+        '\n'
+        'See :class:`pkg.mod.Config`.\n'
+        '"""\n'
+        '\n'
+        'def use():\n'
+        '    """Applies :eq:`module-level-identity`."""\n'
+        '\n'
+        'class Config:\n'
+        '    pass\n',
+    )
+    g = graph.nxgraph
+    assert g.nodes["math:equation:module-level-identity"]["type"] \
+        == NodeType.EQUATION.value
+    # The module docstring's :class: reference became an edge too.
+    assert any(
+        d.get("type") == EdgeType.REFERENCES.value
+        and tgt == "py:class:pkg.mod.Config"
+        for _, tgt, d in g.out_edges("py:module:pkg.mod", data=True)
+    )
+    result = GraphQuery(graph).dead_references()
+    assert "module-level-identity" not in {d.target_name for d in result.dead}
+
+
 # ---------------------------------------------------------------------------
 # 3. Re-export aliases
 # ---------------------------------------------------------------------------
