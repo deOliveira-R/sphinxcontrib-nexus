@@ -38,6 +38,7 @@ def _on_env_check_consistency(app: Sphinx, env: BuildEnvironment) -> None:
 
 def _finalize_graph(graph: Any) -> None:
     """Final cleanup before export: confidence scores, phantom nodes."""
+    from sphinxcontrib.nexus.ast_analyzer import _project_module_tops
     from sphinxcontrib.nexus.extractors import _EXTERNAL_NAMES
     from sphinxcontrib.nexus.graph import NodeType
 
@@ -47,7 +48,25 @@ def _finalize_graph(graph: Any) -> None:
         if "confidence" not in data:
             data["confidence"] = 1.0
 
-    # Classify phantom nodes (created by add_edge to nonexistent targets)
+    # Classify phantom nodes (created by add_edge to nonexistent
+    # targets). Project-rooted names are never ``external``: the
+    # project is usually pip-installed in its own build venv, so the
+    # environment check alone would hide the project's own dangling
+    # references in the external bucket.
+    project_tops = _project_module_tops(g)
+
+    # Reclassify nodes an earlier pass already typed ``external`` but
+    # whose top-level module is this project's: the Sphinx extractor
+    # only knows the DOCUMENTED module set, which under-covers the
+    # project when top packages aren't automodule'd, and its
+    # installed-packages fallback then wins incorrectly.
+    for _, attrs in g.nodes(data=True):
+        if attrs.get("type") != NodeType.EXTERNAL.value:
+            continue
+        top_level = (attrs.get("name") or "").split(".")[0]
+        if top_level in project_tops:
+            attrs["type"] = NodeType.UNRESOLVED.value
+
     for node_id in list(g.nodes):
         attrs = g.nodes[node_id]
         if attrs.get("type") and attrs["type"] not in ("", "unknown"):
@@ -55,7 +74,10 @@ def _finalize_graph(graph: Any) -> None:
         parts = node_id.split(":", 2)
         name = parts[2] if len(parts) == 3 else node_id
         top_level = name.split(".")[0]
-        attrs["type"] = NodeType.EXTERNAL.value if top_level in _EXTERNAL_NAMES else NodeType.UNRESOLVED.value
+        if top_level in project_tops or top_level not in _EXTERNAL_NAMES:
+            attrs["type"] = NodeType.UNRESOLVED.value
+        else:
+            attrs["type"] = NodeType.EXTERNAL.value
         if "name" not in attrs or not attrs["name"]:
             attrs["name"] = name
             attrs["display_name"] = name

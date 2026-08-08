@@ -114,7 +114,7 @@ Nexus works with any Python project:
 | `derives` | Derivation → equation | AST |
 | `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
 
-## MCP Tools (39)
+## MCP Tools (40)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -155,7 +155,8 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 - **`verification_coverage`** — equation → code → test coverage map (supports `limit`/`offset` pagination)
 - **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list (supports `group_by` and `include_tests`)
 - **`verification_gaps`** — untagged tests, unverified equations, missing err catchers (supports `module` and `level` filters)
-- **`staleness`** — detect docs that drifted from code
+- **`staleness`** — detect docs that drifted from code: git-timestamp drift plus a dead-reference summary
+- **`dead_references`** — doc/docstring references whose code target no longer exists (deleted/renamed symbols still referenced by theory pages, docstrings, or quoted type annotations — Sphinx renders these as plain text with no warning); project-rooted names only, with re-export and inheritance rescue passes to keep false positives out
 - **`session_briefing`** — AI agent context restoration
 - **`trace_error`** — trace from failing test to equations on call path
 - **`migration_plan`** — plan dependency migration with phased blast radius

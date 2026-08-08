@@ -4,6 +4,54 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Dead-reference detection — the silent doc-drift gate
+
+A deleted or renamed symbol leaves its doc references behind, and Sphinx
+renders them as plain text with **no warning at any severity**. Measured on
+ORPHEUS: 212 project-rooted referenced phantoms, of which 36 named genuinely
+missing code. The graph already contained the signal (reference edges whose
+target reconciled to nothing); this release makes it precise enough to gate
+on and surfaces it (MCP tools 39 → 40).
+
+### Added
+
+- **`dead_references` MCP tool + `GraphQuery.dead_references()`** — every
+  doc/docstring/type-annotation reference whose project-rooted target no
+  longer exists, with all referencing sites (file/line or docname).
+  Decidability follows the ORPHEUS `check_docstring_xrefs` discipline: only
+  project-rooted names are judged; external references are never reported.
+  Three rescue passes guard precision: exact-name match, re-export chase,
+  and an INHERITS walk (a member found on any ancestor is live; a class
+  with an un-analyzed base is *undecidable*, never dead). Dead `:eq:`
+  labels are audited too; `:math:` roles are ignored as presentation.
+- **`staleness` now carries a dead-reference summary** (top 10 +
+  total) alongside timestamp drift — dead references are the harder
+  failure of the two, and they work without git or project_root.
+- **Attribute and module-constant nodes.** The AST walker now emits
+  `ATTRIBUTE` nodes for class-level `x: T = ...` / `x = ...` and
+  `self.x = ...` bindings, and `DATA` nodes for module-level assignments —
+  previously live `:attr:`/`:data:` references were indistinguishable from
+  references to deleted code (176 of ORPHEUS's 212 referenced phantoms were
+  this and the two fixes below).
+- **Re-export alias map.** Module-scope `from X import Y` aliases are
+  recorded (`graph.metadata["reexports"]`) and chased during phantom
+  canonicalization and query-time rescue — `pkg.api.Thing` now folds onto
+  `pkg.core.thing.Thing` even when the module paths don't overlap, which
+  the leaf-name fold could never prove.
+
+### Fixed
+
+- **Project-rooted names misclassified as `external`.** Both phantom
+  classifiers checked installed packages before project membership, and the
+  analyzed project is usually pip-installed in its own build venv — 333
+  `orpheus.*` nodes sat in the external bucket, hidden from any gate.
+  Module-typed graph nodes now define project membership and win.
+- **Docstring role targets that wrap across lines** (`:class:`pkg.\n
+  Thing``) parsed to phantom names containing newlines; both the
+  `title <target>` form and plain dotted targets now normalize wrap
+  whitespace, and un-parseable role bodies are skipped instead of forging
+  unresolvable nodes.
+
 ## 0.15.0 — 2026-06-17
 
 ### Runtime overlay — dynamic execution-flow on the static graph (issue #26)
