@@ -4,6 +4,77 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Dead-reference detection — the silent doc-drift gate
+
+A deleted or renamed symbol leaves its doc references behind, and Sphinx
+renders them as plain text with **no warning at any severity**. The graph
+already contained the signal (reference edges whose target reconciled to
+nothing), but on ORPHEUS the bucket ran ~83% false positives. This release
+makes it precise enough to gate on and surfaces it (MCP tools 39 → 40).
+Validated against ORPHEUS with import-resolution as ground truth: every
+reported Python target is either genuinely missing or a code-less
+README-only namespace directory; zero false positives on real code, and
+symbols that merely MOVED (old paths still referenced by unqualified
+docstring refs) resolve to their new homes instead of being reported.
+
+### Added
+
+- **`dead_references` MCP tool + `GraphQuery.dead_references()`** — every
+  doc/docstring/type-annotation reference whose project-rooted target no
+  longer exists, with all referencing sites (file/line or docname).
+  Decidability follows the ORPHEUS `check_docstring_xrefs` discipline: only
+  project-rooted names are judged; external references are never reported.
+  Three rescue passes guard precision: exact-name match, re-export chase,
+  and an INHERITS walk (a member found on any ancestor is live; a class
+  with an un-analyzed base is *undecidable*, never dead). Dead `:eq:`
+  labels are audited too; `:math:` roles are ignored as presentation.
+- **`staleness` now carries a dead-reference summary** (top 10 +
+  total) alongside timestamp drift — dead references are the harder
+  failure of the two, and they work without git or project_root.
+- **Attribute and module-constant nodes.** The AST walker now emits
+  `ATTRIBUTE` nodes for class-level `x: T = ...` / `x = ...` and
+  `self.x = ...` bindings, and `DATA` nodes for module-level assignments —
+  previously live `:attr:`/`:data:` references were indistinguishable from
+  references to deleted code (176 of ORPHEUS's 212 referenced phantoms were
+  this and the two fixes below).
+- **Re-export alias map.** Module-scope `from X import Y` aliases are
+  recorded (`graph.metadata["reexports"]`) and chased during phantom
+  canonicalization and query-time rescue — `pkg.api.Thing` now folds onto
+  `pkg.core.thing.Thing` even when the module paths don't overlap, which
+  the leaf-name fold could never prove.
+
+### Fixed
+
+- **Package-relative imports resolved one level short.** `ImportTracker`
+  anchored every relative import at the module's parent — correct for
+  `pkg/mod.py`, off by one inside a nested package's `__init__.py`, so
+  `from .directional import Quadrature` in
+  `orpheus/numerics/quadrature/__init__.py` resolved to
+  `orpheus.numerics.directional.Quadrature` (2,326 poisoned aliases on
+  ORPHEUS). This also silently mangled base-class and call-target
+  resolution in nested-package `__init__` modules, fabricating
+  dead-looking names for symbols that had merely moved.
+- **Subscripted generic bases dropped.** `class Full(Composite[A, B])`
+  produced no INHERITS edge, severing inherited-member resolution for
+  every `Generic`-parameterized class.
+- **Module-level docstrings were never scanned.** `visit_Module` skipped
+  reference extraction entirely — ORPHEUS derivation modules keep whole
+  `.. math:: :label:` derivations in module prose, invisible to the graph.
+- **Equation labels defined in docstrings.** Sphinx only learns labels
+  from pages it renders; the AST scanner now emits equation nodes for
+  `.. math:: :label:` definitions in any docstring, so `:eq:` references
+  to un-rendered derivations resolve.
+- **Project-rooted names misclassified as `external`.** Both phantom
+  classifiers checked installed packages before project membership, and the
+  analyzed project is usually pip-installed in its own build venv — 333
+  `orpheus.*` nodes sat in the external bucket, hidden from any gate.
+  Module-typed graph nodes now define project membership and win.
+- **Docstring role targets that wrap across lines** (`:class:`pkg.\n
+  Thing``) parsed to phantom names containing newlines; both the
+  `title <target>` form and plain dotted targets now normalize wrap
+  whitespace, and un-parseable role bodies are skipped instead of forging
+  unresolvable nodes.
+
 ## 0.15.0 — 2026-06-17
 
 ### Runtime overlay — dynamic execution-flow on the static graph (issue #26)

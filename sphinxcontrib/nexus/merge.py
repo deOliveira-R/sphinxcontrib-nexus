@@ -56,6 +56,13 @@ def merge_graphs(
     sg = sphinx_kg.nxgraph
     ag = ast_kg.nxgraph
 
+    # Carry the AST layer's re-export alias map over so the post-merge
+    # canonicalization pass (and query-time consumers of the exported
+    # metadata) can chase public-path references to defining paths.
+    ast_reexports = ast_kg.metadata.get("reexports") or {}
+    if ast_reexports:
+        sphinx_kg.metadata.setdefault("reexports", {}).update(ast_reexports)
+
     # Step 1 & 2: merge nodes
     for node_id, ast_attrs in ag.nodes(data=True):
         if node_id in sg:

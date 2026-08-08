@@ -412,12 +412,52 @@ class StalenessEntry:
 
 
 @dataclass
+class DeadReferenceSite:
+    """One place that still references a vanished target."""
+
+    source: NodeResult
+    edge_type: str
+    reftype: str = ""
+
+
+@dataclass
+class DeadReference:
+    """A referenced code symbol or equation label that no longer exists.
+
+    The silent-drift shape: the target was deleted or renamed, the
+    references outlived it, and Sphinx renders them as plain text
+    without any warning.
+    """
+
+    target_id: str
+    target_name: str
+    kind: str  # "python" | "equation"
+    site_count: int
+    sites: list[DeadReferenceSite]
+
+
+@dataclass
+class DeadReferencesResult:
+    """Dead-reference audit over the whole graph."""
+
+    dead: list[DeadReference]
+    total_dead: int
+    total_sites: int
+    total_checked: int
+    rescued: int
+    undecidable: int
+    project_modules: list[str]
+
+
+@dataclass
 class StalenessResult:
     """Doc-code drift analysis."""
 
     stale_docs: list[StalenessEntry]
     total_stale: int
     total_checked: int
+    dead_references: list[DeadReference] = field(default_factory=list)
+    total_dead_references: int = 0
 
 
 @dataclass
@@ -1784,14 +1824,26 @@ class GraphQuery:
     ) -> StalenessResult:
         """Detect documentation pages that drifted from code.
 
-        Compares git modification timestamps of doc files vs. the code
-        files they reference.
+        Two independent drift signals:
+
+        * timestamp drift — git says the code a page references was
+          modified after the page (needs ``project_root`` + git);
+        * dead references — prose still references symbols/equations
+          that no longer exist (see :meth:`dead_references`; works on
+          the graph alone). The harder failure of the two: Sphinx
+          renders a dead reference as plain text with no warning.
         """
+        dead = self.dead_references()
+
         stale: list[StalenessEntry] = []
         checked = 0
 
         if project_root is None:
-            return StalenessResult(stale_docs=[], total_stale=0, total_checked=0)
+            return StalenessResult(
+                stale_docs=[], total_stale=0, total_checked=0,
+                dead_references=dead.dead[:10],
+                total_dead_references=dead.total_dead,
+            )
 
         project_root = Path(project_root)
         timestamps = self._git_file_timestamps(project_root)
@@ -1846,7 +1898,238 @@ class GraphQuery:
             stale_docs=stale,
             total_stale=len(stale),
             total_checked=checked,
+            dead_references=dead.dead[:10],
+            total_dead_references=dead.total_dead,
         )
+
+    #: Reference-carrying edge types eligible for the dead-reference
+    #: audit. CALLS is deliberately absent: call-target resolution is
+    #: heuristic (attribute calls, dynamic dispatch), so a phantom
+    #: call target is weak evidence that the callee was deleted.
+    _DEAD_REF_EDGE_TYPES = frozenset(
+        {"references", "documents", "type_uses", "equation_ref"}
+    )
+
+    #: Node types that mean "no concrete definition found".
+    _PHANTOM_NODE_TYPES = frozenset({"unresolved", "external", ""})
+
+    #: Un-analyzed base classes that are known to add no user-visible
+    #: members. Inheriting from these must NOT make member lookups
+    #: undecidable — otherwise every Generic-parameterized or ABC
+    #: subclass escapes the dead-reference gate entirely.
+    _TRANSPARENT_BASES = frozenset({
+        "object", "builtins.object",
+        "typing.Generic", "typing_extensions.Generic",
+        "typing.Protocol", "typing_extensions.Protocol",
+        "abc.ABC",
+    })
+
+    def dead_references(
+        self, max_sites_per_target: int = 25,
+    ) -> DeadReferencesResult:
+        """Doc/docstring references whose target no longer exists.
+
+        The drift shape this catches: a class, function, attribute, or
+        equation label was deleted or renamed, but prose — a theory
+        page, another docstring, a quoted type annotation — still
+        references the old name. Sphinx renders such references as
+        plain text and emits no warning, so nothing else surfaces them.
+
+        Detection is static and graph-native. After merge and phantom
+        canonicalization, a reference-carrying edge whose target is
+        still a phantom node rooted in a PROJECT module names a symbol
+        that neither the Sphinx domain nor the AST walker could find
+        anywhere in the analyzed tree. References rooted outside the
+        project (numpy, stdlib) are not decidable from this graph and
+        are never reported. Three rescue passes keep precision high:
+
+        * exact-name match against any concrete node (a property
+          referenced as ``:attr:`` resolves to its method node);
+        * re-export chase through the ``reexports`` metadata map
+          (``pkg.Thing`` is live when ``pkg/__init__.py`` re-exports
+          ``pkg.mesh.Thing``);
+        * inheritance walk — ``Sub.attr`` is live when any ancestor
+          class defines ``attr``; a class with an un-analyzed
+          (external/unresolved) base is UNDECIDABLE, not dead.
+
+        Equation references are audited from ``:eq:`` roles and
+        ``equation_ref`` edges only — ``:math:`` roles are inline
+        presentation, not label references. Sphinx sees every equation
+        label in the doc set, so a phantom equation target has no
+        blind spot.
+
+        Known static-analysis limits (same as any import-free
+        checker): symbols created dynamically (``__getattr__``,
+        metaclass magic) can be reported dead despite resolving at
+        runtime.
+        """
+        g = self._g
+
+        project_tops = {
+            (attrs.get("name") or "").split(".")[0]
+            for _, attrs in g.nodes(data=True)
+            if attrs.get("type") == "module"
+        }
+        project_tops.discard("")
+
+        reexports: dict[str, str] = self._kg.metadata.get("reexports") or {}
+
+        # Every dotted name that has a concrete (non-phantom) node.
+        concrete_names: set[str] = set()
+        for _, attrs in g.nodes(data=True):
+            if attrs.get("type", "") not in self._PHANTOM_NODE_TYPES:
+                name = attrs.get("name")
+                if name:
+                    concrete_names.add(name)
+
+        # Candidate targets: phantom nodes referenced by eligible edges.
+        sites_by_target: dict[str, list[DeadReferenceSite]] = {}
+        kinds: dict[str, str] = {}
+        for src, tgt, data in g.edges(data=True):
+            edge_type = str(data.get("type", ""))
+            if edge_type not in self._DEAD_REF_EDGE_TYPES:
+                continue
+            tattrs = g.nodes.get(tgt)
+            if tattrs is None:
+                continue
+            if tattrs.get("type", "") not in self._PHANTOM_NODE_TYPES:
+                continue
+            if tattrs.get("domain") == "citation":
+                continue  # citation nodes are phantom by design
+            reftype = str(data.get("reftype", ""))
+            if tgt.startswith("math:equation:"):
+                if edge_type != "equation_ref" and reftype != "eq":
+                    continue
+                kinds[tgt] = "equation"
+            elif tgt.startswith("py:"):
+                name = tattrs.get("name") or ""
+                if name.split(".")[0] not in project_tops:
+                    continue
+                kinds[tgt] = "python"
+            else:
+                continue
+            sites_by_target.setdefault(tgt, []).append(DeadReferenceSite(
+                source=self._node_result(src),
+                edge_type=edge_type,
+                reftype=reftype,
+            ))
+
+        dead: list[DeadReference] = []
+        rescued = undecidable = 0
+        for tgt, sites in sites_by_target.items():
+            tattrs = g.nodes.get(tgt, {})
+            name = tattrs.get("name") or tgt.split(":", 2)[-1]
+            if kinds[tgt] == "python":
+                verdict = self._dead_ref_verdict(
+                    name, concrete_names, reexports,
+                )
+                if verdict == "live":
+                    rescued += 1
+                    continue
+                if verdict == "undecidable":
+                    undecidable += 1
+                    continue
+            dead.append(DeadReference(
+                target_id=tgt,
+                target_name=name,
+                kind=kinds[tgt],
+                site_count=len(sites),
+                sites=sites[:max_sites_per_target],
+            ))
+
+        dead.sort(key=lambda d: (-d.site_count, d.target_name))
+        return DeadReferencesResult(
+            dead=dead,
+            total_dead=len(dead),
+            total_sites=sum(d.site_count for d in dead),
+            total_checked=len(sites_by_target),
+            rescued=rescued,
+            undecidable=undecidable,
+            project_modules=sorted(project_tops),
+        )
+
+    def _dead_ref_verdict(
+        self,
+        name: str,
+        concrete_names: set[str],
+        reexports: dict[str, str],
+    ) -> str:
+        """``"live"`` / ``"dead"`` / ``"undecidable"`` for a
+        project-rooted dotted name with no concrete node of its own."""
+        from sphinxcontrib.nexus.ast_analyzer import _chase_reexports
+
+        # Judge the name both as written and through re-export
+        # aliases: a member referenced by its public path
+        # (``pkg.SourceSink.zeros_on``) may only be findable on the
+        # defining class's ancestors, so every later check must run
+        # on the chased spelling too.
+        candidates = [name]
+        if reexports:
+            resolved = _chase_reexports(name, reexports)
+            if resolved != name:
+                candidates.append(resolved)
+
+        saw_undecidable = False
+        for candidate in candidates:
+            if candidate in concrete_names:
+                return "live"
+            if "." not in candidate:
+                continue
+            class_path, leaf = candidate.rsplit(".", 1)
+            if leaf.startswith("__") and leaf.endswith("__"):
+                # Dunder members: ``object`` provides most of them
+                # implicitly and ``pkg.mod.__init__`` names a module
+                # file — when the owner exists at all, the reference
+                # is live.
+                if (
+                    class_path in concrete_names
+                    or f"py:class:{class_path}" in self._g
+                ):
+                    return "live"
+            # The name may be an inherited member: ``Sub.attr`` where
+            # ``attr`` is defined on an ancestor of ``Sub``.
+            class_id = f"py:class:{class_path}"
+            if class_id not in self._g:
+                continue
+            verdict = self._member_on_ancestors(class_id, leaf, concrete_names)
+            if verdict == "live":
+                return "live"
+            if verdict == "undecidable":
+                saw_undecidable = True
+        return "undecidable" if saw_undecidable else "dead"
+
+    def _member_on_ancestors(
+        self,
+        class_id: str,
+        leaf: str,
+        concrete_names: set[str],
+    ) -> str:
+        """Walk INHERITS edges looking for ``<ancestor>.<leaf>``.
+
+        Returns ``"live"`` when an ancestor defines the member,
+        ``"undecidable"`` when any ancestor is a phantom (an
+        un-analyzed base could define anything), else ``"dead"``.
+        """
+        g = self._g
+        visited = {class_id}
+        stack = [class_id]
+        saw_opaque_base = False
+        while stack:
+            current = stack.pop()
+            for _, base, data in g.out_edges(current, data=True):
+                if data.get("type") != "inherits" or base in visited:
+                    continue
+                visited.add(base)
+                battrs = g.nodes.get(base, {})
+                bname = battrs.get("name") or base.split(":", 2)[-1]
+                if battrs.get("type", "") in self._PHANTOM_NODE_TYPES:
+                    if bname not in self._TRANSPARENT_BASES:
+                        saw_opaque_base = True
+                    continue
+                if f"{bname}.{leaf}" in concrete_names:
+                    return "live"
+                stack.append(base)
+        return "undecidable" if saw_opaque_base else "dead"
 
     @staticmethod
     def _git_file_timestamps(project_root: Path) -> dict[str, str]:

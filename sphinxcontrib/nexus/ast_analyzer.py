@@ -13,7 +13,7 @@ import logging
 import re
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from sphinxcontrib.nexus.fingerprint import body_fingerprint
 from sphinxcontrib.nexus.graph import (
@@ -37,8 +37,50 @@ _SPHINX_ROLE_RE = re.compile(r":(\w+):`([^`]+)`")
 # declare a display title distinct from the target, like
 # ``:func:`display name <pkg.mod.actual>```. The target inside the
 # angle brackets is what we want for graph resolution; the title is
-# presentation noise.
-_ROLE_TITLE_TARGET_RE = re.compile(r"^.*?<(?P<target>[^>]+)>\s*$")
+# presentation noise. DOTALL because a docstring role body wraps
+# across lines (``:meth:`Foo.bar\n    <pkg.mod.Foo.bar>```) and the
+# title part must still match up to the ``<``.
+_ROLE_TITLE_TARGET_RE = re.compile(r"^.*?<(?P<target>[^>]+)>\s*$", re.DOTALL)
+
+# Shape of a plausible dotted reference target after line-wrap
+# whitespace is removed: dotted identifiers, plus ``-`` for equation
+# labels. Used to decide whether whitespace inside a role body is
+# docstring wrapping (collapse it) or meaningful content like inline
+# LaTeX (leave it alone).
+_DOTTED_TARGET_RE = re.compile(r"[A-Za-z_][\w.-]*")
+
+
+def _normalize_wrapped_target(candidate: str) -> str:
+    """Collapse line-wrap whitespace inside a dotted role target.
+
+    A long ``:class:`pkg.mod.Thing``` reference wraps across docstring
+    lines, leaving a newline + indent in the middle of the dotted path.
+    Sphinx normalizes that whitespace away when it resolves the role;
+    without the same normalization the graph forges a phantom whose
+    name contains a newline — unresolvable by definition. Collapse is
+    attempted only when the de-whitespaced text looks like a dotted
+    name, so ``:math:`x + y``` bodies pass through untouched.
+    """
+    if not any(ch.isspace() for ch in candidate):
+        return candidate
+    collapsed = re.sub(r"\s+", "", candidate)
+    if _DOTTED_TARGET_RE.fullmatch(collapsed.lstrip(".")):
+        return collapsed
+    return candidate
+
+
+def _is_dotted_identifier(name: str) -> bool:
+    """True when ``name`` is a well-formed dotted Python path."""
+    return bool(name) and all(part.isidentifier() for part in name.split("."))
+
+
+#: ``:label: <name>`` option line of a ``.. math::`` directive embedded
+#: in a docstring. Sphinx only learns equation labels from pages it
+#: RENDERS — a label defined in a never-automodule'd docstring is
+#: invisible to it, and every ``:eq:`` reference to that label would
+#: look dead. The AST layer reads all docstrings, so it extracts the
+#: definitions too.
+_MATH_LABEL_RE = re.compile(r"^\s*:label:\s*(\S+)\s*$", re.MULTILINE)
 
 
 def _parse_role_target(raw: str) -> str | None:
@@ -76,12 +118,20 @@ def _parse_role_target(raw: str) -> str | None:
         # The inner target can still carry a ``~`` hint.
         if inner.startswith("~"):
             inner = inner[1:]
+        # A leading ``.`` marks a Sphinx relative/suffix-match target
+        # (``:meth:`.Quadrature.product```); the dots themselves are
+        # display syntax, not part of the dotted path.
+        inner = _normalize_wrapped_target(inner).lstrip(".")
         return inner or None
 
     # Plain target, possibly with a leading ``~`` display hint.
     if stripped.startswith("~"):
-        return stripped[1:] or None
-    return stripped
+        stripped = stripped[1:]
+    stripped = _normalize_wrapped_target(stripped)
+    # Same relative-target convention as the title form above.
+    if stripped.startswith(".") and _DOTTED_TARGET_RE.fullmatch(stripped.lstrip(".")):
+        stripped = stripped.lstrip(".")
+    return stripped or None
 
 
 # ---------------------------------------------------------------------------
@@ -343,14 +393,33 @@ class ImportTracker:
         from . import foo           → foo → <parent_module>.foo
     """
 
-    def __init__(self, module_name: str) -> None:
+    def __init__(self, module_name: str, is_package: bool = False) -> None:
         self._module_name = module_name
+        self._is_package = is_package
         self._aliases: dict[str, str] = {}
         self._has_future_annotations = False
 
     @property
     def has_future_annotations(self) -> bool:
         return self._has_future_annotations
+
+    def relative_anchor(self, level: int) -> str:
+        """The package a ``level``-dot relative import resolves against.
+
+        One dot means the CURRENT package: the module itself when it is
+        a package (``__init__.py``), its parent otherwise — getting this
+        wrong drops a path segment from every symbol imported relatively
+        inside a nested package's ``__init__.py``. Each additional dot
+        climbs one parent. Clamps at the top level rather than raising
+        on a malformed over-deep import.
+        """
+        anchor = self._module_name
+        climbs = level - 1 if self._is_package else level
+        for _ in range(climbs):
+            if "." not in anchor:
+                break
+            anchor = anchor.rsplit(".", 1)[0]
+        return anchor
 
     def add_import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -366,8 +435,7 @@ class ImportTracker:
             return
         # Handle relative imports
         if node.level > 0:
-            parts = self._module_name.rsplit(".", node.level)
-            base = parts[0] if parts else ""
+            base = self.relative_anchor(node.level)
             module = f"{base}.{module}" if module else base
         for alias in node.names:
             local_name = alias.asname or alias.name
@@ -601,6 +669,39 @@ def _discriminated_tags(
 # ---------------------------------------------------------------------------
 
 
+def _iter_name_targets(target: ast.expr) -> Iterator[str]:
+    """Yield plain names bound by an assignment target.
+
+    Handles ``x = ...``, ``x, y = ...`` and ``[x, y] = ...``. Attribute
+    and subscript targets are someone else's binding, not a new name in
+    this scope.
+    """
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            if isinstance(elt, ast.Name):
+                yield elt.id
+
+
+def _iter_self_attr_names(stmt: ast.Assign | ast.AnnAssign) -> Iterator[str]:
+    """Yield attribute names bound on ``self`` by an assignment.
+
+    Covers ``self.x = ...``, ``self.x: T = ...`` and tuple unpacking
+    ``self.a, self.b = ...``.
+    """
+    targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+    for tgt in targets:
+        elts = tgt.elts if isinstance(tgt, (ast.Tuple, ast.List)) else [tgt]
+        for elt in elts:
+            if (
+                isinstance(elt, ast.Attribute)
+                and isinstance(elt.value, ast.Name)
+                and elt.value.id == "self"
+            ):
+                yield elt.attr
+
+
 class CodeVisitor(ast.NodeVisitor):
     """Walk a Python file's AST and extract nodes and edges."""
 
@@ -614,7 +715,10 @@ class CodeVisitor(ast.NodeVisitor):
         self._file_path = file_path
         self._is_test_file = is_test_file
         self._scope: list[str] = [module_name]
-        self._imports = ImportTracker(module_name)
+        self._imports = ImportTracker(
+            module_name,
+            is_package=file_path.endswith("__init__.py"),
+        )
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
         # Pytest-marker metadata stashed at module and class scope.
@@ -625,6 +729,21 @@ class CodeVisitor(ast.NodeVisitor):
         # Synthetic tag nodes are shared across the functions that
         # discriminate on them; emit each at most once per file.
         self._tags_emitted: set[str] = set()
+        # Attribute/data binding nodes already emitted, keyed by node
+        # id — a class-level annotation and a ``self.x = ...`` in
+        # ``__init__`` describe the same attribute once.
+        self._bindings_emitted: set[str] = set()
+        # Depth of the class-scope stack. Assignment visitors use it to
+        # tell module-level bindings (DATA) from class-level ones
+        # (ATTRIBUTE). Function bodies are never visited statement-wise
+        # (only ``ast.walk``-ed for calls), so these visitors cannot
+        # fire at function scope.
+        self._class_depth = 0
+        # Module-scope ``from X import Y`` aliases: public dotted path
+        # → defining dotted path. ``analyze_directory`` aggregates
+        # these into graph metadata so phantom canonicalization can
+        # chase re-export chains.
+        self.reexports: dict[str, str] = {}
 
         # Create module node
         self.nodes.append(GraphNode(
@@ -658,6 +777,13 @@ class CodeVisitor(ast.NodeVisitor):
         their own markers (module < class < function).
         """
         self._module_pytest_meta = _collect_pytestmark_assignments(node.body)
+        # The module docstring carries references and equation-label
+        # definitions like any other docstring — ORPHEUS derivation
+        # modules keep the entire ``.. math:: :label:`` derivation in
+        # module-level prose.
+        self._add_docstring_refs(
+            node, self._node_id("module", self._module_name),
+        )
         for child in node.body:
             self.visit(child)
 
@@ -680,6 +806,27 @@ class CodeVisitor(ast.NodeVisitor):
         docstring = ast.get_docstring(node)
         if not docstring:
             return
+
+        # Equation labels DEFINED in this docstring (``.. math::``
+        # with ``:label:``). Emitted as concrete equation nodes so
+        # ``:eq:`` references to them resolve regardless of whether
+        # Sphinx ever renders the docstring.
+        for label_match in _MATH_LABEL_RE.finditer(docstring):
+            label = label_match.group(1)
+            eq_id = f"math:equation:{label}"
+            self.nodes.append(GraphNode(
+                id=eq_id,
+                type=NodeType.EQUATION,
+                name=label,
+                display_name=label,
+                domain="math",
+                metadata={"file_path": self._file_path, "source": "ast"},
+            ))
+            self.edges.append(GraphEdge(
+                source=source_id, target=eq_id, type=EdgeType.CONTAINS,
+                metadata={"source": "ast"},
+            ))
+
         # Python-domain role → objtype
         py_type_map = {
             "func": "function", "meth": "method", "class": "class",
@@ -703,6 +850,11 @@ class CodeVisitor(ast.NodeVisitor):
                 target_id = f"math:equation:{target}"
             elif role in py_type_map:
                 resolved = self._imports.resolve(target)
+                if not _is_dotted_identifier(resolved):
+                    # Not a well-formed dotted path even after
+                    # wrap-normalization — forging a node for it
+                    # would create a phantom nothing can resolve.
+                    continue
                 target_id = f"py:{py_type_map[role]}:{resolved}"
             else:
                 # Unknown or unsupported role — skip rather than forge a
@@ -735,8 +887,7 @@ class CodeVisitor(ast.NodeVisitor):
             target_module = node.module.split(".")[0]
             # Resolve relative imports
             if node.level > 0:
-                parts = self._module_name.rsplit(".", node.level)
-                base = parts[0] if parts else ""
+                base = self._imports.relative_anchor(node.level)
                 target_module = base.split(".")[0] if base else target_module
             self.edges.append(GraphEdge(
                 source=module_id,
@@ -744,6 +895,122 @@ class CodeVisitor(ast.NodeVisitor):
                 type=EdgeType.IMPORTS,
                 metadata={"full_import": node.module, "source": "ast"},
             ))
+        # Record module-scope aliases as re-export candidates:
+        # ``from .mesh import Thing`` in ``pkg/__init__.py`` makes
+        # ``pkg.Thing`` a live public path for ``pkg.mesh.Thing``.
+        # ImportTracker has just registered the alias, so resolving
+        # the local name yields the defining dotted path.
+        if self._class_depth == 0 and node.module != "__future__":
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                qualified = self._imports.resolve(local)
+                public = f"{self._module_name}.{local}"
+                if qualified != local and qualified != public:
+                    self.reexports[public] = qualified
+
+    def _emit_binding(
+        self,
+        name: str,
+        lineno: int,
+        annotation: str | None = None,
+    ) -> None:
+        """Emit an ATTRIBUTE (class scope) or DATA (module scope) node.
+
+        These bindings are what ``:attr:`` / ``:data:`` doc references
+        point at; without them every live reference to an annotated
+        attribute or module constant is indistinguishable from a
+        reference to deleted code.
+        """
+        if name == "_":
+            return
+        owner = self._qualified_name
+        if self._class_depth > 0:
+            type_str = "attribute"
+            node_type = NodeType.ATTRIBUTE
+            parent_id = self._node_id("class", owner)
+        else:
+            type_str = "data"
+            node_type = NodeType.DATA
+            parent_id = self._node_id("module", owner)
+        qname = f"{owner}.{name}"
+        binding_id = self._node_id(type_str, qname)
+        if binding_id in self._bindings_emitted:
+            return
+        self._bindings_emitted.add(binding_id)
+
+        meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": lineno,
+            "source": "ast",
+        }
+        if self._is_test_file:
+            meta["is_test"] = True
+        if annotation:
+            meta["annotation"] = annotation
+        self.nodes.append(GraphNode(
+            id=binding_id,
+            type=node_type,
+            name=qname,
+            display_name=name,
+            domain="py",
+            metadata=meta,
+        ))
+        self.edges.append(GraphEdge(
+            source=parent_id, target=binding_id, type=EdgeType.CONTAINS,
+            metadata={"source": "ast"},
+        ))
+
+    def _emit_instance_attribute(
+        self, cls_qname: str, name: str, lineno: int,
+    ) -> None:
+        """Emit an ATTRIBUTE node for a ``self.<name>`` binding.
+
+        Same node namespace as class-level bindings, so an annotated
+        declaration and the ``__init__`` assignment collapse into one
+        node.
+        """
+        attr_id = self._node_id("attribute", f"{cls_qname}.{name}")
+        if attr_id in self._bindings_emitted:
+            return
+        self._bindings_emitted.add(attr_id)
+        meta: dict[str, object] = {
+            "file_path": self._file_path,
+            "lineno": lineno,
+            "source": "ast",
+        }
+        if self._is_test_file:
+            meta["is_test"] = True
+        self.nodes.append(GraphNode(
+            id=attr_id,
+            type=NodeType.ATTRIBUTE,
+            name=f"{cls_qname}.{name}",
+            display_name=name,
+            domain="py",
+            metadata=meta,
+        ))
+        self.edges.append(GraphEdge(
+            source=self._node_id("class", cls_qname),
+            target=attr_id,
+            type=EdgeType.CONTAINS,
+            metadata={"source": "ast"},
+        ))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for tgt in node.targets:
+            for name in _iter_name_targets(tgt):
+                self._emit_binding(name, node.lineno)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            try:
+                annotation = ast.unparse(node.annotation)
+            except Exception:
+                annotation = None
+            self._emit_binding(
+                node.target.id, node.lineno, annotation=annotation,
+            )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scope.append(node.name)
@@ -799,6 +1066,12 @@ class CodeVisitor(ast.NodeVisitor):
 
         # INHERITS from base classes
         for base in node.bases:
+            # A generic base ``Composite[Bulk, Boundary]`` inherits
+            # from ``Composite`` — dropping Subscript bases severed
+            # the INHERITS chain for every Generic-parameterized
+            # class, which broke inherited-member resolution.
+            if isinstance(base, ast.Subscript):
+                base = base.value
             if isinstance(base, ast.Name):
                 base_name = self._imports.resolve(base.id)
             elif isinstance(base, ast.Attribute):
@@ -816,8 +1089,10 @@ class CodeVisitor(ast.NodeVisitor):
         # Visit only direct body statements (methods, nested classes)
         # NOT generic_visit which recurses into all descendants and can
         # blow the stack on files with deeply nested expressions.
+        self._class_depth += 1
         for child in node.body:
             self.visit(child)
+        self._class_depth -= 1
         self._scope.pop()
         self._current_class_pytest_meta = prev_class_meta
 
@@ -964,7 +1239,9 @@ class CodeVisitor(ast.NodeVisitor):
 
         self._add_docstring_refs(node, func_id)
 
-        # Walk body for CALLS edges
+        # Walk body for CALLS edges and, in methods, instance
+        # attributes bound on ``self``.
+        cls_qname = ".".join(self._scope[:-1]) if is_method else None
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
                 target = _resolve_call_target(child, self._imports)
@@ -987,6 +1264,14 @@ class CodeVisitor(ast.NodeVisitor):
                             "source": "ast",
                         },
                     ))
+            elif cls_qname and isinstance(child, (ast.Assign, ast.AnnAssign)):
+                # ``self.x = ...`` declares an instance attribute of
+                # the enclosing class — the target of ``:attr:`` doc
+                # references, so it must exist as a graph node.
+                for attr_name in _iter_self_attr_names(child):
+                    self._emit_instance_attribute(
+                        cls_qname, attr_name, child.lineno,
+                    )
 
         # Don't call generic_visit — we already walked the body for Call nodes
         self._scope.pop()
@@ -1058,6 +1343,11 @@ def analyze_directory(
 
     resolver = ModuleResolver(project_root, sys_path_dirs)
     graph = KnowledgeGraph()
+    # Public dotted path → defining dotted path, from module-scope
+    # ``from X import Y`` statements. Persisted in graph metadata so
+    # both the in-pipeline canonicalization passes and query-time
+    # consumers can chase re-export chains.
+    reexports: dict[str, str] = {}
 
     # Pre-compute exclusion directory names for fast filtering
     _skip_dirs = {".venv", "venv", "__pycache__", "node_modules", ".tox", ".git"}
@@ -1095,6 +1385,9 @@ def analyze_directory(
             graph.add_node(node)
         for edge in visitor.edges:
             graph.add_edge(edge)
+        reexports.update(visitor.reexports)
+
+    graph.metadata["reexports"] = reexports
 
     # Classify phantom nodes created by add_edge for targets not in the graph.
     # These are external functions/modules (numpy.array, scipy.integrate.quad, etc.)
@@ -1126,6 +1419,8 @@ _CANONICAL_TYPES: frozenset[str] = frozenset({
     NodeType.MODULE.value,
     NodeType.EXCEPTION.value,
     NodeType.TYPE.value,
+    NodeType.ATTRIBUTE.value,
+    NodeType.DATA.value,
 })
 
 #: Node types that MAY be folded into a canonical by
@@ -1266,6 +1561,33 @@ def _module_paths_overlap(phantom_name: str, canonical_name: str) -> bool:
     return False
 
 
+def _chase_reexports(name: str, reexports: dict[str, str]) -> str:
+    """Resolve ``name`` through re-export aliases to its defining path.
+
+    Follows chains (``pkg.Thing`` → ``pkg.geometry.Thing`` →
+    ``pkg.geometry.mesh.Thing``) and rewrites dotted prefixes, so
+    ``pkg.Thing.method`` resolves through the ``pkg.Thing`` alias too.
+    A seen-set guards against alias cycles.
+    """
+    seen: set[str] = set()
+    current = name
+    while current not in seen:
+        seen.add(current)
+        if current in reexports:
+            current = reexports[current]
+            continue
+        # Longest dotted prefix that is itself an alias.
+        parts = current.split(".")
+        for cut in range(len(parts) - 1, 0, -1):
+            prefix = ".".join(parts[:cut])
+            if prefix in reexports:
+                current = ".".join([reexports[prefix], *parts[cut:]])
+                break
+        else:
+            break
+    return current
+
+
 def _canonical_rank_key(
     cid: str, cname: str, attrs: dict,
 ) -> tuple[int, int, str]:
@@ -1337,8 +1659,10 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
     # canonical by definition, even if the type attr is stale.
     _upgrade_types_from_signals(graph)
 
-    # Build leaf-name → list of (canonical_id, canonical_name) pairs.
+    # Build leaf-name → and full-name → (canonical_id, canonical_name)
+    # indexes over the concrete nodes phantoms may fold into.
     leaf_index: dict[str, list[tuple[str, str]]] = {}
+    name_index: dict[str, list[tuple[str, str]]] = {}
     for nid, attrs in g.nodes(data=True):
         if attrs.get("type") not in _CANONICAL_TYPES:
             continue
@@ -1347,6 +1671,9 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
             continue
         leaf = name.rsplit(".", 1)[-1]
         leaf_index.setdefault(leaf, []).append((nid, name))
+        name_index.setdefault(name, []).append((nid, name))
+
+    reexports: dict[str, str] = graph.metadata.get("reexports") or {}
 
     removed = 0
     for nid in list(g.nodes):
@@ -1358,25 +1685,40 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
         if not name:
             continue
 
-        leaf = name.rsplit(".", 1)[-1]
-        all_candidates = [
-            (cid, cname)
-            for cid, cname in leaf_index.get(leaf, [])
-            if cid != nid
-        ]
+        # Exact resolution through re-export aliases first: a phantom
+        # named by a public path (``pkg.Thing``) folds onto the node
+        # at its defining path (``pkg.geometry.mesh.Thing``) with no
+        # leaf-collision heuristics involved.
+        matched: list[tuple[str, str]] = []
+        if reexports:
+            resolved = _chase_reexports(name, reexports)
+            if resolved != name:
+                matched = [
+                    (cid, cname)
+                    for cid, cname in name_index.get(resolved, [])
+                    if cid != nid
+                ]
 
-        if "." in name:
-            # Qualified phantom — filter by module-path overlap so
-            # cross-module same-leaf collisions don't collapse.
-            matched = [
+        if not matched:
+            leaf = name.rsplit(".", 1)[-1]
+            all_candidates = [
                 (cid, cname)
-                for cid, cname in all_candidates
-                if _module_paths_overlap(name, cname)
+                for cid, cname in leaf_index.get(leaf, [])
+                if cid != nid
             ]
-        else:
-            # Bare-name phantom — the phantom has no module path, so
-            # fall back to "unique leaf match across the whole graph".
-            matched = list(all_candidates)
+
+            if "." in name:
+                # Qualified phantom — filter by module-path overlap so
+                # cross-module same-leaf collisions don't collapse.
+                matched = [
+                    (cid, cname)
+                    for cid, cname in all_candidates
+                    if _module_paths_overlap(name, cname)
+                ]
+            else:
+                # Bare-name phantom — the phantom has no module path, so
+                # fall back to "unique leaf match across the whole graph".
+                matched = list(all_candidates)
 
         if not matched:
             continue
@@ -1415,16 +1757,38 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
     return removed
 
 
+def _project_module_tops(g: "Any") -> set[str]:
+    """Top-level segments of every module node in the graph.
+
+    Module-typed nodes only exist for modules the AST layer analyzed
+    or Sphinx documented — never for phantoms — so this is the set of
+    names that belong to THIS project. It must be consulted before any
+    installed-packages check: the project itself is usually pip-
+    installed in its own build environment (editable install), so an
+    environment lookup alone classifies the project's own dangling
+    references as ``external`` and hides them from staleness gating.
+    """
+    tops = {
+        (attrs.get("name") or "").split(".")[0]
+        for _, attrs in g.nodes(data=True)
+        if attrs.get("type") == NodeType.MODULE.value
+    }
+    tops.discard("")
+    return tops
+
+
 def _classify_phantom_nodes(graph: KnowledgeGraph) -> None:
     """Add type/name attributes to nodes auto-created by NetworkX.
 
     When add_edge references a node that doesn't exist, NetworkX creates
     it with no attributes. We classify these as EXTERNAL (stdlib/packages)
-    or leave as-is for project-internal symbols.
+    or UNRESOLVED for project-internal symbols. Project-rooted names win
+    over the environment check — see ``_project_module_tops``.
     """
     from sphinxcontrib.nexus.extractors import _EXTERNAL_NAMES
 
     g = graph.nxgraph
+    project_tops = _project_module_tops(g)
     for node_id in list(g.nodes):
         attrs = g.nodes[node_id]
         if attrs.get("type") and attrs["type"] not in ("", "unknown"):
@@ -1435,7 +1799,9 @@ def _classify_phantom_nodes(graph: KnowledgeGraph) -> None:
         name = parts[2] if len(parts) == 3 else node_id
         top_level = name.split(".")[0]
 
-        if top_level in _EXTERNAL_NAMES:
+        if top_level in project_tops:
+            node_type = NodeType.UNRESOLVED.value
+        elif top_level in _EXTERNAL_NAMES:
             node_type = NodeType.EXTERNAL.value
         else:
             node_type = NodeType.UNRESOLVED.value

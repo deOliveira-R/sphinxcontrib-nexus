@@ -968,12 +968,39 @@ def verification_coverage(
 def staleness() -> str:
     """Detect documentation pages that drifted from code.
 
-    Compares git timestamps: if code was modified after its documentation
-    page, the doc is flagged as stale. Only works with git and project_root set.
+    Two drift signals: timestamp drift (code modified after the page that
+    documents it — needs git and project_root) and dead references (top 10;
+    the full list lives in the dead_references tool).
     """
     q = _get_query()
     result = q.staleness(_active_root())
     return to_json(to_dict(result))
+
+
+@nexus_tool
+def dead_references(limit: int = 50) -> str:
+    """Doc/docstring references whose code target no longer exists.
+
+    The silent-drift failure: a class/function/attribute/equation was
+    deleted or renamed but theory pages, docstrings, or quoted type
+    annotations still reference the old name — Sphinx renders those as
+    plain text with no warning. Reports each dead target with every
+    site that still references it (file/line for docstrings, docname
+    for pages). Only project-rooted names are judged; external
+    references and members of classes with un-analyzed bases are never
+    reported. ``rescued``/``undecidable`` counts show how many
+    candidate targets the precision passes filtered out.
+
+    Args:
+        limit: Maximum dead targets to return (most-referenced first).
+            0 means no limit. Totals always reflect the full count.
+    """
+    q = _get_query()
+    result = q.dead_references()
+    payload = to_dict(result)
+    if limit > 0:
+        payload["dead"] = payload["dead"][:limit]
+    return to_json(payload)
 
 
 def _briefing_payload() -> dict[str, Any]:
