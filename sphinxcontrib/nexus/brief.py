@@ -341,10 +341,11 @@ def render_text(brief: FileBrief) -> str:
         )
     if brief.doc_pages:
         lines.append(f"docs: {_clipped(brief.doc_pages)}")
-    if brief.changed_since_build:
-        lines.append(
-            f"stale: file changed since graph build "
-            f"({brief.build_commit}) — node positions may be off; "
-            f"rebuild to refresh"
-        )
+    # No per-file staleness line here, deliberately: the ambient form's
+    # consumer is the POST-EDIT hook, where "file changed since graph
+    # build" is tautologically true (the agent just edited it). Issue
+    # #15's usage evaluation measured the line at a 100% fire rate —
+    # 842 of 842 injected briefs — i.e. zero information. The
+    # ``changed_since_build`` field stays on the dataclass/JSON for
+    # consumers that ask at other times.
     return "\n".join(lines)

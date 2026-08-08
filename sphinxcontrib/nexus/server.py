@@ -273,11 +273,24 @@ def _workspace_payload() -> dict[str, Any]:
                 f"the graph, or switch with use_workspace if you meant "
                 f"another checkout"
             )
-    if any(o["has_graph"] for o in others):
+    # Warn about sibling graphs only when one is FRESHER than the
+    # active graph — the mere existence of sibling graphs fired 39
+    # warnings across 6 real sessions against 4 workspace switches
+    # (issue #15 evaluation): existence alone is noise, freshness is
+    # the actionable signal.
+    fresher = [
+        s for s in statuses
+        if not s.is_active
+        and s.graph_mtime is not None
+        and (active.graph_mtime is None or s.graph_mtime > active.graph_mtime)
+    ]
+    if fresher:
+        roots = ", ".join(str(s.workspace.root) for s in fresher[:3])
         warnings.append(
-            "sibling worktrees with their own graphs exist — if your "
-            "session is working inside one of them, call "
-            "use_workspace(<its root>) so queries answer from that tree"
+            f"sibling checkout(s) carry a FRESHER graph than the active "
+            f"one ({roots}) — if your session is working inside one of "
+            f"them, call use_workspace(<its root>) so queries answer "
+            f"from that tree"
         )
     if warnings:
         payload["warnings"] = warnings

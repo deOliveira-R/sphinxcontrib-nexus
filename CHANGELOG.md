@@ -43,6 +43,23 @@ docstring refs) resolve to their new homes instead of being reported.
   `pkg.core.thing.Thing` even when the module paths don't overlap, which
   the leaf-name fold could never prove.
 
+### Changed — usage-evidence tunings (issue #15)
+
+Seven weeks of real ORPHEUS sessions (806 journaled tool calls, 842 injected
+edit-time briefs, zero tool failures) settled the deferred tuning decisions:
+
+- **Ambient file-brief drops its staleness line.** The line fired on 842 of
+  842 injected briefs — the hook runs post-edit, where "file changed since
+  graph build" is tautologically true. The ``changed_since_build`` field
+  stays on the dataclass/JSON.
+- **Sibling-graph warning now fires only when a sibling's graph is FRESHER
+  than the active one.** Existence alone produced 39 warnings against 4
+  actual workspace switches. Siblings are still listed either way.
+- **No token budgets added to `callers`/`callees`/`neighbors`/`graph_query`**
+  — the journal shows no payload bombs (slow calls were non-transitive on
+  ordinary nodes; the latency tail is database reload after a rebuild, not
+  hub payloads).
+
 ### Fixed
 
 - **Package-relative imports resolved one level short.** `ImportTracker`
