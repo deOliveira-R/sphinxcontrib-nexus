@@ -384,14 +384,33 @@ class ImportTracker:
         from . import foo           → foo → <parent_module>.foo
     """
 
-    def __init__(self, module_name: str) -> None:
+    def __init__(self, module_name: str, is_package: bool = False) -> None:
         self._module_name = module_name
+        self._is_package = is_package
         self._aliases: dict[str, str] = {}
         self._has_future_annotations = False
 
     @property
     def has_future_annotations(self) -> bool:
         return self._has_future_annotations
+
+    def relative_anchor(self, level: int) -> str:
+        """The package a ``level``-dot relative import resolves against.
+
+        One dot means the CURRENT package: the module itself when it is
+        a package (``__init__.py``), its parent otherwise — getting this
+        wrong drops a path segment from every symbol imported relatively
+        inside a nested package's ``__init__.py``. Each additional dot
+        climbs one parent. Clamps at the top level rather than raising
+        on a malformed over-deep import.
+        """
+        anchor = self._module_name
+        climbs = level - 1 if self._is_package else level
+        for _ in range(climbs):
+            if "." not in anchor:
+                break
+            anchor = anchor.rsplit(".", 1)[0]
+        return anchor
 
     def add_import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -407,8 +426,7 @@ class ImportTracker:
             return
         # Handle relative imports
         if node.level > 0:
-            parts = self._module_name.rsplit(".", node.level)
-            base = parts[0] if parts else ""
+            base = self.relative_anchor(node.level)
             module = f"{base}.{module}" if module else base
         for alias in node.names:
             local_name = alias.asname or alias.name
@@ -688,7 +706,10 @@ class CodeVisitor(ast.NodeVisitor):
         self._file_path = file_path
         self._is_test_file = is_test_file
         self._scope: list[str] = [module_name]
-        self._imports = ImportTracker(module_name)
+        self._imports = ImportTracker(
+            module_name,
+            is_package=file_path.endswith("__init__.py"),
+        )
         self.nodes: list[GraphNode] = []
         self.edges: list[GraphEdge] = []
         # Pytest-marker metadata stashed at module and class scope.
@@ -829,8 +850,7 @@ class CodeVisitor(ast.NodeVisitor):
             target_module = node.module.split(".")[0]
             # Resolve relative imports
             if node.level > 0:
-                parts = self._module_name.rsplit(".", node.level)
-                base = parts[0] if parts else ""
+                base = self._imports.relative_anchor(node.level)
                 target_module = base.split(".")[0] if base else target_module
             self.edges.append(GraphEdge(
                 source=module_id,
@@ -1009,6 +1029,12 @@ class CodeVisitor(ast.NodeVisitor):
 
         # INHERITS from base classes
         for base in node.bases:
+            # A generic base ``Composite[Bulk, Boundary]`` inherits
+            # from ``Composite`` — dropping Subscript bases severed
+            # the INHERITS chain for every Generic-parameterized
+            # class, which broke inherited-member resolution.
+            if isinstance(base, ast.Subscript):
+                base = base.value
             if isinstance(base, ast.Name):
                 base_name = self._imports.resolve(base.id)
             elif isinstance(base, ast.Attribute):

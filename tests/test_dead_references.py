@@ -158,6 +158,70 @@ def test_chase_reexports_follows_chains_and_prefixes():
     )
 
 
+def test_nested_package_relative_reexport_resolves_fully(tmp_path):
+    """Regression: ``from .directional import Quadrature`` inside
+    ``pkg/numerics/quadrature/__init__.py`` must resolve against the
+    package ITSELF, not its parent — the parent-anchored resolution
+    dropped one segment from every re-export value in a nested
+    package (observed on ORPHEUS: 2,326 poisoned aliases)."""
+    root = tmp_path / "pkg" / "numerics" / "quadrature"
+    root.mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "numerics" / "__init__.py").write_text("")
+    (root / "__init__.py").write_text("from .directional import Quadrature\n")
+    (root / "directional.py").write_text("class Quadrature:\n    pass\n")
+    graph = analyze_directory(tmp_path, exclude_patterns=[])
+    assert graph.metadata["reexports"]["pkg.numerics.quadrature.Quadrature"] \
+        == "pkg.numerics.quadrature.directional.Quadrature"
+
+
+def test_subscripted_generic_base_gets_inherits_edge(tmp_path):
+    """Regression: ``class Full(Composite[A, B])`` — a Subscript base
+    — must still produce the INHERITS edge, or inherited-member
+    resolution breaks for every Generic-parameterized class."""
+    graph = _analyze_source(
+        tmp_path,
+        "from typing import Generic, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "class Composite(Generic[T]):\n"
+        "    def __mul__(self, s):\n"
+        "        return self\n"
+        "    def scale(self, s):\n"
+        "        return self\n"
+        "class Full(Composite[int]):\n"
+        "    pass\n",
+    )
+    g = graph.nxgraph
+    inherits = {
+        tgt for _, tgt, d in g.out_edges("py:class:pkg.mod.Full", data=True)
+        if d.get("type") == EdgeType.INHERITS.value
+    }
+    assert "py:class:pkg.mod.Composite" in inherits
+
+
+def test_inherited_member_through_generic_base_is_live(tmp_path):
+    graph = _analyze_source(
+        tmp_path,
+        "from typing import Generic, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "class Composite(Generic[T]):\n"
+        "    def scale(self, s):\n"
+        "        return self\n"
+        "class Full(Composite[int]):\n"
+        '    """See :meth:`pkg.mod.Full.scale` and\n'
+        '    :meth:`pkg.mod.Full.__mul__` and\n'
+        '    :meth:`pkg.mod.Full.vanished`."""\n',
+    )
+    result = GraphQuery(graph).dead_references()
+    dead_names = {d.target_name for d in result.dead}
+    # ``scale`` lives on the generic base; ``__mul__`` is an object-
+    # provided dunder on an existing class; ``vanished`` is genuinely
+    # missing — and typing.Generic must NOT make it undecidable.
+    assert "pkg.mod.Full.scale" not in dead_names
+    assert "pkg.mod.Full.__mul__" not in dead_names
+    assert "pkg.mod.Full.vanished" in dead_names
+
+
 def test_chase_reexports_survives_cycles():
     reexports = {"a.X": "b.X", "b.X": "a.X"}
     # Must terminate; landing on either side of the cycle is fine.

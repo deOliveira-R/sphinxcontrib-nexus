@@ -1913,6 +1913,17 @@ class GraphQuery:
     #: Node types that mean "no concrete definition found".
     _PHANTOM_NODE_TYPES = frozenset({"unresolved", "external", ""})
 
+    #: Un-analyzed base classes that are known to add no user-visible
+    #: members. Inheriting from these must NOT make member lookups
+    #: undecidable — otherwise every Generic-parameterized or ABC
+    #: subclass escapes the dead-reference gate entirely.
+    _TRANSPARENT_BASES = frozenset({
+        "object", "builtins.object",
+        "typing.Generic", "typing_extensions.Generic",
+        "typing.Protocol", "typing_extensions.Protocol",
+        "abc.ABC",
+    })
+
     def dead_references(
         self, max_sites_per_target: int = 25,
     ) -> DeadReferencesResult:
@@ -2055,9 +2066,18 @@ class GraphQuery:
                 return "live"
         if "." not in name:
             return "dead"
+        class_path, leaf = name.rsplit(".", 1)
+        if leaf.startswith("__") and leaf.endswith("__"):
+            # Dunder members: ``object`` provides most of them
+            # implicitly and ``pkg.mod.__init__`` names a module file
+            # — when the owner exists at all, the reference is live.
+            if (
+                class_path in concrete_names
+                or f"py:class:{class_path}" in self._g
+            ):
+                return "live"
         # The name may be an inherited member: ``Sub.attr`` where
         # ``attr`` is defined on an ancestor of ``Sub``.
-        class_path, leaf = name.rsplit(".", 1)
         class_id = f"py:class:{class_path}"
         if class_id not in self._g:
             return "dead"
@@ -2086,10 +2106,11 @@ class GraphQuery:
                     continue
                 visited.add(base)
                 battrs = g.nodes.get(base, {})
-                if battrs.get("type", "") in self._PHANTOM_NODE_TYPES:
-                    saw_opaque_base = True
-                    continue
                 bname = battrs.get("name") or base.split(":", 2)[-1]
+                if battrs.get("type", "") in self._PHANTOM_NODE_TYPES:
+                    if bname not in self._TRANSPARENT_BASES:
+                        saw_opaque_base = True
+                    continue
                 if f"{bname}.{leaf}" in concrete_names:
                     return "live"
                 stack.append(base)
