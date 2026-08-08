@@ -7,11 +7,15 @@ All notable changes to sphinxcontrib-nexus.
 ### Dead-reference detection — the silent doc-drift gate
 
 A deleted or renamed symbol leaves its doc references behind, and Sphinx
-renders them as plain text with **no warning at any severity**. Measured on
-ORPHEUS: 212 project-rooted referenced phantoms, of which 36 named genuinely
-missing code. The graph already contained the signal (reference edges whose
-target reconciled to nothing); this release makes it precise enough to gate
-on and surfaces it (MCP tools 39 → 40).
+renders them as plain text with **no warning at any severity**. The graph
+already contained the signal (reference edges whose target reconciled to
+nothing), but on ORPHEUS the bucket ran ~83% false positives. This release
+makes it precise enough to gate on and surfaces it (MCP tools 39 → 40).
+Validated against ORPHEUS with import-resolution as ground truth: every
+reported Python target is either genuinely missing or a code-less
+README-only namespace directory; zero false positives on real code, and
+symbols that merely MOVED (old paths still referenced by unqualified
+docstring refs) resolve to their new homes instead of being reported.
 
 ### Added
 
@@ -41,6 +45,25 @@ on and surfaces it (MCP tools 39 → 40).
 
 ### Fixed
 
+- **Package-relative imports resolved one level short.** `ImportTracker`
+  anchored every relative import at the module's parent — correct for
+  `pkg/mod.py`, off by one inside a nested package's `__init__.py`, so
+  `from .directional import Quadrature` in
+  `orpheus/numerics/quadrature/__init__.py` resolved to
+  `orpheus.numerics.directional.Quadrature` (2,326 poisoned aliases on
+  ORPHEUS). This also silently mangled base-class and call-target
+  resolution in nested-package `__init__` modules, fabricating
+  dead-looking names for symbols that had merely moved.
+- **Subscripted generic bases dropped.** `class Full(Composite[A, B])`
+  produced no INHERITS edge, severing inherited-member resolution for
+  every `Generic`-parameterized class.
+- **Module-level docstrings were never scanned.** `visit_Module` skipped
+  reference extraction entirely — ORPHEUS derivation modules keep whole
+  `.. math:: :label:` derivations in module prose, invisible to the graph.
+- **Equation labels defined in docstrings.** Sphinx only learns labels
+  from pages it renders; the AST scanner now emits equation nodes for
+  `.. math:: :label:` definitions in any docstring, so `:eq:` references
+  to un-rendered derivations resolve.
 - **Project-rooted names misclassified as `external`.** Both phantom
   classifiers checked installed packages before project membership, and the
   analyzed project is usually pip-installed in its own build venv — 333
