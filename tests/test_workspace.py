@@ -545,10 +545,33 @@ def test_briefing_workspace_block_flags_branch_mismatch(server_on_main):
 
 
 def test_briefing_workspace_block_notes_sibling_graphs(server_on_main, worktree):
+    """A sibling graph FRESHER than the active one triggers the
+    switch hint (this one was written after the active graph)."""
     _write_graph(worktree, "feature_node")
     block = server_mod._workspace_payload()
     assert any("use_workspace" in w for w in block["warnings"])
     assert block["active"]["branch"] == "main"
+    assert len(block["others"]) == 1
+
+
+def test_briefing_stale_sibling_graph_stays_quiet(server_on_main, worktree):
+    """A sibling whose graph is OLDER than the active one is not
+    worth a warning — existence alone fired 39 warnings against 4
+    switches in real sessions (issue #15); freshness is the signal."""
+    import os
+
+    repo = server_on_main
+    _write_graph(worktree, "feature_node")
+    active_mtime = (repo / DB_RELPATH).stat().st_mtime
+    stale = active_mtime - 100
+    os.utime(worktree / DB_RELPATH, (stale, stale))
+
+    block = server_mod._workspace_payload()
+    assert not any(
+        "use_workspace(<its root>)" in w
+        for w in block.get("warnings", [])
+    )
+    # The sibling is still LISTED — only the warning is gated.
     assert len(block["others"]) == 1
 
 

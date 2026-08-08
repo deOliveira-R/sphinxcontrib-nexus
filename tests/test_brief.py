@@ -299,7 +299,11 @@ def test_brief_flags_file_changed_since_build(stamped_repo):
     brief = file_brief(db, target, project_root=root)
     assert brief is not None
     assert brief.changed_since_build is True
-    assert "stale" in render_text(brief)
+    # The FIELD carries the flag; the ambient TEXT deliberately does
+    # not — its consumer is the post-edit hook, where "changed since
+    # build" is tautologically true (issue #15: 842/842 briefs carried
+    # the line — zero information).
+    assert "stale" not in render_text(brief)
 
 
 def test_brief_other_files_changing_does_not_flag(stamped_repo):
