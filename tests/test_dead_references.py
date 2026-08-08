@@ -140,6 +140,34 @@ def test_annotated_and_init_assignment_collapse_to_one_node(tmp_path):
     assert g.nodes[nodes[0]]["annotation"] == "float"
 
 
+def test_docstring_math_label_defines_equation_node(tmp_path):
+    """A ``.. math:: :label:`` block in a docstring DEFINES the label.
+    Sphinx only sees labels on rendered pages, so without AST-side
+    extraction every ``:eq:`` reference to a label defined in an
+    un-rendered docstring looks dead."""
+    graph = _analyze_source(
+        tmp_path,
+        'def derive():\n'
+        '    r"""The derivation.\n'
+        '\n'
+        '    .. math::\n'
+        '       :label: my-neat-identity\n'
+        '\n'
+        '       a^2 + b^2 = c^2\n'
+        '\n'
+        '    Used via :eq:`my-neat-identity` and :eq:`gone-label`.\n'
+        '    """\n',
+    )
+    g = graph.nxgraph
+    assert g.nodes["math:equation:my-neat-identity"]["type"] \
+        == NodeType.EQUATION.value
+
+    result = GraphQuery(graph).dead_references()
+    dead_names = {d.target_name for d in result.dead}
+    assert "my-neat-identity" not in dead_names
+    assert "gone-label" in dead_names
+
+
 # ---------------------------------------------------------------------------
 # 3. Re-export aliases
 # ---------------------------------------------------------------------------
@@ -364,6 +392,35 @@ def _build_query_fixture() -> KnowledgeGraph:
     ref("math:equation:x_i", EdgeType.REFERENCES, reftype="math")  # inline math, skipped
     ref("citation:Bell1970", EdgeType.CITES)                   # citations skipped
     return kg
+
+
+def test_inherited_member_via_public_reexport_path_is_live():
+    """Regression: ``pkg.Sink.zeros_on`` where ``pkg.Sink`` is a
+    re-export of ``pkg.impl.Sink`` AND ``zeros_on`` is only defined on
+    that class's base — the inheritance walk must run on the chased
+    spelling, not just the name as written."""
+    kg = KnowledgeGraph()
+    _node(kg, "py:module:pkg", NodeType.MODULE, "pkg", file_path="/x/p/__init__.py")
+    _node(kg, "py:class:pkg.impl.Sink", NodeType.CLASS, "pkg.impl.Sink",
+          file_path="/x/p/impl.py")
+    _node(kg, "py:class:pkg.impl.BaseField", NodeType.CLASS, "pkg.impl.BaseField",
+          file_path="/x/p/impl.py")
+    _node(kg, "py:method:pkg.impl.BaseField.zeros_on", NodeType.METHOD,
+          "pkg.impl.BaseField.zeros_on", file_path="/x/p/impl.py")
+    kg.add_edge(GraphEdge(source="py:class:pkg.impl.Sink",
+                          target="py:class:pkg.impl.BaseField",
+                          type=EdgeType.INHERITS))
+    kg.metadata["reexports"] = {"pkg.Sink": "pkg.impl.Sink"}
+    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                          display_name="page", domain="std", docname="page"))
+    _node(kg, "py:method:pkg.Sink.zeros_on", NodeType.UNRESOLVED,
+          "pkg.Sink.zeros_on")
+    kg.add_edge(GraphEdge(source="doc:page", target="py:method:pkg.Sink.zeros_on",
+                          type=EdgeType.DOCUMENTS))
+
+    result = GraphQuery(kg).dead_references()
+    assert result.total_dead == 0
+    assert result.rescued == 1
 
 
 def test_dead_references_verdicts():

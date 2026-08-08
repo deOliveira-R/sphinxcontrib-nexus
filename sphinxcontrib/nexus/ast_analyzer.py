@@ -74,6 +74,15 @@ def _is_dotted_identifier(name: str) -> bool:
     return bool(name) and all(part.isidentifier() for part in name.split("."))
 
 
+#: ``:label: <name>`` option line of a ``.. math::`` directive embedded
+#: in a docstring. Sphinx only learns equation labels from pages it
+#: RENDERS — a label defined in a never-automodule'd docstring is
+#: invisible to it, and every ``:eq:`` reference to that label would
+#: look dead. The AST layer reads all docstrings, so it extracts the
+#: definitions too.
+_MATH_LABEL_RE = re.compile(r"^\s*:label:\s*(\S+)\s*$", re.MULTILINE)
+
+
 def _parse_role_target(raw: str) -> str | None:
     """Extract the resolvable target from a role-body string.
 
@@ -790,6 +799,27 @@ class CodeVisitor(ast.NodeVisitor):
         docstring = ast.get_docstring(node)
         if not docstring:
             return
+
+        # Equation labels DEFINED in this docstring (``.. math::``
+        # with ``:label:``). Emitted as concrete equation nodes so
+        # ``:eq:`` references to them resolve regardless of whether
+        # Sphinx ever renders the docstring.
+        for label_match in _MATH_LABEL_RE.finditer(docstring):
+            label = label_match.group(1)
+            eq_id = f"math:equation:{label}"
+            self.nodes.append(GraphNode(
+                id=eq_id,
+                type=NodeType.EQUATION,
+                name=label,
+                display_name=label,
+                domain="math",
+                metadata={"file_path": self._file_path, "source": "ast"},
+            ))
+            self.edges.append(GraphEdge(
+                source=source_id, target=eq_id, type=EdgeType.CONTAINS,
+                metadata={"source": "ast"},
+            ))
+
         # Python-domain role → objtype
         py_type_map = {
             "func": "function", "meth": "method", "class": "class",

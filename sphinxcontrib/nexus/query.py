@@ -2058,30 +2058,45 @@ class GraphQuery:
         project-rooted dotted name with no concrete node of its own."""
         from sphinxcontrib.nexus.ast_analyzer import _chase_reexports
 
-        if name in concrete_names:
-            return "live"
+        # Judge the name both as written and through re-export
+        # aliases: a member referenced by its public path
+        # (``pkg.SourceSink.zeros_on``) may only be findable on the
+        # defining class's ancestors, so every later check must run
+        # on the chased spelling too.
+        candidates = [name]
         if reexports:
             resolved = _chase_reexports(name, reexports)
-            if resolved != name and resolved in concrete_names:
+            if resolved != name:
+                candidates.append(resolved)
+
+        saw_undecidable = False
+        for candidate in candidates:
+            if candidate in concrete_names:
                 return "live"
-        if "." not in name:
-            return "dead"
-        class_path, leaf = name.rsplit(".", 1)
-        if leaf.startswith("__") and leaf.endswith("__"):
-            # Dunder members: ``object`` provides most of them
-            # implicitly and ``pkg.mod.__init__`` names a module file
-            # — when the owner exists at all, the reference is live.
-            if (
-                class_path in concrete_names
-                or f"py:class:{class_path}" in self._g
-            ):
+            if "." not in candidate:
+                continue
+            class_path, leaf = candidate.rsplit(".", 1)
+            if leaf.startswith("__") and leaf.endswith("__"):
+                # Dunder members: ``object`` provides most of them
+                # implicitly and ``pkg.mod.__init__`` names a module
+                # file — when the owner exists at all, the reference
+                # is live.
+                if (
+                    class_path in concrete_names
+                    or f"py:class:{class_path}" in self._g
+                ):
+                    return "live"
+            # The name may be an inherited member: ``Sub.attr`` where
+            # ``attr`` is defined on an ancestor of ``Sub``.
+            class_id = f"py:class:{class_path}"
+            if class_id not in self._g:
+                continue
+            verdict = self._member_on_ancestors(class_id, leaf, concrete_names)
+            if verdict == "live":
                 return "live"
-        # The name may be an inherited member: ``Sub.attr`` where
-        # ``attr`` is defined on an ancestor of ``Sub``.
-        class_id = f"py:class:{class_path}"
-        if class_id not in self._g:
-            return "dead"
-        return self._member_on_ancestors(class_id, leaf, concrete_names)
+            if verdict == "undecidable":
+                saw_undecidable = True
+        return "undecidable" if saw_undecidable else "dead"
 
     def _member_on_ancestors(
         self,
