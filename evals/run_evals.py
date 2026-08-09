@@ -70,11 +70,18 @@ HERE = Path(__file__).resolve().parent
 #: behaviour under test. Read-only by construction — these scenarios ask
 #: questions, and a run that edits the subject tree has corrupted the
 #: fixture for every later run.
+#: ``Bash`` is unrestricted rather than narrowed to ``Bash(grep:*)``
+#: style rules: the standalone ``Grep``/``Glob`` tools no longer exist
+#: in current scaffolds, so text search IS Bash, and per-command rules
+#: fail to match the pipelines agents actually write — which silently
+#: voids every control scenario. Mutation tools (``Write``, ``Edit``)
+#: are deliberately absent: scenarios ask read-only questions, and a run
+#: that edits the subject tree corrupts the fixture for every later run.
+#: An agent DID attempt a ``Write`` during development; the allowlist
+#: blocked it, which is the safety this list is for.
 ALLOWED_TOOLS = [
     "mcp__nexus__*",
-    "Read", "Grep", "Glob",
-    "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)",
-    "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
+    "Read", "Grep", "Glob", "Bash",
 ]
 
 #: Placeholders in scenario prompts, filled from the ``--subject`` file.
