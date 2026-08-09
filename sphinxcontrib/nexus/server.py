@@ -941,8 +941,15 @@ def provenance_chain(node_id: str) -> str:
     literature citations those equations come from. The complete
     mathematical provenance.
 
+    ``relations`` carries the math-to-math spine where the project
+    declares one: which continuous form a discrete equation
+    ``discretizes``, which parent it ``derives_from``, which exact form
+    it ``approximates`` — plus the inverses, so you can read the chain
+    from either end. Use it to answer what a test actually pins down.
+
     Args:
-        node_id: Node ID of a code symbol or equation.
+        node_id: Node ID of a code symbol, equation, or sphinx-proof
+            environment (``prf:theorem:...``).
     """
     q = _get_query()
     return to_json(to_dict(q.provenance_chain(node_id)))

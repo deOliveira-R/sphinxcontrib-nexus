@@ -1,6 +1,8 @@
 """Sphinx directives for declaring verification and implementation edges.
 
-Two user-facing directives ship in v0.8.0:
+Two families of user-facing directives ship here.
+
+**Math ↔ code** (v0.8.0):
 
 - ``.. verifies:: <equation_label>`` — declares that a Python object
   verifies (tests) a math equation. Emits an ``EdgeType.TESTS`` edge.
@@ -11,6 +13,25 @@ Both take an optional ``:by:`` role that names the Python symbol. When
 omitted, the directive falls back to ``env.ref_context`` inspection so
 usage nested inside an ``.. py:function::`` or ``.. autofunction::``
 block picks up the enclosing signature automatically.
+
+**Math ↔ math** (v0.17.0): equations were graph leaves — the graph knew
+code implements them and tests verify them, but nothing about how the
+math itself hangs together. Three directives declare that structure:
+
+- ``.. discretizes:: <label>`` — this discrete form discretizes that
+  continuous one.
+- ``.. derives-from:: <label>`` — this specialization/reduction derives
+  from that parent.
+- ``.. approximates:: <label>`` — this closure/truncation approximates
+  that exact form.
+
+Each names its *target* as the argument and takes the *source*
+statement as ``:label:``. Omit ``:label:`` and the directive binds to
+the nearest preceding labelled equation in the same document, which is
+where these are written in practice — directly under the equation they
+describe. Both ends may name a ``math`` equation or a ``sphinx-proof``
+environment, so "Theorem 3.4 derives-from Definition 3.2" works with
+the same syntax.
 
 **Timing**: directives run during ``doctree-read``, before
 ``env.nexus_graph`` exists. They stash pending edge payloads on
@@ -29,6 +50,8 @@ from docutils import nodes
 from docutils.parsers.rst import directives as rst_directives
 from sphinx.util.docutils import SphinxDirective
 
+from sphinxcontrib.nexus._mappings import resolve_proof_id
+from sphinxcontrib.nexus.extractors import _is_auto_proof_label
 from sphinxcontrib.nexus.graph import EdgeType
 
 if TYPE_CHECKING:
@@ -37,6 +60,15 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 logger = logging.getLogger(__name__)
+
+#: Directive name → edge type for the statement-to-statement relations.
+#: Every entry must have a query that consumes it (``provenance_chain``
+#: walks all three); the set stays small on purpose.
+EQUATION_RELATIONS: dict[str, EdgeType] = {
+    "discretizes": EdgeType.DISCRETIZES,
+    "derives-from": EdgeType.DERIVES_FROM,
+    "approximates": EdgeType.APPROXIMATES,
+}
 
 
 def _init_pending_queue(
@@ -104,6 +136,147 @@ def _node_id_for_target(target: str, graph: "nx.MultiDiGraph") -> str | None:
         if candidate in graph:
             return candidate
     return None
+
+
+def _resolve_statement_id(label: str, graph: "nx.MultiDiGraph") -> str | None:
+    """Resolve a label naming a mathematical statement to a node id.
+
+    A statement is either a ``math`` equation or a ``sphinx-proof``
+    environment; both are written as a bare label at the directive, so
+    which one it is only becomes knowable against the built graph.
+    """
+    eq_id = f"math:equation:{label}"
+    if eq_id in graph:
+        return eq_id
+    return resolve_proof_id(graph, label)
+
+
+def _nearest_preceding_label(state: Any) -> str | None:
+    """The label of the last labelled statement parsed before this point.
+
+    These directives are written directly beneath the equation they talk
+    about, so the enclosing statement is nearly always the one just
+    above — the same ergonomics ``:by:`` gets from ``ref_context``.
+    Only content already parsed is attached to the document, so the last
+    match in document order *is* the nearest preceding one.
+
+    Matches labelled ``.. math::`` blocks and sphinx-proof environments
+    (identified structurally by their ``realtype`` attribute, so no
+    import of the optional extension is needed). Synthetic labels from
+    unlabelled proof environments are skipped — they name nothing the
+    graph will hold, so binding to one would only produce a confusing
+    "not found" at replay.
+    """
+    document = getattr(state, "document", None)
+    if document is None:
+        return None
+    found: str | None = None
+    for node in document.findall(nodes.Element):
+        label = node.get("label")
+        if not label:
+            continue
+        realtype = node.get("realtype")
+        if realtype:
+            if not _is_auto_proof_label(label, realtype):
+                found = label
+        elif isinstance(node, nodes.math_block):
+            found = label
+    return found
+
+
+class _StatementRelationDirective(SphinxDirective):
+    """Common plumbing for the statement-to-statement relations.
+
+    Deliberately not a subclass of ``_VerificationDirectiveBase``: the
+    two share only the pending queue. This family takes no ``:by:``
+    (neither end is code) and its source is a label rather than a
+    ref_context lookup, so inheriting would mean overriding everything
+    that matters.
+    """
+
+    required_arguments = 1
+    has_content = True
+    option_spec = {
+        "label": rst_directives.unchanged,
+    }
+
+    #: Subclasses set this to a key of ``EQUATION_RELATIONS``.
+    kind: str = ""
+
+    def run(self) -> list[nodes.Node]:
+        to_label = self.arguments[0].strip()
+        from_label = (
+            self.options.get("label", "").strip()
+            or _nearest_preceding_label(self.state)
+            or ""
+        )
+        if not from_label:
+            msg = self.reporter.warning(
+                f".. {self.kind}:: {to_label!r} needs a ':label:' option "
+                f"(no labelled equation or proof environment precedes it)",
+                line=self.lineno,
+            )
+            return [msg]
+        if from_label == to_label:
+            msg = self.reporter.warning(
+                f".. {self.kind}:: {to_label!r} relates a statement to "
+                f"itself — check the ':label:' option",
+                line=self.lineno,
+            )
+            return [msg]
+
+        pending = _init_pending_queue(self.env, self.env.docname)
+        pending.append({
+            "kind": self.kind,
+            "from_label": from_label,
+            "to_label": to_label,
+            "docname": self.env.docname,
+            "lineno": self.lineno,
+        })
+        if self.content:
+            container = nodes.container()
+            self.state.nested_parse(self.content, self.content_offset, container)
+            return [container]
+        return []
+
+
+class DiscretizesDirective(_StatementRelationDirective):
+    """Declare that a discrete form discretizes a continuous one.
+
+    Syntax::
+
+        .. math::
+           :label: sn-dd-closure
+
+           \\dots
+
+        .. discretizes:: sn-transport-continuous
+
+    Emits ``EdgeType.DISCRETIZES`` from ``sn-dd-closure`` to
+    ``sn-transport-continuous``.
+    """
+
+    kind = "discretizes"
+
+
+class DerivesFromDirective(_StatementRelationDirective):
+    """Declare that a specialization derives from a parent statement.
+
+    Emits ``EdgeType.DERIVES_FROM`` from the specialized statement to
+    the general one it was reduced from.
+    """
+
+    kind = "derives-from"
+
+
+class ApproximatesDirective(_StatementRelationDirective):
+    """Declare that a closure or truncation approximates an exact form.
+
+    Emits ``EdgeType.APPROXIMATES`` from the approximation to the exact
+    statement it stands in for.
+    """
+
+    kind = "approximates"
 
 
 class _VerificationDirectiveBase(SphinxDirective):
@@ -184,6 +357,52 @@ class ImplementsDirective(_VerificationDirectiveBase):
     kind = "implements"
 
 
+def _apply_relation(
+    entry: dict[str, Any],
+    graph: "nx.MultiDiGraph",
+    ctx: str,
+) -> int:
+    """Write one statement-to-statement edge. Returns 1 if it landed.
+
+    Both ends must already exist as nodes. A label that resolves to
+    nothing is a dead reference in prose — logged and skipped, the same
+    treatment the verification directives give a missing equation.
+    """
+    kind = entry["kind"]
+    from_label = entry["from_label"]
+    to_label = entry["to_label"]
+
+    source_id = _resolve_statement_id(from_label, graph)
+    if source_id is None:
+        logger.warning(
+            ".. %s:: [%s]: source statement %r not found in graph — skipping",
+            kind, ctx, from_label,
+        )
+        return 0
+
+    target_id = _resolve_statement_id(to_label, graph)
+    if target_id is None:
+        logger.warning(
+            ".. %s:: [%s]: target statement %r not found in graph — skipping",
+            kind, ctx, to_label,
+        )
+        return 0
+
+    edge_type = EQUATION_RELATIONS[kind].value
+    existing = graph.get_edge_data(source_id, target_id, default={})
+    if any(d.get("type") == edge_type for d in existing.values()):
+        return 0
+
+    graph.add_edge(
+        source_id,
+        target_id,
+        type=edge_type,
+        source="directive",
+        confidence=1.0,
+    )
+    return 1
+
+
 def apply_pending_edges(
     env: "BuildEnvironment",
     graph: "nx.MultiDiGraph",
@@ -216,10 +435,15 @@ def apply_pending_edges(
     for docname, entries in registry.items():
         for entry in entries:
             kind = entry["kind"]
-            label = entry["label"]
-            target = entry["target"]
             lineno = entry.get("lineno", "?")
             ctx = f"{docname}:{lineno}"
+
+            if kind in EQUATION_RELATIONS:
+                written += _apply_relation(entry, graph, ctx)
+                continue
+
+            label = entry["label"]
+            target = entry["target"]
 
             resolved = _node_id_for_target(target, graph)
             if resolved is None:
@@ -312,8 +536,11 @@ def merge_env(
 
 
 def register(app: "Sphinx") -> None:
-    """Register the verification directives and their env handlers."""
+    """Register the nexus directives and their env handlers."""
     app.add_directive("verifies", VerifiesDirective)
     app.add_directive("implements", ImplementsDirective)
+    app.add_directive("discretizes", DiscretizesDirective)
+    app.add_directive("derives-from", DerivesFromDirective)
+    app.add_directive("approximates", ApproximatesDirective)
     app.connect("env-purge-doc", purge_doc)
     app.connect("env-merge-info", merge_env)

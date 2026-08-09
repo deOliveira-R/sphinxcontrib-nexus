@@ -94,13 +94,14 @@ Nexus works with any Python project:
 
 ## What the Graph Contains
 
-### Node Types (15)
+### Node Types (16)
 
 | Type | Source | Example |
 |------|--------|---------|
 | `file` | Sphinx | RST/doc pages |
 | `section` | Sphinx | Labeled sections (`:ref:` targets) |
 | `equation` | Sphinx | Labeled math equations (`:eq:` targets) |
+| `proof_object` | Sphinx | A labeled [`sphinx-proof`](https://github.com/executablebooks/sphinx-proof) environment — definition, theorem, algorithm, … The environment kind is in `metadata["prf_type"]`, the prose in `metadata["statement"]` |
 | `term` | Sphinx | Glossary terms |
 | `function` | Sphinx + AST | Python functions |
 | `class` | Sphinx + AST | Python classes |
@@ -114,7 +115,7 @@ Nexus works with any Python project:
 | `unresolved` | Auto-detected | Referenced but not documented symbols |
 | `tag` | AST | A string/enum value a function discriminates on (`"spherical"`), target of `discriminates_on` |
 
-### Edge Types (13)
+### Edge Types (16)
 
 | Edge | Meaning | Source |
 |------|---------|--------|
@@ -131,6 +132,9 @@ Nexus works with any Python project:
 | `tests` | Test → tested function | AST |
 | `derives` | Derivation → equation | AST |
 | `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
+| `discretizes` | Discrete statement → the continuous one it discretizes | Directive |
+| `derives_from` | Specialization → the parent it was reduced from | Directive |
+| `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
 ## MCP Tools (40)
 
@@ -318,6 +322,40 @@ Declare verification edges directly in theory prose:
 ```
 
 Both directives accept an explicit `:by:` option naming the Python symbol. When omitted, they fall back to inspecting `env.ref_context` so usage nested inside `.. py:function::` / `.. autofunction::` blocks picks up the enclosing signature automatically. Directive edges are tagged `source="directive"` and survive incremental builds via a docname-keyed pending queue with an `env-purge-doc` handler.
+
+### Relating equations to each other
+
+Equations used to be graph leaves: code implemented them, tests verified them, and that was all the graph knew. Three directives declare the structure of the math itself, so `provenance_chain` returns a spine instead of a flat list — *this test verifies the discrete form, which discretizes this continuous one*:
+
+```rst
+.. math::
+   :label: sn-dd-closure
+
+   \psi_c = \tfrac{1}{2}(\psi_L + \psi_R)
+
+.. discretizes:: sn-transport-continuous
+```
+
+| Directive | Declares |
+|-----------|----------|
+| `discretizes` | This discrete form discretizes that continuous one |
+| `derives-from` | This specialization derives from that parent |
+| `approximates` | This closure or truncation approximates that exact form |
+
+Each names its **target** as the argument. The **source** comes from `:label:`, or — when omitted, as above — from the nearest preceding labeled statement, which is where these are written in practice. Either end may be a `math` equation or a `sphinx-proof` environment, so *Theorem 3.4 derives-from Definition 3.2* uses the same syntax:
+
+```rst
+.. derives-from:: def-angular-flux
+   :label: thm-balance
+```
+
+Misuse is loud and never breaks the build: a directive with no bindable source, one that relates a statement to itself, or one whose target doesn't exist warns and is dropped.
+
+### sphinx-proof environments
+
+When a project uses [`sphinx-proof`](https://github.com/executablebooks/sphinx-proof), every **labeled** `prf:` environment becomes a `proof_object` node carrying its title, its statement text, and its kind in `metadata["prf_type"]`. `:prf:ref:` cross-references resolve to those nodes, and a `prf:algorithm` sitting next to the function that runs it makes the math-name ↔ code-name bridge explicit.
+
+Unlabeled environments are skipped: sphinx-proof gives them a serial-numbered synthetic label that renumbers whenever anything above them moves, and nothing can reference them.
 
 ### From a registry YAML
 

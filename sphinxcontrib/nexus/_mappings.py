@@ -53,6 +53,34 @@ DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
     ("std", "doc"): NodeType.FILE,
 }
 
+# ``sphinx-proof`` environment names. The upstream ``prf`` domain exposes
+# neither ``object_types`` nor ``get_objects()`` — everything lives in
+# ``env.proof_list`` — so the list can't be derived from the domain and is
+# kept here instead. It is used to resolve a bare ``:prf:ref:`` label (which
+# carries no environment name) to a ``prf:<type>:<label>`` node id.
+#
+# Not imported from ``sphinx_proof``: a graph built elsewhere can contain
+# prf nodes while the local environment has no sphinx-proof installed, so
+# the list has to stand on its own. ``resolve_target_id`` falls back to a
+# prefix scan for any type added upstream after this was written.
+PRF_OBJECT_TYPES: tuple[str, ...] = (
+    "algorithm",
+    "assumption",
+    "axiom",
+    "conjecture",
+    "corollary",
+    "criterion",
+    "definition",
+    "example",
+    "lemma",
+    "notation",
+    "observation",
+    "property",
+    "proposition",
+    "remark",
+    "theorem",
+)
+
 # Map pending_xref reftype to EdgeType.
 REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "ref": EdgeType.REFERENCES,
@@ -75,6 +103,30 @@ REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "envvar": EdgeType.REFERENCES,
     "citation": EdgeType.CITES,
 }
+
+
+def resolve_proof_id(nxgraph: nx.MultiDiGraph, label: str) -> str | None:
+    """Resolve a bare ``sphinx-proof`` label to its node id.
+
+    ``:prf:ref:`sn-sweep``` names the label but not the environment, so
+    the id has to be reconstructed by trying each known environment.
+    Returns ``None`` when no proof object carries the label.
+    """
+    for objtype in PRF_OBJECT_TYPES:
+        nid = f"prf:{objtype}:{label}"
+        if nid in nxgraph:
+            return nid
+    # An environment sphinx-proof grew after PRF_OBJECT_TYPES was
+    # written. Scan rather than report a live reference as dead.
+    tail = f":{label}"
+    for node_id in nxgraph:
+        if (
+            isinstance(node_id, str)
+            and node_id.startswith("prf:")
+            and node_id.endswith(tail)
+        ):
+            return node_id
+    return None
 
 
 def resolve_target_id(
@@ -100,6 +152,8 @@ def resolve_target_id(
     if reftype == "eq":
         nid = f"math:equation:{reftarget}"
         return nid if nid in nxgraph else None
+    if refdomain == "prf":
+        return resolve_proof_id(nxgraph, reftarget)
 
     # Collect candidate obj_types for this reftype
     candidate_objtypes = [reftype]

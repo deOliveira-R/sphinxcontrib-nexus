@@ -4,6 +4,63 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Added — the math has structure now (#19, #21)
+
+Equations were graph leaves. The graph knew which code implemented an equation
+and which test verified it, but nothing about how the equations relate to each
+other — so `provenance_chain` returned a flat list where a validator wants a
+spine.
+
+**Statement relations** (#19). Three directives declare that structure:
+
+```rst
+.. math::
+   :label: sn-dd-closure
+
+   \psi_c = \tfrac{1}{2}(\psi_L + \psi_R)
+
+.. discretizes:: sn-transport-continuous
+```
+
+- `discretizes` — discrete form → the continuous one it discretizes
+- `derives-from` — specialization → its parent
+- `approximates` — closure/truncation → the exact form it stands in for
+
+Each names its target as the argument; the source comes from `:label:` or, when
+omitted, from the nearest preceding labeled statement — which is where these get
+written in practice, directly under the equation they describe. New `EdgeType`
+values `DISCRETIZES` / `DERIVES_FROM` / `APPROXIMATES`, tagged
+`source="directive"` like the existing verification directives and surviving
+incremental builds through the same pending queue.
+
+Misuse warns and is dropped, never breaking the build: no bindable source, a
+statement related to itself, or a target that doesn't exist.
+
+**sphinx-proof environments** (#21). Every *labeled* `prf:` environment —
+definition, theorem, algorithm, and the dozen others — becomes a `proof_object`
+node carrying its title, its statement text, and its kind in
+`metadata["prf_type"]`. The `prf` domain exposes neither `object_types` nor
+`get_objects()`, so these are read from `env.proof_list` and enriched from the
+doctree; `:prf:ref:` targets resolve to the new nodes, which matters because an
+unresolved one would otherwise surface as a false dead reference.
+
+One node type rather than fifteen: the environment kind is an attribute and the
+node id (`prf:theorem:thm-balance`) already carries it. Unlabeled environments
+are skipped — sphinx-proof gives them a serial-numbered synthetic label that
+renumbers whenever anything above them moves, and nothing can reference them.
+
+Both ends of a relation may be an equation *or* a proof environment, so
+*Theorem 3.4 derives-from Definition 3.2* needs no new syntax.
+
+**Consumed by `provenance_chain`**, which now returns a `relations` list of
+`source ─relation→ target` triples reachable from the queried node — from a
+code symbol, an equation, or a proof environment. Each link is reported once,
+in its authored direction.
+
+Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
+rather than a fixture guess, since the whole point is what the upstream
+extension actually publishes. `sphinx-proof` is now a test-only dependency.
+
 ## 0.16.1 — 2026-08-09
 
 ### Fixed
