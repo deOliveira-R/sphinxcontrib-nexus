@@ -155,10 +155,11 @@ def _load_run(name: str):
     run = store.load(name)
     if run is None:
         available = [r["name"] for r in store.list_runs()]
-        raise ValueError(
-            f"no runtime run {name!r}; available: {available or '(none — '
-            f'ingest one with runtime_ingest)'}"
-        )
+        # Built outside the f-string: an expression split across physical
+        # lines INSIDE the braces is PEP 701 syntax (3.12+), and this
+        # package supports 3.10.
+        alternatives = available or "(none — ingest one with runtime_ingest)"
+        raise ValueError(f"no runtime run {name!r}; available: {alternatives}")
     return run
 
 
