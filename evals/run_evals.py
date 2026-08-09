@@ -61,9 +61,25 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-#: Placeholders in scenario prompts, filled from --subject-* flags or the
-#: subject file. Keeps the scenario set project-agnostic: the QUESTION
-#: shape is universal, the symbols are not.
+#: Tools pre-approved for every run. BOTH families must be present or
+#: the measurement is void: a headless session cannot prompt for
+#: permission, so anything unlisted is silently denied and the agent
+#: falls back to whatever it *can* reach. Allowing only the graph makes
+#: every control scenario trivially pass; allowing only text tools makes
+#: every target scenario trivially miss. Free choice between them is the
+#: behaviour under test. Read-only by construction — these scenarios ask
+#: questions, and a run that edits the subject tree has corrupted the
+#: fixture for every later run.
+ALLOWED_TOOLS = [
+    "mcp__nexus__*",
+    "Read", "Grep", "Glob",
+    "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)",
+    "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
+]
+
+#: Placeholders in scenario prompts, filled from the ``--subject`` file.
+#: Keeps the scenario set project-agnostic: the QUESTION shape is
+#: universal, the symbols are not.
 DEFAULT_SUBJECT = {
     "smell_module": "the largest package in this project",
     "impact_symbol": "the most-called public function in this project",
@@ -98,21 +114,44 @@ def run_one(
     out = out_root / condition / scenario["id"]
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, NEXUS_USAGE_LOG=str(out / "journal.jsonl"))
-    # No --allowedTools restriction ON PURPOSE: the control scenarios
-    # can only demonstrate correct routing if grep/Read are available,
-    # and free tool choice is the behaviour under test.
     proc = subprocess.run(
         [
             "claude", "-p", scenario["prompt"],
             "--model", model,
             "--output-format", "json",
             "--max-turns", str(max_turns),
+            "--allowedTools", *ALLOWED_TOOLS,
         ],
         cwd=project, env=env, capture_output=True, text=True,
     )
     (out / "result.json").write_text(proc.stdout or "{}")
     if proc.stderr:
         (out / "stderr.log").write_text(proc.stderr)
+
+
+def denied_tools(out: Path) -> list[str]:
+    """Tools the session TRIED to call and was refused.
+
+    An empty journal has two very different causes: the agent chose not
+    to reach for the graph (a real MISS about steering), or it reached
+    and was blocked (a VOID run that says nothing about steering).
+    Conflating them once produced an entire ablation of uniform MISSes
+    that read as "no instruction layer matters" — when the agents had
+    named the right tool in their prose and simply could not call it.
+
+    ``permission_denials`` in the result JSON is the authoritative
+    signal; a headless session cannot prompt, so every unlisted tool
+    lands here rather than in the journal.
+    """
+    try:
+        result = json.loads((out / "result.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return sorted({
+        d.get("tool_name", "")
+        for d in (result.get("permission_denials") or [])
+        if d.get("tool_name")
+    })
 
 
 def journal_tools(out: Path) -> list[str]:
@@ -142,7 +181,11 @@ def grade_one(scenario: dict, out: Path) -> dict:
     intended = set(scenario.get("intended") or [])
     forbidden = set(scenario.get("forbidden") or [])
 
-    if forbidden:
+    denied = denied_tools(out)
+    if denied and not substantive:
+        # Blocked, not steered — says nothing about the instructions.
+        verdict, detail = "VOID", denied[:4]
+    elif forbidden:
         # Control scenario: success is NOT touching the graph.
         used = sorted(forbidden & set(substantive))
         verdict = "THEATER" if used else "PASS"
@@ -181,7 +224,12 @@ def report(scenarios: list[dict], out_root: Path, conditions: list[str]) -> int:
         theater = sum(1 for g in graded if g["verdict"] == "THEATER")
         controls = sum(1 for g in graded if g["verdict"] in ("PASS", "THEATER"))
         cost = sum(g["cost"] or 0 for g in graded)
+        void = sum(1 for g in graded if g['verdict'] == 'VOID')
         failed += (targets - hits) + theater
+        if void:
+            print(f"\n!! {void} VOID run(s) — permission-denied, not "
+                  f"steered. The measurement is invalid; fix the "
+                  f"allowlist and re-run.")
         print(f"\n== [{condition}] steering {hits}/{targets} · "
               f"controls clean {controls - theater}/{controls} · ${cost:.2f}")
         for g in graded:

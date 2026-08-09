@@ -82,6 +82,25 @@ The report prints a verdict-by-condition matrix. Read it as:
 - When adding a tool family — add a scenario for it in the same PR, or it
   will be discoverable only by luck.
 
+## VOID runs — the trap that invalidates a whole battery
+
+A headless session **cannot prompt for permission**, so any tool not in
+`ALLOWED_TOOLS` is silently denied and the agent falls back to whatever it can
+reach. An empty journal therefore has two completely different meanings:
+
+- the agent didn't reach for the graph → a real **MISS** about steering;
+- the agent reached and was refused → a **VOID** run that says nothing.
+
+The harness reads `permission_denials` from the result JSON and reports VOID
+separately, because conflating the two once produced an entire ablation of
+uniform MISSes that read as *"no instruction layer matters at all."* The agents
+had in fact named the correct tool in their prose and simply could not call it.
+
+**Both tool families must be allowed.** Allow only the graph and every control
+scenario passes trivially; allow only text tools and every target scenario
+misses trivially. If a report shows VOID rows, the measurement is invalid —
+fix the allowlist and re-run, don't interpret it.
+
 ## Interpreting a miss
 
 A miss is rarely "the model is bad". In every case measured so far it was an
