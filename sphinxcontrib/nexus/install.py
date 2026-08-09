@@ -87,13 +87,23 @@ def iter_payloads(
     package_root: Path,
     skills_target: Path,
     rules_target: Path | None,
+    commands_target: Path | None = None,
+    hooks_target: Path | None = None,
 ) -> Iterator[Payload]:
     """Every bundled file to install, with its destination.
 
-    Skills come from ``<package>/skills/<name>/**`` and land under
-    ``skills_target``. The routing rule comes from ``<package>/rules/``
-    and lands under ``rules_target`` when one is given — it is an
-    always-on context cost, so callers may decline it.
+    Four kinds, in ascending order of how hard they push:
+
+    * **skills** — pulled on demand when the agent recognises the task;
+    * **rules** — always-on routing guidance (a context cost, so
+      declinable);
+    * **commands** — slash commands whose ``!`` lines execute at
+      invocation and inject real findings;
+    * **hooks** — scripts a project can wire to fire unprompted.
+
+    The last two exist because steering is probabilistic and injection
+    is not. For drift that no build step warns about, a finding pushed
+    into context beats an agent that has to be asked to look.
     """
     skills_src = package_root / "skills"
     if skills_src.is_dir():
@@ -110,13 +120,19 @@ def iter_payloads(
                     dest=skills_target / rel,
                 )
 
-    rules_src = package_root / "rules"
-    if rules_target is not None and rules_src.is_dir():
-        for item in sorted(rules_src.glob("*.md")):
+    for kind, target, pattern in (
+        ("rules", rules_target, "*.md"),
+        ("commands", commands_target, "*.md"),
+        ("hooks", hooks_target, "*.sh"),
+    ):
+        src = package_root / kind
+        if target is None or not src.is_dir():
+            continue
+        for item in sorted(src.glob(pattern)):
             yield Payload(
-                key=f"rules/{item.name}",
+                key=f"{kind}/{item.name}",
                 source=item,
-                dest=rules_target / item.name,
+                dest=target / item.name,
             )
 
 
@@ -209,6 +225,11 @@ def install_payload(payload: Payload, *, backup: bool) -> None:
     if backup and payload.dest.exists():
         shutil.copy2(payload.dest, payload.dest.with_suffix(payload.dest.suffix + ".bak"))
     shutil.copy2(payload.source, payload.dest)
+    # A hook that arrives non-executable fails silently at fire time,
+    # which is the worst failure mode for an ambient channel: no output
+    # and no error.
+    if payload.dest.suffix == ".sh":
+        payload.dest.chmod(payload.dest.stat().st_mode | 0o111)
 
 
 def write_manifest(

@@ -557,6 +557,40 @@ def main(argv: list[str] | None = None) -> int:
         help="Max results (default: 50; 0 = all).",
     )
 
+    # --- dead-references ---
+    # Deliberately offers a --format text mode, unlike its JSON-only
+    # siblings: this is the command projects inject into an agent's
+    # context with `!` (slash commands) or a hook. Pushing the FINDING
+    # beats steering an agent to go look for it — steering is
+    # probabilistic, injection is not, and a dead reference draws no
+    # Sphinx warning at any severity, so nothing else raises it.
+    deadref_cmd = sub.add_parser(
+        "dead-references",
+        help="Docs/docstrings citing symbols or equation labels that no "
+             "longer exist (Sphinx renders these as plain text, no warning)",
+    )
+    deadref_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    deadref_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max dead targets, most-referenced first (default: 50; 0 = all).",
+    )
+    deadref_cmd.add_argument(
+        "--format", choices=("json", "text"), default="json",
+        help="'text' is a compact human/agent-readable digest for context "
+             "injection; 'json' is the full payload with every site.",
+    )
+    deadref_cmd.add_argument(
+        "--quiet-when-clean", action="store_true",
+        help="Print nothing when there are no dead references. For hooks "
+             "and `!` injection: an empty finding must cost zero context.",
+    )
+    deadref_cmd.add_argument(
+        "--exit-code", action="store_true",
+        help="Exit 1 when any dead reference is found, so this can gate CI.",
+    )
+
     # --- protocol-conformers ---
     pc_cmd = sub.add_parser(
         "protocol-conformers",
@@ -865,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
         "twin-paths": _run_twin_paths,
         "discriminations": _run_discriminations,
         "dead-functions": _run_dead_functions,
+        "dead-references": _run_dead_references,
         "protocol-conformers": _run_protocol_conformers,
         "runtime-ingest": _run_runtime_ingest,
         "runtime-runs": _run_runtime_runs,
@@ -903,8 +938,10 @@ def _load_query(db_path: Path) -> GraphQuery:
     return GraphQuery(load_sqlite(db_path))
 
 
-def _setup_targets(args: argparse.Namespace) -> tuple[Path, Path | None, Path]:
-    """Resolve (skills_target, rules_target, manifest_path).
+def _setup_targets(
+    args: argparse.Namespace,
+) -> tuple[Path, Path | None, Path | None, Path | None, Path]:
+    """Resolve targets for (skills, rules, commands, hooks, manifest).
 
     ``rules_target`` is ``None`` when the caller declined the always-on
     routing rule, or when installing globally — a rule that auto-loads
@@ -922,9 +959,16 @@ def _setup_targets(args: argparse.Namespace) -> tuple[Path, Path | None, Path]:
         skills_target = claude_dir / "skills"
 
     rules_target: Path | None = claude_dir / "rules"
+    commands_target: Path | None = claude_dir / "commands"
+    hooks_target: Path | None = claude_dir / "hooks"
     if getattr(args, "no_rules", False) or args.global_install:
         rules_target = None
-    return skills_target, rules_target, claude_dir / MANIFEST_NAME
+    # Commands and hooks are project-shaped (they reference the
+    # project's graph path), so a global install never places them.
+    if args.global_install:
+        commands_target = hooks_target = None
+    return (skills_target, rules_target, commands_target, hooks_target,
+            claude_dir / MANIFEST_NAME)
 
 
 def _run_setup(args: argparse.Namespace) -> int:
@@ -947,9 +991,13 @@ def _run_setup(args: argparse.Namespace) -> int:
         )
         return 1
 
-    skills_target, rules_target, manifest_path = _setup_targets(args)
+    (skills_target, rules_target, commands_target, hooks_target,
+     manifest_path) = _setup_targets(args)
     manifest = load_manifest(manifest_path)
-    payloads = list(iter_payloads(package_root, skills_target, rules_target))
+    payloads = list(iter_payloads(
+        package_root, skills_target, rules_target,
+        commands_target, hooks_target,
+    ))
     statuses = {p.key: classify(p, manifest) for p in payloads}
 
     # --- read-only modes -------------------------------------------------
@@ -1031,6 +1079,18 @@ def _run_setup(args: argparse.Namespace) -> int:
                 print(f"  {payload.dest.name}")
             print("  (reference it from CLAUDE.md so it auto-loads; "
                   "skip with --no-rules)")
+
+    cmd_files = [p for p in written if p.key.startswith("commands/")]
+    hook_files = [p for p in written if p.key.startswith("hooks/")]
+    if cmd_files or hook_files:
+        print("\nPush channels — these inject findings instead of waiting "
+              "to be asked:")
+        for payload in cmd_files:
+            print(f"  /{payload.dest.stem}  (slash command; its `!` lines "
+                  f"run at invocation)")
+        for payload in hook_files:
+            print(f"  {payload.dest}  (wire into .claude/settings.json; "
+                  f"see the header)")
 
     if skipped:
         print(f"\nSKIPPED {len(skipped)} locally-modified file(s) — not "
@@ -1439,6 +1499,47 @@ def _run_discriminations(args: argparse.Namespace) -> int:
         min_sites=args.min_sites, exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
+
+
+def _run_dead_references(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+
+    q = _load_query(args.db)
+    result = q.dead_references()
+    dead = result.dead if args.limit <= 0 else result.dead[: args.limit]
+
+    if args.format == "json":
+        payload = to_dict(result)
+        payload["dead"] = payload["dead"][: len(dead)]
+        _json_out(payload)
+        return 1 if (args.exit_code and result.total_dead) else 0
+
+    if not result.total_dead:
+        if not args.quiet_when_clean:
+            print("No dead documentation references.")
+        return 0
+
+    # Text mode leads with the imperative, not the count: this text is
+    # read by an agent that did not ask for it, so it has to say what
+    # the finding IS and what to do about it before any detail.
+    print(
+        f"DEAD DOCUMENTATION REFERENCES — {result.total_dead} target(s) "
+        f"referenced from {result.total_sites} site(s). These docs cite "
+        f"code or equations that no longer exist; Sphinx renders them as "
+        f"plain text with no warning. Each needs updating or removing."
+    )
+    for entry in dead:
+        print(f"\n  {entry.target_name}  [{entry.kind}] "
+              f"— {entry.site_count} site(s)")
+        for site in entry.sites[:4]:
+            where = site.source.file_path or site.source.docname or ""
+            line = f":{site.source.lineno}" if site.source.lineno else ""
+            print(f"      {site.source.id}{f'  ({where}{line})' if where else ''}")
+        if entry.site_count > 4:
+            print(f"      … and {entry.site_count - 4} more")
+    if result.total_dead > len(dead):
+        print(f"\n  … and {result.total_dead - len(dead)} more target(s)")
+    return 1 if args.exit_code else 0
 
 
 def _run_dead_functions(args: argparse.Namespace) -> int:

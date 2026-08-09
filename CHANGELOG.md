@@ -63,6 +63,31 @@ model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
 - **Stale-line references removed** from the skills, matching the
   file-brief change above.
 
+### Added — push channels: inject the finding, don't hope it gets asked for
+
+Steering an agent to *go looking* is probabilistic — measured here, whether a
+tool gets reached depends on how the user happens to phrase the request, and
+an agent nobody asks will never look. A dead documentation reference draws no
+Sphinx warning at any severity, so if the agent doesn't look, **nothing**
+reports it. For that class of finding, push beats pull.
+
+- **`nexus dead-references` CLI** — the tool shipped as MCP-only, unlike every
+  sibling (`twin-paths`, `dead-functions`, `staleness`), which also made it
+  unreachable from the `!` and hook mechanisms. Adds `--format text` (a digest
+  written to be read by an agent that did not ask for it: it leads with what
+  the finding is and what to do about it), `--quiet-when-clean` (a clean
+  project must cost zero context, or the channel trains agents to skim past
+  it), and `--exit-code` to gate CI.
+- **`/doc-health` slash command** — its `!` lines execute at invocation, so
+  the findings are already in context. It does not tell the agent to run a
+  tool; that would inherit the same probabilistic steering it exists to bypass.
+- **`nexus-dead-refs.sh` hook** — wire to `SessionStart` (or `PostToolUse` on
+  edits) so every session opens knowing the current dead references. Same
+  quiet-exit-0 failure contract as the file-brief hook.
+- `nexus setup` installs both, and marks hooks executable — a hook that lands
+  non-executable fails silently at fire time, the worst failure mode for an
+  ambient channel.
+
 ### Added — `nexus setup` treats the consumer as a peer, not a cache
 
 Instruction files ship downstream and then evolve there against real

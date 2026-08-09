@@ -11,6 +11,7 @@ harvest loop possible.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -213,6 +214,59 @@ def test_binary_payload_is_copied_not_diffed(bundle, targets):
 # ---------------------------------------------------------------------------
 # The shipped bundle itself
 # ---------------------------------------------------------------------------
+
+
+def test_hook_is_installed_executable(bundle, targets):
+    """A hook that lands non-executable fails silently at fire time —
+    no output, no error — which is the worst failure mode for a channel
+    whose whole job is to speak up unprompted."""
+    (bundle / "hooks").mkdir()
+    script = bundle / "hooks" / "demo-hook.sh"
+    script.write_text("#!/bin/bash\necho hi\n")
+    script.chmod(0o644)
+    skills_target, rules_target, _ = targets
+    payload = next(
+        p for p in iter_payloads(
+            bundle, skills_target, rules_target,
+            hooks_target=skills_target.parent / "hooks",
+        )
+        if p.key.startswith("hooks/")
+    )
+    install_payload(payload, backup=False)
+    assert os.access(payload.dest, os.X_OK)
+
+
+def test_real_bundle_ships_push_channels(tmp_path):
+    """Steering is probabilistic; injection is not. The command and the
+    hook are how a finding reaches an agent that never thought to ask,
+    so their absence is a functional regression, not a docs one."""
+    from pathlib import Path
+
+    import sphinxcontrib.nexus as nexus_pkg
+
+    package_root = Path(nexus_pkg.__file__).parent
+    keys = {
+        p.key for p in iter_payloads(
+            package_root, tmp_path / "skills", tmp_path / "rules",
+            tmp_path / "commands", tmp_path / "hooks",
+        )
+    }
+    assert "commands/doc-health.md" in keys
+    assert "hooks/nexus-dead-refs.sh" in keys
+
+
+def test_doc_health_command_injects_rather_than_asks(tmp_path):
+    """The command must EXECUTE the query (a `!` line), not instruct the
+    agent to run a tool — otherwise it is just another skill and inherits
+    the same probabilistic steering it exists to bypass."""
+    from pathlib import Path
+
+    import sphinxcontrib.nexus as nexus_pkg
+
+    text = (Path(nexus_pkg.__file__).parent
+            / "commands" / "doc-health.md").read_text()
+    assert "!`nexus dead-references" in text
+    assert "allowed-tools:" in text
 
 
 def test_real_bundle_ships_skills_and_the_routing_rule(tmp_path):
