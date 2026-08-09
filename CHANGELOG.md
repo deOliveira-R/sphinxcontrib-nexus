@@ -4,6 +4,38 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Changed — ported to the mcp 2.x server API
+
+`mcp` 2.0.0 removed `mcp.server.fastmcp`. The previous release bounded the
+dependency `<2` to stop shipping a dead server; this completes the move.
+
+- `server.py` now builds on `mcp.server.mcpserver.MCPServer` (the `FastMCP`
+  successor). The decorator surface is unchanged — `@_mcp.tool()`,
+  `@_mcp.resource(uri)`, `Context`, `ctx.session` — so the 40 tools, 4
+  resources and the journaling wrapper port without restructuring. Verified:
+  `functools.wraps` transparency still holds, and `Context` parameters are
+  still excluded from public tool schemas.
+- **Breaking upstream rename**: `Tool.inputSchema` → `Tool.input_schema`.
+  Only the registry drift-guard read it.
+- Dependency floor is now `mcp>=2.0`, pinned to the import by a test — the
+  floor and the import are one fact stored twice, and a future bump must
+  move both.
+
+### Added — the guards that would have caught this two months earlier
+
+- **`tests/test_server_spawn.py`** launches the server as a real subprocess
+  and completes a JSON-RPC handshake. Every other server test inspects the
+  registry in-process, which is precisely why mcp 2.0.0 shipped a dead
+  server undetected: the package imported fine, the CLI worked, and no test
+  ever launched the process a client launches. Verified to fail when pointed
+  at the removed module. Unmarked and unskippable — a test you can skip is a
+  test that will be skipped on the day it matters.
+- **`.github/workflows/upstream-deps.yml`** installs with the newest
+  resolvable dependencies weekly and opens (or comments on) an issue when
+  that fails. CI runs only on pushes and PRs, so a break arriving through
+  the resolver rather than a commit is invisible by construction — this one
+  sat from 2026-06-17 to 2026-08-09.
+
 ### Dead-reference detection — the silent doc-drift gate
 
 A deleted or renamed symbol leaves its doc references behind, and Sphinx
