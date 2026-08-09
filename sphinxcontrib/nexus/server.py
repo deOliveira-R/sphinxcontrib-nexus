@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 from sphinxcontrib.nexus._serialize import (
     assemble_communities,
@@ -51,7 +51,7 @@ from sphinxcontrib.nexus.workspace import (
 
 logger = logging.getLogger(__name__)
 
-_mcp = FastMCP("nexus", instructions=(
+_mcp = MCPServer("nexus", instructions=(
     "Knowledge graph server for code and documentation. "
     "Query relationships between functions, classes, equations, "
     "theory pages, and external dependencies."
@@ -64,7 +64,8 @@ _query: GraphQuery | None = None
 _workspace: Workspace | None = None
 _db_mtime: float = 0.0
 
-# Reload coordination: FastMCP may dispatch tool calls concurrently,
+# Reload coordination: the MCP server may dispatch tool calls
+# concurrently,
 # and the mid-reload state (new ``_query`` assigned but ``_db_mtime``
 # not yet updated) is short but real. The lock serializes the
 # reload path so a second concurrent caller sees the finalized
@@ -85,7 +86,7 @@ def _reload_if_stale() -> None:
 
     Thread-safe: a module-level lock serializes the mtime check
     and the atomic ``_query`` / ``_db_mtime`` swap so concurrent
-    FastMCP tool dispatches can't observe a half-updated state.
+    MCP tool dispatches can't observe a half-updated state.
     """
     global _query, _db_mtime
     if _workspace is None:

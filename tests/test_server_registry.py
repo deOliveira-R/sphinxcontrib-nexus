@@ -1,7 +1,7 @@
 """README ↔ MCP registry drift guard.
 
 The tool count and tool list in README.md have drifted from the
-FastMCP registry repeatedly (serve's help said 16, a consumer's docs
+MCP registry repeatedly (serve's help said 16, a consumer's docs
 said 20, README said 27 — all at the same time). The registry is the
 single source of truth; this module pins the README to it so the next
 added/renamed tool fails CI instead of silently drifting.
@@ -83,9 +83,9 @@ def test_skill_reference_documents_every_tool():
 
 def test_journal_wrapper_preserves_parameter_schemas():
     """The nexus_tool journaling wrapper must stay schema-transparent:
-    FastMCP introspects through functools.wraps/__wrapped__, so tool
+    MCPServer introspects through functools.wraps/__wrapped__, so tool
     parameters survive and Context params stay excluded."""
-    schemas = {t.name: t.inputSchema for t in asyncio.run(_mcp.list_tools())}
+    schemas = {t.name: t.input_schema for t in asyncio.run(_mcp.list_tools())}
     assert set(schemas["impact"]["properties"]) == {
         "target", "direction", "max_depth", "edge_types", "limit_per_depth",
     }

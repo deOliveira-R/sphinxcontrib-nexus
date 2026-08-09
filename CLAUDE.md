@@ -39,7 +39,8 @@ sphinxcontrib/nexus/
                         stamping, `git worktree` discovery
     export.py         — JSON + SQLite (FTS5) export/import,
                         read_sqlite_metadata (metadata peek without full load)
-    server.py         — FastMCP server; module-global state = ONE workspace
+    server.py         — MCP server (mcp 2.x `MCPServer`); module-global
+                        state = ONE workspace
                         per server process (one agent session); mtime-based
                         auto-reload under _reload_lock
     cli.py            — `nexus` CLI (setup, analyze, serve, workspaces, …)
@@ -70,7 +71,7 @@ sphinxcontrib/nexus/
 
 ## Drift surfaces (guarded by tests — keep them green)
 
-- README "MCP Tools (N)" header and tool bullets ↔ FastMCP registry
+- README "MCP Tools (N)" header and tool bullets ↔ MCP registry
   (`tests/test_server_registry.py`).
 - Version is single-sourced in `sphinxcontrib/nexus/__init__.py`
   (`__version__`); `pyproject.toml` declares it `dynamic` and flit

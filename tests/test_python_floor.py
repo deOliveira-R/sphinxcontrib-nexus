@@ -83,18 +83,37 @@ def test_sources_parse_on_the_declared_python_floor():
     )
 
 
-def test_mcp_dependency_excludes_the_release_that_removed_fastmcp():
-    """`mcp` 2.0.0 removed `mcp.server.fastmcp`, which `server.py` imports.
+def test_mcp_floor_matches_the_api_server_targets():
+    """`server.py` targets the mcp **2.x** API.
 
-    An unpinned `mcp>=1.0` resolves to 2.x and produces an install whose
-    MCP server cannot start — every tool silently unavailable, with the
-    failure surfacing only at server spawn. Keep the bound until the
-    server is ported to the 2.x API.
+    History worth keeping: 2.0.0 removed `mcp.server.fastmcp`, and for
+    two months an unpinned `mcp>=1.0` resolved to it and shipped installs
+    whose MCP server could not start — the package imports fine and the
+    CLI works, so the failure surfaced only at server spawn. The server
+    is now ported to `mcp.server.mcpserver.MCPServer`, which does not
+    exist before 2.0, so the FLOOR is what keeps the two in step.
     """
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r'"mcp>=[^"]*"', text)
+    match = re.search(r'"mcp>=(\d+)\.(\d+)[^"]*"', text)
     assert match, "mcp dependency not found in pyproject.toml"
-    assert "<2" in match.group(0), (
-        "mcp must stay bounded below 2.0 while server.py imports "
-        "mcp.server.fastmcp, which 2.0.0 removed"
+    major = int(match.group(1))
+    assert major >= 2, (
+        "server.py imports mcp.server.mcpserver, which requires mcp>=2.0; "
+        f"pyproject declares {match.group(0)}"
+    )
+
+
+def test_server_imports_the_api_the_dependency_promises():
+    """The import in `server.py` and the floor in `pyproject.toml` are one
+    fact stored twice. This pins them together so a future bump cannot
+    move one without the other."""
+    source = (ROOT / "sphinxcontrib" / "nexus" / "server.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from mcp.server.mcpserver import" in source, (
+        "server.py no longer imports the mcp 2.x server API — update "
+        "the dependency floor in pyproject.toml in the same commit"
+    )
+    assert "fastmcp" not in source, (
+        "mcp.server.fastmcp was removed in mcp 2.0.0"
     )
