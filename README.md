@@ -241,6 +241,43 @@ Installed via `nexus setup`. Each skill triggers on natural language:
 | `nexus-cli` | "Analyze the codebase", "Start the server" |
 | `behavioral-auto-regression` | Break-glass: an agent grepped for a structural question |
 
+## Steering Evals
+
+Skills and the routing rule are instructions whose runtime is a language model, so whether they work is an **empirical question with a moving answer**. `evals/` measures it: each scenario is a natural-language *symptom* a user would type, run as an isolated headless session, graded on the **journal** — which tools were actually called — not on how good the answer sounds.
+
+```bash
+./evals/run_evals.py --project . --model haiku      # measure
+./evals/scorecard.py --results runs/haiku:haiku     # aggregate view
+```
+
+### Prompt style decides what a score means
+
+| style | prompt | measures |
+|---|---|---|
+| `direct` | paraphrases the tool's own description | keyword matching — **a floor** |
+| `indirect` | describes the situation, never names the concept | routing inference |
+| `proactive` | doesn't ask at all; using the tool is part of the job | initiative |
+| `control` | has a correct **non**-graph answer | over-steering (compliance theater) |
+
+A battery of direct prompts scores near-perfectly and predicts nothing — `dead_references` is reached by a direct prompt regardless of what instructions are installed, because the words line up.
+
+### Current steering capability (2026-08-09, nexus 0.15.0)
+
+Fraction of runs reaching an intended tool. Empty journal counts as a miss; only permission-denied runs are excluded.
+
+| model | direct (floor) | indirect | proactive | controls |
+|---|---|---|---|---|
+| Fable 5 | 11/11 | — | — | — |
+| Opus | 15/15 | — | — | — |
+| Sonnet | 15/16 | — | — | — |
+| Haiku 4.5 | 18/22 | 6/9 | 4/6 | 3/3 |
+
+The situational rows are measured on Haiku deliberately: **weak models fail first**, so they localize instruction gaps most cheaply, and an instruction that steers Haiku steers everything above it. Controls are clean everywhere — the instructions do not push agents into using the graph where `grep`/`Read` is correct.
+
+The gap between the direct and situational columns is the honest measure of steering, and it is why findings that **must not be missed** are pushed rather than steered — `/doc-health` and the `SessionStart` hook inject dead-reference findings deterministically instead of hoping an agent asks.
+
+Ablation against a no-instructions arm gives **instructed 3/6 vs bare 0/6** on situational scenarios: eighteen bare runs produced zero correct selections, so nothing in the instruction surface is redundant with model priors. Per-round records, self-grades, and what changed as a result live in [`evals/BASELINE.md`](evals/BASELINE.md); the authoring methodology and its pitfall catalogue live in `.claude/skills/eval-authoring/`.
+
 ## V&V Integration
 
 Nexus turns pytest markers, RST directives, and repository-level YAML into typed verification edges in the graph, so audit tools can answer "which equations are actually verified, and by which tests, at what V&V level?" without hand-wiring.

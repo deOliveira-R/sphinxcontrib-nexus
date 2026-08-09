@@ -203,6 +203,29 @@ def journal_tools(out: Path) -> list[str]:
     return tools
 
 
+def grade_answer(scenario: dict, result: dict) -> tuple[str, list[str]]:
+    """Grade the ANSWER TEXT against required concepts.
+
+    For scenarios whose subject is guidance rather than tool selection —
+    "does this skill make an agent diagnose the situation correctly?" —
+    there is no journal to read, because the deliverable IS the prose.
+
+    ``expect`` is a list of OR-groups; every group must be satisfied by
+    some alternative. Groups rather than a flat list because a correct
+    diagnosis can be phrased several ways ("leaked", "keyword overlap",
+    "the prompt names the answer") and scoring on one exact wording
+    measures vocabulary, not understanding — the same mistake as a
+    direct-style prompt.
+    """
+    text = (result.get("result") or "").lower()
+    missing: list[str] = []
+    for group in scenario.get("expect") or []:
+        alternatives = [group] if isinstance(group, str) else group
+        if not any(alt.lower() in text for alt in alternatives):
+            missing.append("|".join(alternatives)[:40])
+    return ("HIT" if not missing else "MISS"), missing
+
+
 def grade_one(scenario: dict, out: Path) -> dict:
     """Verdict for one run. ``session_briefing`` is discounted as an
     ambient warm-up call, never the answer to a question."""
@@ -218,7 +241,13 @@ def grade_one(scenario: dict, out: Path) -> dict:
     forbidden = set(scenario.get("forbidden") or [])
 
     denied = denied_tools(out)
-    if denied and not substantive:
+    if scenario.get("expect"):
+        if not (result.get("result") or "").strip():
+            verdict, detail = "VOID", ["no answer text"]
+        else:
+            verdict, missing = grade_answer(scenario, result)
+            detail = missing
+    elif denied and not substantive:
         # Blocked, not steered — says nothing about the instructions.
         verdict, detail = "VOID", denied[:4]
     elif forbidden:

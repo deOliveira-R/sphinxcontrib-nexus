@@ -78,6 +78,53 @@ non-unanimous at n=3, which is why only the unanimous cells (`parallel-work`,
 - Nothing was deleted from the instruction surface: bare 0/6 killed the
   redundancy hypothesis.
 
+---
+
+## 2026-08-09 · Opus · meta-eval of the `eval-authoring` skill
+
+Does the skill make an agent *diagnose* correctly? Six situations that actually
+occurred while building this battery — each first diagnosed wrong — graded on
+whether the answer contains the diagnosis the reference teaches. Eval authoring
+is never delegated below Opus, so no Sonnet/Haiku arm. 3 replicates.
+
+| scenario | the trap it poses | with skill | without |
+|---|---|---|---|
+| `meta-leak` | "it hit with no instructions → self-explanatory" | **HIT** | **MISS 3/3** |
+| `meta-optimise` | "reword the prompt until it passes" | **HIT** | **MISS 3/3** |
+| `meta-harness` | "every condition MISSed → nothing matters" | HIT | HIT |
+| `meta-noise` | "two passes disagree → trust the newer" | HIT | HIT? |
+| `meta-placement` | "it's critical → shout it in a skill" | HIT | HIT |
+| `meta-controls` | "everything passes → we're done" | HIT | HIT |
+| **aggregate** | | **6/6** | 4/6 |
+
+**The skill's value concentrates on the two least intuitive traps.** Opus
+already knows to check the harness, use replicates, prefer deterministic
+injection for critical findings, and want controls. What it does *not* supply
+unaided is the **correlation/causation framing** of a leaked prompt, and the
+discipline of **fixing the instructions rather than the eval**. Those two are
+the reason the skill exists.
+
+### Self-grade of this meta-eval — two defects it caught in itself
+
+```
+flake rate      1/12 — acceptable
+situational mix 6/6 indirect+proactive — acceptable
+NO CONTROLS — over-steering is undetectable
+NO BARE ARM — cannot separate steering from keyword match
+```
+
+Both warnings are fair and neither was noticed before the tool said so:
+
+1. **No control scenario** — nothing tests whether the skill causes
+   *over*-application (e.g. demanding a 5-condition ablation for a one-line
+   docstring tweak). Add one next round.
+2. **The "without" arm was not bare.** It kept `evals/README.md` and
+   `BASELINE.md`, which carry much of the methodology — including the literal
+   phrase *"check the harness first"*, which is exactly what `meta-harness`
+   tests. So 4/6 is inflated and those four rows are **not** evidence of model
+   priors. The two clean wins stand, because `correlation`/`causation` and
+   `fix the instructions` appear in no other file. Logged as pitfall #10.
+
 ### Method notes worth keeping
 
 Per-cell verdicts are still noisy at n=3 — `dead-docs` has flipped between
