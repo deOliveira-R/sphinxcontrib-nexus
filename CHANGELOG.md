@@ -73,6 +73,30 @@ flailing calls to 1), but the headline scores are inflated by prompt design.
 - **Stale-line references removed** from the skills, matching the
   file-brief change above.
 
+### Changed — instructions now name symptoms, not tools (measured)
+
+Replicated ablation on Haiku (clean room from `nexus setup` only, real graph,
+3 replicates/cell, zero permission denials): **instructed 3/6 vs bare 0/6.**
+Eighteen bare runs produced zero correct tool selections, so no part of the
+instruction surface can be trimmed on the theory that models already know.
+
+The gap was that every table described tools by what they ARE ("copy-paste
+twins that have drifted"), which only fires when the user already knows the
+vocabulary. Nobody says "I suspect a twin path" — they say "two people built
+this separately". `nexus-exploring` and the routing rule now carry:
+
+- a **what-the-user-actually-says** table mapping complaints to tools
+  ("we keep changing these classes in lockstep", "things live in surprising
+  places", "the docs feel out of date");
+- **sweeps that are part of the job, not a request** — after any delete or
+  rename, before a release, and on any health-check or onboarding review.
+
+Measured effect: `parallel-work` ("two people built these independently")
+went 0/3 → **3/3** reaching `twin_paths`; `onboarding-health` → **3/3**, with
+every replicate sweeping the entire smell family. Controls stayed clean in
+both conditions — no compliance theater. Baseline recorded in
+`evals/BASELINE.md` for comparison after the next model release.
+
 ### Added — push channels: inject the finding, don't hope it gets asked for
 
 Steering an agent to *go looking* is probabilistic — measured here, whether a
