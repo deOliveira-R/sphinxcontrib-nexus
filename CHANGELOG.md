@@ -60,11 +60,48 @@ model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
   names `dead_references`, `verification_gaps`, and `verification_audit` —
   previously absent from the skill that owns doc-drift questions.
 - **`nexus-guide` routing table** covers smells and runtime.
-- **"Replaces Grep" softened to "complements Grep"** — adopted from the
-  consuming project's own local edit (which the next `nexus setup` would
-  have silently clobbered; see issue #29).
 - **Stale-line references removed** from the skills, matching the
   file-brief change above.
+
+### Added — harvested from the consuming project's skill evolution
+
+Skills are shipped downstream by `nexus setup` and then *evolve there*
+against real sessions. Diffing the consumer's copies against the shipped
+ones found deliberate downstream development worth bringing upstream —
+this direction of sync had never been done, and the shipped copies were
+wrong in ways only real use reveals:
+
+- **"Replaces Grep" is retired across all five skills** that carried it.
+  The original strong language existed to fight a system-prompt directive
+  (`ALWAYS use Grep for search tasks`) that **no longer exists** — the
+  standalone Grep/Glob tools were removed from the probed scaffolds
+  (verified 2026-06-14) and models route freely. The overclaim now costs
+  precision instead of buying it, so it becomes "use Nexus for structural
+  queries; use Grep freely for text search."
+- **`behavioral-auto-regression` is demoted to a break-glass diagnostic**
+  and carries the historical note above. Its old premise (reclassify code
+  exploration as "not a search task") is obsolete. What replaces it: the
+  dominant live cause of Nexus-avoidance is agents treating **deferred**
+  `mcp__nexus__*` tools as unavailable — one `ToolSearch("select:…")`
+  loads them — plus the opposite failure the old skill never named,
+  over-using Nexus where a plain `Read`/`grep` was correct.
+- **New `nexus-elegance` skill**: the map from each structural-review axis
+  to the graph query that corroborates it, with a **false-positive table**
+  — when a graph signal is NOT a finding (symmetric apply/adjoint pairs,
+  retained test oracles, decorated indirectly-invoked functions,
+  method-name-only protocol matches, stale-graph phantom provenance).
+  This is the connective tissue the smell family lacked: the tools were
+  discoverable but nothing said how to avoid false findings with them.
+  The graph is a witness, never the accuser.
+- **`nexus-guide` gains a route-by-question-shape table** including when
+  grep/`Read` is the *correct* choice, and the deferred-tools note.
+
+### Fixed — skill reference drift
+
+- `reference.md` claimed "Tools (35)" against a registry of 40 and
+  documented neither `node_at` nor `workspaces`/`use_workspace`. Added,
+  corrected, and **pinned by a new drift-guard test** alongside the
+  existing README↔registry guard.
 
 ### Changed — usage-evidence tunings (issue #15)
 
