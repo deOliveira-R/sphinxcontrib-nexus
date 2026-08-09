@@ -43,6 +43,29 @@ docstring refs) resolve to their new homes instead of being reported.
   `pkg.core.thing.Thing` even when the module paths don't overlap, which
   the leaf-name fold could never prove.
 
+### Changed — skill steering, from a measured tool-selection eval
+
+A 14-scenario headless battery (one `claude -p` session per scenario against
+the real ORPHEUS graph, journaling every MCP call) measured whether an agent
+reaches the *intended* tool from a natural-language symptom. Run on three
+model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
+
+- **`nexus-exploring` gains a "Symptom → tool" table.** The
+  architecture-smell family (`dead_functions`, `twin_paths`,
+  `discriminations`, `protocol_conformers`, `native_place`,
+  `bridges`/`communities`/`god_nodes`) and the whole `runtime_*` family
+  existed only in `reference.md` tables — no SKILL.md body named them, and
+  the skill description matched no smell-hunting phrasing.
+- **`nexus-verification` documents the two kinds of doc drift**, and now
+  names `dead_references`, `verification_gaps`, and `verification_audit` —
+  previously absent from the skill that owns doc-drift questions.
+- **`nexus-guide` routing table** covers smells and runtime.
+- **"Replaces Grep" softened to "complements Grep"** — adopted from the
+  consuming project's own local edit (which the next `nexus setup` would
+  have silently clobbered; see issue #29).
+- **Stale-line references removed** from the skills, matching the
+  file-brief change above.
+
 ### Changed — usage-evidence tunings (issue #15)
 
 Seven weeks of real ORPHEUS sessions (806 journaled tool calls, 842 injected

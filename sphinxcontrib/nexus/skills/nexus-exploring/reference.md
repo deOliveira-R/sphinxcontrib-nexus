@@ -55,7 +55,9 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 | `provenance_chain` | Citation → equation → code chain | `node_id` |
 | `verification_coverage` | V&V status map | `status_filter` |
 | `verification_audit` | Complete V&V audit (single call) | — |
-| `staleness` | Doc-code drift | — |
+| `verification_gaps` | Untagged tests, unverified equations, missing err catchers | `module`, `level` |
+| `staleness` | Doc-code drift (git timestamps) + dead-reference summary | — |
+| `dead_references` | Docs/docstrings citing symbols or equation labels that NO LONGER EXIST (Sphinx renders these as plain text with no warning) | `limit` |
 | `session_briefing` | Session overview | — |
 | `trace_error` | Failing test → equations on path | `test_node_id` |
 | `migration_plan` | Dependency migration phases | `from_dep`, `to_dep` |

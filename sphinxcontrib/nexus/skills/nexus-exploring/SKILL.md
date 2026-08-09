@@ -1,12 +1,12 @@
 ---
 name: nexus-exploring
-description: "Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: \"How does X work?\", \"What calls this function?\", \"Show me the auth flow\", \"How does this equation connect to code?\""
+description: "Use when the user asks how code works, wants to understand architecture, trace execution flows, explore unfamiliar parts of the codebase, or hunt structural smells. Examples: \"How does X work?\", \"What calls this function?\", \"Show me the auth flow\", \"How does this equation connect to code?\", \"Find dead code / copy-paste twins / missing abstractions\", \"Which classes share an implicit interface?\""
 ---
 
 # Exploring with Nexus
 
 IMPORTANT: This skill is the dedicated tool for code exploration. It
-replaces Grep for all architecture, dependency, and flow questions.
+complements Grep — use Nexus for structural queries, Grep for text search.
 
 ## Workflow
 
@@ -52,6 +52,23 @@ shortest_path({source: "doc:theory/collision_probability", target: "py:class:num
 → Theory page → function → numpy dependency
 ```
 
+## Symptom → tool (don't hand-roll these with query/grep)
+
+Each of these questions has a DEDICATED tool that answers in one call
+what generic `query`/`context` exploration approximates in ten:
+
+| The user suspects… | Call |
+|---|---|
+| dead code / "does anything call this?" at scale | `dead_functions` |
+| copy-paste twins, parallel implementations that drifted | `twin_paths` |
+| the same string/enum tag branched on everywhere (missing type) | `discriminations` |
+| classes sharing an implicit interface without a base class | `protocol_conformers` |
+| a helper living in the wrong module (feature envy) | `native_place` |
+| docs/docstrings referencing deleted symbols or equations | `dead_references` |
+| "map the functional areas" / load-bearing hubs | `communities`, `god_nodes` |
+| the few nodes holding separate areas together | `bridges` |
+| what actually RAN (hotspots, fired-vs-static edges, coverage) | `runtime_runs` → `runtime_hotspots` / `runtime_edges` / `runtime_branches` |
+
 ## The position bridge (LSP ↔ graph)
 
 The language server and the graph are complementary: LSP resolves
@@ -83,10 +100,10 @@ chains). Bridge in BOTH directions:
   module paths are wrong-rooted-server noise, not code bugs —
   discount them.
 - Projects may wire `nexus file-brief` into an edit-time hook: a few
-  lines of graph context (callers, equations, tests, docs, staleness)
-  appear automatically after you edit a file. The node IDs in a brief
-  are copy-pasteable entry points — follow the hub ID with `context`
-  or `impact` before reshaping a file, and treat a `stale:` line as
-  "rebuild the graph before trusting positions".
+  lines of graph context (callers, equations, tests, docs) appear
+  automatically after you edit a file. The node IDs in a brief are
+  copy-pasteable entry points — follow the hub ID with `context` or
+  `impact` before reshaping a file. (The graph is always a snapshot:
+  after substantial edits, rebuild before trusting positions.)
 
 See [reference.md](reference.md) for full tool/schema/CLI reference.

@@ -10,10 +10,12 @@ description: "Use when the user asks about Nexus itself — available tools, how
 | Task | Skill |
 |------|-------|
 | "How does X work?" | `nexus-exploring` |
+| Structural smells (dead code, clones, missing types) | `nexus-exploring` |
+| "What actually ran?" (runtime overlay) | `nexus-exploring` |
 | "What breaks if I change X?" | `nexus-impact` |
 | "Why is X failing?" | `nexus-debugging` |
 | Rename / extract / refactor | `nexus-refactoring` |
-| V&V status / "Which docs are stale?" | `nexus-verification` |
+| V&V status / stale docs / dead doc references | `nexus-verification` |
 | Dependency migration | `nexus-migration` |
 | CLI commands (analyze, serve) | `nexus-cli` |
 
@@ -32,8 +34,7 @@ description: "Use when the user asks about Nexus itself — available tools, how
 - **From a node result**: AST-derived results carry
   `file_path`/`lineno` — open the source directly.
 - **From an edit**: projects may inject `nexus file-brief` output
-  via an edit-time hook — the brief's node IDs are entry points,
-  its `stale:` line means rebuild before trusting positions.
+  via an edit-time hook — the brief's node IDs are entry points.
 - **From a worktree**: after EnterWorktree, `use_workspace(<name>)`
   so queries answer from that checkout's graph.
 
