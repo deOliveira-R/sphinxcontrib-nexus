@@ -23,6 +23,30 @@ Two scenario shapes, both required:
 Controls matter as much as targets. Instructions that over-steer produce
 perfect `intended` scores and fail only here.
 
+## Prompt style is what makes or breaks validity
+
+A prompt that paraphrases a tool's own description measures **keyword
+matching, not routing judgement**. "Find docs referencing things that no
+longer exist" reaches `dead_references` with *no instructions at all*, because
+the words line up — that tells you nothing about whether the tool is reachable
+when a user describes their actual situation. A battery built only from such
+prompts produces a flattering number that predicts nothing.
+
+Every scenario carries a `style`, and scores are reported per style:
+
+| style | prompt names the concept? | what it measures |
+|---|---|---|
+| `direct` | yes, near-verbatim | a floor. Never evidence of reachability. |
+| `indirect` | no — describes the situation | inference from symptom to tool |
+| `proactive` | not asked for at all | whether the agent *hunts* rather than waits |
+
+`proactive` is the bar that matters for an agent expected to find problems on
+its own — an archivist should surface dead documentation references while
+doing a release check, without anyone asking it to.
+
+**Optimise the indirect and proactive rows.** A direct-only improvement is
+usually just a better-matching phrase, not better steering.
+
 ## Running it
 
 ```bash

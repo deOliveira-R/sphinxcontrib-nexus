@@ -5,5 +5,6 @@
   "module_a": "the quadrature subsystem (orpheus.numerics.quadrature)",
   "module_b": "the SN solver (orpheus.sn.solver)",
   "source_dir": "orpheus/sn/",
-  "known_file": "orpheus/sn/solver.py"
+  "known_file": "orpheus/sn/solver.py",
+  "deleted_symbol": "the peierls_geometry module"
 }
