@@ -35,9 +35,27 @@ nexus serve --db graph.db --project-root /path/to/project
 ### Install Skills + MCP Server for Claude Code
 
 ```bash
-nexus setup           # project-level: .mcp.json + .claude/skills/
-nexus setup --global  # user-level: ~/.claude.json + ~/.claude/skills/ (all projects)
+nexus setup           # project: .mcp.json + .claude/skills/ + .claude/rules/
+nexus setup --global  # user-level: ~/.claude.json + ~/.claude/skills/ (no rule)
+
+nexus setup --check   # what's missing / stale / locally modified (exit 1 if any)
+nexus setup --diff    # what THIS project changed — '+' lines are yours
+nexus setup --force   # overwrite local edits (keeps .bak); read --diff first
+nexus setup --no-rules  # skip the always-on routing rule
 ```
+
+`setup` also installs an always-on routing rule (`.claude/rules/nexus-tools.md`)
+carrying the question→tool table — including when `grep`/`Read` is the *correct*
+choice — and the deferred-tool gotcha (`mcp__nexus__*` surfacing as deferred is
+not unavailability; one `ToolSearch` loads them). Reference it from your
+`CLAUDE.md` so it auto-loads. Positive routing must be always-on: a skill the
+agent never invokes cannot steer it.
+
+**Your local edits are safe.** Skills evolve in the projects that use them, so
+`setup` never overwrites a locally-modified file without `--force`, and tracks
+what it wrote in `.claude/nexus-install-manifest.json`. Use `--diff` to see what
+your project changed — those edits are field-tested against real sessions and
+are often worth sending upstream.
 
 ### Ingest a Paper
 
@@ -206,21 +224,22 @@ Journaling never blocks or fails a tool call.
 | `nexus://graph/schema` | Node types, edge types, ID format |
 | `nexus://briefing` | Session briefing for AI agents |
 
-## Skills (9)
+## Skills (10)
 
 Installed via `nexus setup`. Each skill triggers on natural language:
 
 | Skill | Triggers on |
 |-------|------------|
-| `nexus-exploring` | "How does X work?", "What calls this?" |
+| `nexus-exploring` | "How does X work?", "What calls this?", "Find dead code / clones / missing types" |
 | `nexus-impact` | "Is it safe to change X?", "What tests to re-run?" |
 | `nexus-debugging` | "Why is X failing?", "Which equation is wrong?" |
 | `nexus-refactoring` | "Rename this", "Extract this into a module" |
-| `nexus-verification` | "What's verified?", "Which docs are stale?" |
+| `nexus-verification` | "What's verified?", "Which docs are stale?", "Do docs cite things that no longer exist?" |
+| `nexus-elegance` | "Review this diff for architectural decay", "Is this a twin path?" |
 | `nexus-migration` | "Plan numpy→jax migration" |
 | `nexus-guide` | "What Nexus tools are available?" |
 | `nexus-cli` | "Analyze the codebase", "Start the server" |
-| `behavioral-auto-regression` | "Agent is using Grep instead of Nexus", "Tool selection is wrong" |
+| `behavioral-auto-regression` | Break-glass: an agent grepped for a structural question |
 
 ## V&V Integration
 

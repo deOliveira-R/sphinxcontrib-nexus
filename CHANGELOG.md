@@ -63,6 +63,32 @@ model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
 - **Stale-line references removed** from the skills, matching the
   file-brief change above.
 
+### Added — `nexus setup` treats the consumer as a peer, not a cache
+
+Instruction files ship downstream and then evolve there against real
+sessions. The old `setup` overwrote unconditionally with no record of what
+it wrote, so a consumer's field-tested edit could be destroyed silently and
+upstream had no way to see it. Setup is now a two-way channel:
+
+- **Ships an always-on routing rule** (`.claude/rules/nexus-tools.md`):
+  the question→tool table including when `grep`/`Read` is the *correct*
+  choice, plus the deferred-`mcp__nexus__*` gotcha. Positive routing has to
+  be always-on — a skill the agent never invokes cannot steer it. Skipped
+  by `--no-rules`, and never installed by `--global` (a rule that
+  auto-loads into every project must be a per-project choice).
+- **`nexus setup --check`** — per-file state (missing / stale / locally
+  modified / modified-and-stale), non-zero exit when anything needs
+  attention, so it can gate CI.
+- **`nexus setup --diff`** — what the consumer changed, printed shipped→
+  installed so `+` lines are *theirs*. This is the harvest direction.
+- **Locally-modified files are never overwritten** without `--force`,
+  which still leaves a `.bak`. A local edit is often the better version.
+- Tracking is a **manifest** (`.claude/nexus-install-manifest.json`)
+  recording the hash of the *shipped* content at install time — that is
+  what separates "the consumer edited this" from "we shipped a new
+  version". Stamping a version into the files themselves would edit the
+  very content whose modification we are trying to detect.
+
 ### Added — harvested from the consuming project's skill evolution
 
 Skills are shipped downstream by `nexus setup` and then *evolve there*

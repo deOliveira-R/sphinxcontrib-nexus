@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sphinxcontrib.nexus import __version__
+from sphinxcontrib.nexus.install import MANIFEST_NAME, Payload
 
 if TYPE_CHECKING:
     from sphinxcontrib.nexus.query import GraphQuery
@@ -55,7 +56,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     setup_cmd.add_argument(
         "--global", dest="global_install", action="store_true",
-        help="Install to ~/.claude/skills/ (global, all projects).",
+        help="Install to ~/.claude/skills/ (global, all projects). "
+        "Skips the always-on routing rule.",
+    )
+    setup_cmd.add_argument(
+        "--check", action="store_true",
+        help="Report install state per file (missing / stale / locally "
+        "modified) and exit non-zero if anything needs attention. "
+        "Writes nothing.",
+    )
+    setup_cmd.add_argument(
+        "--diff", action="store_true",
+        help="Show what the consumer changed in locally-modified files "
+        "('+' lines are theirs). Writes nothing.",
+    )
+    setup_cmd.add_argument(
+        "--force", action="store_true",
+        help="Overwrite locally-modified files (keeps a .bak). Read "
+        "--diff first: a local edit is often the better version.",
+    )
+    setup_cmd.add_argument(
+        "--no-rules", dest="no_rules", action="store_true",
+        help="Do not install the always-on routing rule into "
+        ".claude/rules/.",
     )
     setup_cmd.add_argument("-v", "--verbose", action="store_true")
 
@@ -880,43 +903,143 @@ def _load_query(db_path: Path) -> GraphQuery:
     return GraphQuery(load_sqlite(db_path))
 
 
+def _setup_targets(args: argparse.Namespace) -> tuple[Path, Path | None, Path]:
+    """Resolve (skills_target, rules_target, manifest_path).
+
+    ``rules_target`` is ``None`` when the caller declined the always-on
+    routing rule, or when installing globally — a rule that auto-loads
+    into EVERY project must be an explicit per-project choice, not a
+    side effect of a global skill install.
+    """
+    if args.target:
+        skills_target = args.target.resolve()
+        claude_dir = skills_target.parent
+    elif args.global_install:
+        claude_dir = Path.home() / ".claude"
+        skills_target = claude_dir / "skills"
+    else:
+        claude_dir = Path.cwd() / ".claude"
+        skills_target = claude_dir / "skills"
+
+    rules_target: Path | None = claude_dir / "rules"
+    if getattr(args, "no_rules", False) or args.global_install:
+        rules_target = None
+    return skills_target, rules_target, claude_dir / MANIFEST_NAME
+
+
 def _run_setup(args: argparse.Namespace) -> int:
     import shutil
 
-    if args.target:
-        target = args.target.resolve()
-    elif args.global_install:
-        target = Path.home() / ".claude" / "skills"
-    else:
-        target = Path.cwd() / ".claude" / "skills"
+    from sphinxcontrib.nexus.install import (
+        classify,
+        diff_payload,
+        install_payload,
+        iter_payloads,
+        load_manifest,
+        write_manifest,
+    )
 
-    skills_src = Path(__file__).parent / "skills"
-    if not skills_src.exists():
-        print(f"Error: bundled skills not found at {skills_src}", file=sys.stderr)
+    package_root = Path(__file__).parent
+    if not (package_root / "skills").is_dir():
+        print(
+            f"Error: bundled skills not found at {package_root / 'skills'}",
+            file=sys.stderr,
+        )
         return 1
 
-    installed = []
-    for skill_dir in sorted(skills_src.iterdir()):
-        if not skill_dir.is_dir():
-            continue
-        skill_file = skill_dir / "SKILL.md"
-        if not skill_file.exists():
-            continue
-        dest_dir = target / skill_dir.name
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        # Copy all skill files (SKILL.md, reference.md, scripts/)
-        for item in skill_dir.rglob("*"):
-            if item.is_file() and item.name != ".DS_Store":
-                rel = item.relative_to(skill_dir)
-                dest_file = dest_dir / rel
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest_file)
-        installed.append(skill_dir.name)
+    skills_target, rules_target, manifest_path = _setup_targets(args)
+    manifest = load_manifest(manifest_path)
+    payloads = list(iter_payloads(package_root, skills_target, rules_target))
+    statuses = {p.key: classify(p, manifest) for p in payloads}
 
-    print(f"Installed {len(installed)} skills to {target}/")
-    for name in installed:
-        files = list((target / name).rglob("*.md"))
-        print(f"  {name}/ ({len(files)} files)")
+    # --- read-only modes -------------------------------------------------
+    if args.check or args.diff:
+        modified = [p for p in payloads
+                    if statuses[p.key].state.startswith("modified")]
+        stale = [p for p in payloads if statuses[p.key].state == "stale"]
+        missing = [p for p in payloads if statuses[p.key].state == "missing"]
+
+        if args.diff:
+            if not modified:
+                print("No locally-modified files — nothing to harvest.")
+            for payload in modified:
+                lines = diff_payload(payload)
+                if not lines:
+                    continue
+                print(f"\n=== {payload.key} "
+                      f"({statuses[payload.key].state}) ===")
+                print("".join(lines), end="")
+            if modified:
+                print(
+                    "\n'+' lines are the consumer's and not ours — the "
+                    "harvest direction. A local edit may be the better "
+                    "version; read before overwriting."
+                )
+            return 1 if modified else 0
+
+        print(f"nexus {__version__} — {len(payloads)} bundled files")
+        print(f"  skills → {skills_target}")
+        if rules_target is not None:
+            print(f"  rules  → {rules_target}")
+        for label, group in (
+            ("missing (never installed)", missing),
+            ("stale (safe to update)", stale),
+            ("locally modified (NOT overwritten without --force)", modified),
+        ):
+            if not group:
+                continue
+            print(f"\n{label}: {len(group)}")
+            for payload in group:
+                version = statuses[payload.key].installed_version or "unknown"
+                print(f"  {payload.key}  (installed from {version})")
+        if not (missing or stale or modified):
+            print("\nEverything up to date.")
+            return 0
+        if modified:
+            print("\nRun 'nexus setup --diff' to see what the consumer changed.")
+        return 1
+
+    # --- install ---------------------------------------------------------
+    written: list[Payload] = []
+    skipped: list[Payload] = []
+    for payload in payloads:
+        state = statuses[payload.key].state
+        if state.startswith("modified") and not args.force:
+            skipped.append(payload)
+            continue
+        # --force over a local edit keeps a .bak: the edit may be the
+        # better version and this tool must not be able to destroy it.
+        install_payload(
+            payload, backup=args.force and state.startswith("modified"),
+        )
+        written.append(payload)
+
+    write_manifest(manifest_path, written, manifest)
+
+    skill_names = sorted({
+        p.key.split("/")[1] for p in payloads if p.key.startswith("skills/")
+    })
+    print(f"Installed {len(written)} files "
+          f"({len(skill_names)} skills) to {skills_target}/")
+    for name in skill_names:
+        print(f"  {name}/")
+    if rules_target is not None:
+        rule_files = [p for p in written if p.key.startswith("rules/")]
+        if rule_files:
+            print(f"\nInstalled always-on routing rule to {rules_target}/")
+            for payload in rule_files:
+                print(f"  {payload.dest.name}")
+            print("  (reference it from CLAUDE.md so it auto-loads; "
+                  "skip with --no-rules)")
+
+    if skipped:
+        print(f"\nSKIPPED {len(skipped)} locally-modified file(s) — not "
+              f"overwritten:")
+        for payload in skipped:
+            print(f"  {payload.key}")
+        print("  Review with 'nexus setup --diff' (their edit may be the "
+              "better version), then 'nexus setup --force' to replace "
+              "(keeps a .bak).")
 
     # Install MCP server configuration. Paths are anchored on
     # ${CLAUDE_PROJECT_DIR} (set by Claude Code in the spawned server's
