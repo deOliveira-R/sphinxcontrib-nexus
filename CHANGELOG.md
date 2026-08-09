@@ -4,6 +4,19 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+## 0.16.0 — 2026-08-09
+
+**Headline:** a new doc-drift gate (`dead_references`, MCP tools 39 → 40), a
+`nexus setup` that treats the consuming project as a peer rather than a cache,
+push channels for findings that must not be missed, a measured eval suite for
+the instruction surface — and the mcp 2.x port that ends two months of shipping
+a server that could not start.
+
+**Upgrade note:** this release requires **`mcp>=2.0`**. Environments with an
+editable or pinned older `mcp` must upgrade (`pip install "mcp>=2.0"`), or the
+MCP server will fail at import. Installs of 0.15.0 and earlier that resolved
+`mcp` 2.x have a non-functional server and should upgrade to this release.
+
 ### Changed — ported to the mcp 2.x server API
 
 `mcp` 2.0.0 removed `mcp.server.fastmcp`. The previous release bounded the
