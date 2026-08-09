@@ -50,6 +50,16 @@ the real ORPHEUS graph, journaling every MCP call) measured whether an agent
 reaches the *intended* tool from a natural-language symptom. Run on three
 model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
 
+⚠ **Read those numbers as a floor, not a result.** Those scenarios are
+`direct`-style: they paraphrase the tools' own descriptions ("copy-paste
+*twins* that have drifted", "the same implicit interface without a base
+class"), so they largely measure keyword matching rather than routing
+judgement — `dead_references` was reached even with **no instructions
+installed at all**. The `indirect` and `proactive` scenario tiers added in
+`evals/` are the ones that predict real use; see `evals/README.md`. The
+skill changes below were still worth making (the A/B moved Haiku from 21
+flailing calls to 1), but the headline scores are inflated by prompt design.
+
 - **`nexus-exploring` gains a "Symptom → tool" table.** The
   architecture-smell family (`dead_functions`, `twin_paths`,
   `discriminations`, `protocol_conformers`, `native_place`,
