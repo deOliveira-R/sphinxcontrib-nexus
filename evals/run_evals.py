@@ -100,8 +100,14 @@ HERE = Path(__file__).resolve().parent
 #: that edits the subject tree corrupts the fixture for every later run.
 #: An agent DID attempt a ``Write`` during development; the allowlist
 #: blocked it, which is the safety this list is for.
+#: ``Skill`` is not optional: the routing rule tells agents to "invoke
+#: the Nexus *skills*, not raw MCP tools", so denying it punishes
+#: exactly the behaviour the instructions ask for — and the resulting
+#: empty journal reads as a steering failure. Measured: three runs
+#: voided on a denied ``Skill`` before it was listed.
 ALLOWED_TOOLS = [
     "mcp__nexus__*",
+    "Skill",
     "Read", "Grep", "Glob", "Bash",
 ]
 
@@ -253,16 +259,24 @@ def _consensus(verdicts: list[str]) -> tuple[str, str]:
     """
     if not verdicts:
         return "NO-RUN", ""
-    if "VOID" in verdicts:
-        return "VOID", f"{verdicts.count('VOID')}/{len(verdicts)}"
-    counts = {v: verdicts.count(v) for v in set(verdicts)}
+    # A void replicate is a missing measurement, not evidence. Drop it
+    # and judge on what remains; only an all-void cell is truly VOID.
+    # Letting one void run poison an otherwise-clean cell hid a real
+    # improvement behind a scary banner.
+    valid = [v for v in verdicts if v != "VOID"]
+    if not valid:
+        return "VOID", f"{len(verdicts)}/{len(verdicts)}"
+    voided = len(verdicts) - len(valid)
+    counts = {v: valid.count(v) for v in set(valid)}
     top = max(counts.values())
     winners = sorted(v for v, n in counts.items() if n == top)
+    # Denominator is the VALID replicate count — reporting "2/3" when
+    # one replicate never ran overstates the disagreement.
+    tag = f"{top}/{len(valid)}" + (f" ({voided} void)" if voided else "")
     if len(winners) > 1:
-        return "FLAKY", f"{top}/{len(verdicts)}"
+        return "FLAKY", tag
     winner = winners[0]
-    tag = f"{top}/{len(verdicts)}"
-    if top < len(verdicts):
+    if top < len(valid):
         return (winner if winner in ("PASS", "THEATER") else f"{winner}?"), tag
     return winner, tag
 
