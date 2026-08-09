@@ -36,6 +36,19 @@ You have **freedom of tool choice** — route by what the question actually is:
 Over-using Nexus where a plain `Read` or `grep` was correct is as much a misselection as
 grepping for a relationship question. Do not perform compliance theater.
 
+**Users describe symptoms, not tools.** "We keep changing these classes in lockstep",
+"two people built this separately", "things live in surprising places", "the docs feel
+out of date" are all graph questions — route them to `protocol_conformers` / `twin_paths`
+/ `native_place` / `dead_references` respectively rather than reading files until a
+pattern appears.
+
+**Some checks are part of the job, not a request.** After you delete or rename anything,
+run `dead_references` before calling it done — green tests do not cover prose, and a dead
+documentation reference produces no build warning at any severity, so nothing else will
+catch it. Before a release, and for any "health check" or onboarding review, sweep the
+smell family (`twin_paths`, `discriminations`, `native_place`, `protocol_conformers`,
+`dead_functions`) alongside `dead_references` and `staleness`.
+
 **Invoke the Nexus *skills*, not raw MCP tools** — they encode the complete workflows
 (`nexus-exploring`, `nexus-impact`, `nexus-debugging`, `nexus-refactoring`,
 `nexus-verification`, `nexus-elegance`, `nexus-guide`).

@@ -118,6 +118,14 @@ upstream had no way to see it. Setup is now a two-way channel:
   installed so `+` lines are *theirs*. This is the harvest direction.
 - **Locally-modified files are never overwritten** without `--force`,
   which still leaves a `.bak`. A local edit is often the better version.
+- **A customized `.mcp.json` nexus entry is left alone** too. Setup used to
+  rewrite it unconditionally to the default template — and a project that
+  legitimately points the server elsewhere (another checkout's graph, a
+  non-standard build dir, an absolute interpreter) would then have every
+  query silently answer from a database that isn't there: the server starts
+  fine, so there is no error to notice. This clobber invalidated 21 eval runs
+  before it was caught. Other servers in the file are never disturbed, and an
+  unparseable `.mcp.json` is left untouched rather than destroyed.
 - Tracking is a **manifest** (`.claude/nexus-install-manifest.json`)
   recording the hash of the *shipped* content at install time — that is
   what separates "the consumer edited this" from "we shipped a new

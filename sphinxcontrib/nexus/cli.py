@@ -1126,13 +1126,40 @@ def _run_setup(args: argparse.Namespace) -> int:
             claude_json.write_text(json.dumps(data, indent=2) + "\n")
             print(f"\nCreated {claude_json} with nexus MCP server (user-level)")
     else:
-        # Project-level: add to .mcp.json
+        # Project-level: add to .mcp.json. An EXISTING nexus entry is
+        # left alone unless --force: projects legitimately point the
+        # server somewhere other than the default (a non-standard build
+        # dir, another checkout's graph, an absolute interpreter path),
+        # and silently rewriting that to the template breaks every query
+        # in the project with no error — the server starts fine, it just
+        # answers from a database that isn't there. Same no-clobber
+        # discipline the skills and rules already get.
         mcp_json = Path.cwd() / ".mcp.json"
         if mcp_json.exists():
-            existing = json.loads(mcp_json.read_text())
-            existing.setdefault("mcpServers", {})["nexus"] = nexus_server_config
-            mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
-            print(f"\nUpdated {mcp_json} with nexus MCP server (project-level)")
+            try:
+                existing = json.loads(mcp_json.read_text())
+            except ValueError:
+                print(f"\n{mcp_json} is not valid JSON — leaving it alone. "
+                      f"Add the nexus server manually:", file=sys.stderr)
+                print(json.dumps({"nexus": nexus_server_config}, indent=2))
+                existing = None
+            if existing is not None:
+                servers = existing.setdefault("mcpServers", {})
+                if "nexus" in servers and servers["nexus"] != nexus_server_config:
+                    if args.force:
+                        servers["nexus"] = nexus_server_config
+                        mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+                        print(f"\nReplaced the customized nexus entry in "
+                              f"{mcp_json} (--force)")
+                    else:
+                        print(f"\nKept the existing customized nexus entry in "
+                              f"{mcp_json} — pass --force to replace it with "
+                              f"the default.")
+                else:
+                    servers["nexus"] = nexus_server_config
+                    mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+                    print(f"\nUpdated {mcp_json} with nexus MCP server "
+                          f"(project-level)")
         else:
             mcp_json.write_text(json.dumps({"mcpServers": {"nexus": nexus_server_config}}, indent=2) + "\n")
             print(f"\nCreated {mcp_json} with nexus MCP server (project-level)")

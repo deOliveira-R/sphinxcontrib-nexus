@@ -294,3 +294,81 @@ def test_routing_rule_names_the_deferred_tool_gotcha(tmp_path):
     rule = (Path(nexus_pkg.__file__).parent / "rules" / "nexus-tools.md").read_text()
     assert "ToolSearch" in rule
     assert "deferral is not unavailability" in rule.lower()
+
+
+# ---------------------------------------------------------------------------
+# .mcp.json — same no-clobber discipline as the instruction files
+# ---------------------------------------------------------------------------
+
+
+def _run_setup_in(tmp_path, **flags):
+    import argparse
+    import os
+
+    from sphinxcontrib.nexus.cli import _run_setup
+
+    prev = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        args = argparse.Namespace(
+            target=None, global_install=False, check=False, diff=False,
+            force=False, no_rules=False, verbose=False,
+        )
+        for key, value in flags.items():
+            setattr(args, key, value)
+        return _run_setup(args)
+    finally:
+        os.chdir(prev)
+
+
+def test_setup_keeps_a_customized_mcp_entry(tmp_path, capsys):
+    """A project may legitimately point the server at a non-default graph
+    (another checkout, a custom build dir, an absolute interpreter).
+    Rewriting that to the template breaks every query in the project with
+    NO error — the server starts fine and answers from a database that
+    isn't there. This exact clobber invalidated 21 eval runs."""
+    custom = {"mcpServers": {"nexus": {
+        "command": "/custom/nexus",
+        "args": ["serve", "--db", "/elsewhere/graph.db"],
+    }}}
+    (tmp_path / ".mcp.json").write_text(json.dumps(custom))
+
+    _run_setup_in(tmp_path)
+    capsys.readouterr()
+
+    after = json.loads((tmp_path / ".mcp.json").read_text())
+    assert after["mcpServers"]["nexus"]["args"][-1] == "/elsewhere/graph.db"
+
+
+def test_setup_force_replaces_a_customized_mcp_entry(tmp_path, capsys):
+    custom = {"mcpServers": {"nexus": {
+        "command": "/custom/nexus",
+        "args": ["serve", "--db", "/elsewhere/graph.db"],
+    }}}
+    (tmp_path / ".mcp.json").write_text(json.dumps(custom))
+
+    _run_setup_in(tmp_path, force=True)
+    capsys.readouterr()
+
+    after = json.loads((tmp_path / ".mcp.json").read_text())
+    assert "/elsewhere/graph.db" not in json.dumps(after)
+
+
+def test_setup_preserves_other_mcp_servers(tmp_path, capsys):
+    """Adding nexus must never disturb a project's other servers."""
+    (tmp_path / ".mcp.json").write_text(json.dumps(
+        {"mcpServers": {"zotero": {"command": "zotero-mcp"}}}
+    ))
+    _run_setup_in(tmp_path)
+    capsys.readouterr()
+    after = json.loads((tmp_path / ".mcp.json").read_text())
+    assert after["mcpServers"]["zotero"] == {"command": "zotero-mcp"}
+    assert "nexus" in after["mcpServers"]
+
+
+def test_setup_survives_unparseable_mcp_json(tmp_path, capsys):
+    (tmp_path / ".mcp.json").write_text("{not json")
+    assert _run_setup_in(tmp_path) == 0
+    capsys.readouterr()
+    # Left untouched rather than destroyed.
+    assert (tmp_path / ".mcp.json").read_text() == "{not json"

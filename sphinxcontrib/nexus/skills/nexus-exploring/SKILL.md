@@ -69,6 +69,44 @@ what generic `query`/`context` exploration approximates in ten:
 | the few nodes holding separate areas together | `bridges` |
 | what actually RAN (hotspots, fired-vs-static edges, coverage) | `runtime_runs` → `runtime_hotspots` / `runtime_edges` / `runtime_branches` |
 
+## What the user actually says
+
+Users describe **symptoms**, not tools. Measured: phrasings like these
+reach the right tool far less often than the table above, because
+nothing connects the complaint to the capability. Translate:
+
+| What they say | What it means | Call |
+|---|---|---|
+| "we keep having to change several classes in lockstep and we forget one" | one concept spread across classes | `protocol_conformers`, `twin_paths`, `discriminations` |
+| "two people built these independently and didn't talk" | duplicated computation | `twin_paths` |
+| "this module feels bigger than it should be" | dead weight | `dead_functions` |
+| "things live in surprising places" / "boundaries got fuzzy" | feature envy | `native_place`, `bridges` |
+| "adding a case means touching five files" | missing type | `discriminations` |
+| "I just deleted / renamed / moved X — what's left?" | orphaned references | `dead_references`, `callers`, `retest` |
+| "the docs feel out of date" | two different drifts | `dead_references` (gone) + `staleness` (old) |
+
+## Sweeps you run WITHOUT being asked
+
+Some requests are a job, not a question, and the job includes checks the
+user did not think to ask for. Do these unprompted:
+
+- **"Health check this codebase" / onboarding / "what will confuse
+  people"** → the whole smell family in one pass: `twin_paths`,
+  `discriminations`, `native_place`, `protocol_conformers`,
+  `dead_functions`, plus `dead_references` for the docs. Then
+  `communities` / `god_nodes` for the map. A health check that reports
+  only structure and misses the smells is not a health check.
+- **"We're cutting a release" / "is the doc set publishable?"** →
+  `dead_references` FIRST (a dead reference draws no build warning at
+  any severity, so nothing else will catch it), then `staleness`, then
+  `verification_audit`.
+- **After any deletion or rename you performed** → `dead_references`
+  before declaring the work done. Green tests do not cover prose.
+
+If the project ships the `/doc-health` command or the dead-references
+hook, that finding may already be in your context — act on it rather
+than re-deriving it.
+
 ## The position bridge (LSP ↔ graph)
 
 The language server and the graph are complementary: LSP resolves
