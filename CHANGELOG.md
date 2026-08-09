@@ -4,6 +4,24 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+## 0.16.1 — 2026-08-09
+
+### Fixed
+
+- **`/doc-health` produced an empty report on every project.** The shipped
+  slash command invoked a bare `nexus`, which is not on PATH in the normal
+  layout — the binary lives in the project's `.venv/bin/`. Both `!` lines
+  resolved to `command not found`, so the command looked installed, reported
+  nothing, and the drift it exists to surface stayed invisible. It now
+  resolves the binary the way the hook already did (project venv first, PATH
+  as fallback), honours `NEXUS_DB`, and prints an explanation instead of a
+  blank when the graph or binary is missing.
+
+  A push channel that silently emits nothing is worse than no channel, so
+  `tests/test_push_channels.py` now **executes the shipped shell** — the
+  command's `!` lines and the hook — against a real graph with `nexus`
+  deliberately absent from PATH. Verified to fail against the 0.16.0 form.
+
 ## 0.16.0 — 2026-08-09
 
 **Headline:** a new doc-drift gate (`dead_references`, MCP tools 39 → 40), a

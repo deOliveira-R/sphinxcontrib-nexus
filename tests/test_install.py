@@ -263,9 +263,18 @@ def test_doc_health_command_injects_rather_than_asks(tmp_path):
 
     import sphinxcontrib.nexus as nexus_pkg
 
+    import re
+
     text = (Path(nexus_pkg.__file__).parent
             / "commands" / "doc-health.md").read_text()
-    assert "!`nexus dead-references" in text
+    executed = re.findall(r"^!`(.+)`$", text, re.MULTILINE)
+    # Assert the PROPERTY (a `!` line runs the query), not one spelling of
+    # the invocation — the binary must be resolved rather than assumed on
+    # PATH, so the exact command text is expected to change.
+    assert any("dead-references" in line for line in executed), (
+        "no `!` line runs dead-references — the command would be asking "
+        "the agent to look rather than handing it the finding"
+    )
     assert "allowed-tools:" in text
 
 
