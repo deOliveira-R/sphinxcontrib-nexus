@@ -3,12 +3,13 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (35)
+## Tools (40)
 
 ### Exploration
 | Tool | What it answers | Key args |
 |------|----------------|----------|
 | `query` | Find symbols by keyword | `text`, `node_types`, `limit` |
+| `node_at` | Map a file position (LSP result, stack trace) to the innermost enclosing node; warns when the file changed since the graph was built | `file`, `line` |
 | `context` | 360-degree view of a symbol | `node_id` |
 | `neighbors` | Direct connections | `node_id`, `direction`, `edge_types` |
 | `callers` | Functions that call this symbol | `node_id`, `transitive`, `max_depth` |
@@ -55,10 +56,20 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 | `provenance_chain` | Citation → equation → code chain | `node_id` |
 | `verification_coverage` | V&V status map | `status_filter` |
 | `verification_audit` | Complete V&V audit (single call) | — |
-| `staleness` | Doc-code drift | — |
+| `verification_gaps` | Untagged tests, unverified equations, missing err catchers | `module`, `level` |
+| `staleness` | Doc-code drift (git timestamps) + dead-reference summary | — |
+| `dead_references` | Docs/docstrings citing symbols or equation labels that NO LONGER EXIST (Sphinx renders these as plain text with no warning) | `limit` |
 | `session_briefing` | Session overview | — |
 | `trace_error` | Failing test → equations on path | `test_node_id` |
 | `migration_plan` | Dependency migration phases | `from_dep`, `to_dep` |
+
+### Workspaces (git worktrees)
+A graph is a snapshot of ONE checkout. A session working in a worktree must query THAT worktree's graph.
+
+| Tool | What it answers | Key args |
+|------|----------------|----------|
+| `workspaces` | Every checkout of the project, which graph each carries, and how fresh | — |
+| `use_workspace` | Switch the active graph to another checkout | `ref` (name or root path) |
 
 ### Ingestion
 | Tool | What it answers | Key args |

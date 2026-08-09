@@ -1,4 +1,20 @@
-# Behavioral Auto-Regression: Full Procedure and Rationale
+# Behavioral Auto-Regression: historical record (2026-04)
+
+> **This document describes a world that no longer exists.** It is kept
+> because the *method* — probe the live scaffold, don't guess at it — is
+> reusable, and because a future scaffold could reintroduce a similar
+> bias. The specific remedy below (the "tool override block") is
+> RETIRED: the `ALWAYS use Grep for search tasks` directive it fights was
+> removed from the probed scaffolds (verified 2026-06-14), the standalone
+> Grep/Glob tools are gone, and applying the override now induces the
+> opposite failure — Nexus compliance theater. The seven per-skill
+> override-block files were deleted in 0.16.0 for shipping language
+> ("NEVER use Grep") that contradicted the skills alongside them.
+>
+> For current guidance see `SKILL.md` and the always-on routing rule
+> `.claude/rules/nexus-tools.md`.
+
+---
 
 ## The Problem
 

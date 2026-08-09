@@ -53,6 +53,34 @@ def test_readme_resource_count_matches_registry():
     assert declared_count == len(registry_resources)
 
 
+REFERENCE = (
+    Path(__file__).resolve().parents[1]
+    / "sphinxcontrib" / "nexus" / "skills" / "nexus-exploring" / "reference.md"
+)
+
+
+def test_skill_reference_documents_every_tool():
+    """The skills' shared reference table is the agent-facing tool list —
+    the surface a session actually reads to decide what to call. It drifted
+    to "Tools (35)" while the registry held 40, with `node_at`,
+    `workspaces` and `use_workspace` documented nowhere. Pin it like the
+    README."""
+    text = REFERENCE.read_text()
+    declared = re.search(r"^## Tools \((\d+)\)", text, re.MULTILINE)
+    assert declared is not None, "reference.md has no '## Tools (N)' header"
+
+    registry_tools = {t.name for t in asyncio.run(_mcp.list_tools())}
+    # Table rows are `| `tool` | ... |`; restrict to real tool names so the
+    # edge-type and node-type tables in the same file don't count.
+    documented = set(re.findall(r"^\| `(\w+)`", text, re.MULTILINE)) & registry_tools
+
+    assert documented == registry_tools, (
+        "undocumented in reference.md: "
+        f"{sorted(registry_tools - documented)}"
+    )
+    assert int(declared.group(1)) == len(registry_tools)
+
+
 def test_journal_wrapper_preserves_parameter_schemas():
     """The nexus_tool journaling wrapper must stay schema-transparent:
     FastMCP introspects through functools.wraps/__wrapped__, so tool

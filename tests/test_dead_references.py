@@ -514,3 +514,67 @@ def test_dead_references_end_to_end(tmp_path):
     result = GraphQuery(graph).dead_references()
     dead_names = {d.target_name for d in result.dead}
     assert dead_names == {"pkg.deleted.Gone"}
+
+
+# ---------------------------------------------------------------------------
+# 6. CLI text mode — the payload that gets PUSHED into an agent's context
+# ---------------------------------------------------------------------------
+
+
+def test_cli_text_mode_leads_with_the_imperative(tmp_path, capsys):
+    """This text is read by an agent that did not ask for it, so it must
+    state what the finding IS and what to do about it before any detail.
+    A bare list of names reads as trivia and gets skimmed past."""
+    import argparse
+
+    from sphinxcontrib.nexus.cli import _run_dead_references
+    from sphinxcontrib.nexus.export import write_sqlite
+
+    kg = _build_query_fixture()
+    db = tmp_path / "graph.db"
+    write_sqlite(kg, db)
+
+    code = _run_dead_references(argparse.Namespace(
+        db=db, limit=50, format="text",
+        quiet_when_clean=False, exit_code=False,
+    ))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.startswith("DEAD DOCUMENTATION REFERENCES")
+    assert "no warning" in out          # why nothing else caught it
+    assert "pkg.Gone" in out
+
+
+def test_cli_quiet_when_clean_costs_zero_context(tmp_path, capsys):
+    """A clean project must print nothing, or the channel trains agents
+    to skim past it on the day it matters."""
+    import argparse
+
+    from sphinxcontrib.nexus.cli import _run_dead_references
+    from sphinxcontrib.nexus.export import write_sqlite
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    db = tmp_path / "clean.db"
+    write_sqlite(KnowledgeGraph(), db)
+
+    _run_dead_references(argparse.Namespace(
+        db=db, limit=50, format="text",
+        quiet_when_clean=True, exit_code=False,
+    ))
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_exit_code_gates_ci(tmp_path, capsys):
+    import argparse
+
+    from sphinxcontrib.nexus.cli import _run_dead_references
+    from sphinxcontrib.nexus.export import write_sqlite
+
+    db = tmp_path / "graph.db"
+    write_sqlite(_build_query_fixture(), db)
+    code = _run_dead_references(argparse.Namespace(
+        db=db, limit=50, format="text",
+        quiet_when_clean=False, exit_code=True,
+    ))
+    capsys.readouterr()
+    assert code == 1

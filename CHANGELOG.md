@@ -43,6 +43,159 @@ docstring refs) resolve to their new homes instead of being reported.
   `pkg.core.thing.Thing` even when the module paths don't overlap, which
   the leaf-name fold could never prove.
 
+### Changed — skill steering, from a measured tool-selection eval
+
+A 14-scenario headless battery (one `claude -p` session per scenario against
+the real ORPHEUS graph, journaling every MCP call) measured whether an agent
+reaches the *intended* tool from a natural-language symptom. Run on three
+model tiers: **Opus 14/14, Sonnet 13/14, Haiku 12/14**.
+
+⚠ **Read those numbers as a floor, not a result.** Those scenarios are
+`direct`-style: they paraphrase the tools' own descriptions ("copy-paste
+*twins* that have drifted", "the same implicit interface without a base
+class"), so they largely measure keyword matching rather than routing
+judgement — `dead_references` was reached even with **no instructions
+installed at all**. The `indirect` and `proactive` scenario tiers added in
+`evals/` are the ones that predict real use; see `evals/README.md`. The
+skill changes below were still worth making (the A/B moved Haiku from 21
+flailing calls to 1), but the headline scores are inflated by prompt design.
+
+- **`nexus-exploring` gains a "Symptom → tool" table.** The
+  architecture-smell family (`dead_functions`, `twin_paths`,
+  `discriminations`, `protocol_conformers`, `native_place`,
+  `bridges`/`communities`/`god_nodes`) and the whole `runtime_*` family
+  existed only in `reference.md` tables — no SKILL.md body named them, and
+  the skill description matched no smell-hunting phrasing.
+- **`nexus-verification` documents the two kinds of doc drift**, and now
+  names `dead_references`, `verification_gaps`, and `verification_audit` —
+  previously absent from the skill that owns doc-drift questions.
+- **`nexus-guide` routing table** covers smells and runtime.
+- **Stale-line references removed** from the skills, matching the
+  file-brief change above.
+
+### Changed — instructions now name symptoms, not tools (measured)
+
+Replicated ablation on Haiku (clean room from `nexus setup` only, real graph,
+3 replicates/cell, zero permission denials): **instructed 3/6 vs bare 0/6.**
+Eighteen bare runs produced zero correct tool selections, so no part of the
+instruction surface can be trimmed on the theory that models already know.
+
+The gap was that every table described tools by what they ARE ("copy-paste
+twins that have drifted"), which only fires when the user already knows the
+vocabulary. Nobody says "I suspect a twin path" — they say "two people built
+this separately". `nexus-exploring` and the routing rule now carry:
+
+- a **what-the-user-actually-says** table mapping complaints to tools
+  ("we keep changing these classes in lockstep", "things live in surprising
+  places", "the docs feel out of date");
+- **sweeps that are part of the job, not a request** — after any delete or
+  rename, before a release, and on any health-check or onboarding review.
+
+Measured effect: `parallel-work` ("two people built these independently")
+went 0/3 → **3/3** reaching `twin_paths`; `onboarding-health` → **3/3**, with
+every replicate sweeping the entire smell family. Controls stayed clean in
+both conditions — no compliance theater. Baseline recorded in
+`evals/BASELINE.md` for comparison after the next model release.
+
+### Added — push channels: inject the finding, don't hope it gets asked for
+
+Steering an agent to *go looking* is probabilistic — measured here, whether a
+tool gets reached depends on how the user happens to phrase the request, and
+an agent nobody asks will never look. A dead documentation reference draws no
+Sphinx warning at any severity, so if the agent doesn't look, **nothing**
+reports it. For that class of finding, push beats pull.
+
+- **`nexus dead-references` CLI** — the tool shipped as MCP-only, unlike every
+  sibling (`twin-paths`, `dead-functions`, `staleness`), which also made it
+  unreachable from the `!` and hook mechanisms. Adds `--format text` (a digest
+  written to be read by an agent that did not ask for it: it leads with what
+  the finding is and what to do about it), `--quiet-when-clean` (a clean
+  project must cost zero context, or the channel trains agents to skim past
+  it), and `--exit-code` to gate CI.
+- **`/doc-health` slash command** — its `!` lines execute at invocation, so
+  the findings are already in context. It does not tell the agent to run a
+  tool; that would inherit the same probabilistic steering it exists to bypass.
+- **`nexus-dead-refs.sh` hook** — wire to `SessionStart` (or `PostToolUse` on
+  edits) so every session opens knowing the current dead references. Same
+  quiet-exit-0 failure contract as the file-brief hook.
+- `nexus setup` installs both, and marks hooks executable — a hook that lands
+  non-executable fails silently at fire time, the worst failure mode for an
+  ambient channel.
+
+### Added — `nexus setup` treats the consumer as a peer, not a cache
+
+Instruction files ship downstream and then evolve there against real
+sessions. The old `setup` overwrote unconditionally with no record of what
+it wrote, so a consumer's field-tested edit could be destroyed silently and
+upstream had no way to see it. Setup is now a two-way channel:
+
+- **Ships an always-on routing rule** (`.claude/rules/nexus-tools.md`):
+  the question→tool table including when `grep`/`Read` is the *correct*
+  choice, plus the deferred-`mcp__nexus__*` gotcha. Positive routing has to
+  be always-on — a skill the agent never invokes cannot steer it. Skipped
+  by `--no-rules`, and never installed by `--global` (a rule that
+  auto-loads into every project must be a per-project choice).
+- **`nexus setup --check`** — per-file state (missing / stale / locally
+  modified / modified-and-stale), non-zero exit when anything needs
+  attention, so it can gate CI.
+- **`nexus setup --diff`** — what the consumer changed, printed shipped→
+  installed so `+` lines are *theirs*. This is the harvest direction.
+- **Locally-modified files are never overwritten** without `--force`,
+  which still leaves a `.bak`. A local edit is often the better version.
+- **A customized `.mcp.json` nexus entry is left alone** too. Setup used to
+  rewrite it unconditionally to the default template — and a project that
+  legitimately points the server elsewhere (another checkout's graph, a
+  non-standard build dir, an absolute interpreter) would then have every
+  query silently answer from a database that isn't there: the server starts
+  fine, so there is no error to notice. This clobber invalidated 21 eval runs
+  before it was caught. Other servers in the file are never disturbed, and an
+  unparseable `.mcp.json` is left untouched rather than destroyed.
+- Tracking is a **manifest** (`.claude/nexus-install-manifest.json`)
+  recording the hash of the *shipped* content at install time — that is
+  what separates "the consumer edited this" from "we shipped a new
+  version". Stamping a version into the files themselves would edit the
+  very content whose modification we are trying to detect.
+
+### Added — harvested from the consuming project's skill evolution
+
+Skills are shipped downstream by `nexus setup` and then *evolve there*
+against real sessions. Diffing the consumer's copies against the shipped
+ones found deliberate downstream development worth bringing upstream —
+this direction of sync had never been done, and the shipped copies were
+wrong in ways only real use reveals:
+
+- **"Replaces Grep" is retired across all five skills** that carried it.
+  The original strong language existed to fight a system-prompt directive
+  (`ALWAYS use Grep for search tasks`) that **no longer exists** — the
+  standalone Grep/Glob tools were removed from the probed scaffolds
+  (verified 2026-06-14) and models route freely. The overclaim now costs
+  precision instead of buying it, so it becomes "use Nexus for structural
+  queries; use Grep freely for text search."
+- **`behavioral-auto-regression` is demoted to a break-glass diagnostic**
+  and carries the historical note above. Its old premise (reclassify code
+  exploration as "not a search task") is obsolete. What replaces it: the
+  dominant live cause of Nexus-avoidance is agents treating **deferred**
+  `mcp__nexus__*` tools as unavailable — one `ToolSearch("select:…")`
+  loads them — plus the opposite failure the old skill never named,
+  over-using Nexus where a plain `Read`/`grep` was correct.
+- **New `nexus-elegance` skill**: the map from each structural-review axis
+  to the graph query that corroborates it, with a **false-positive table**
+  — when a graph signal is NOT a finding (symmetric apply/adjoint pairs,
+  retained test oracles, decorated indirectly-invoked functions,
+  method-name-only protocol matches, stale-graph phantom provenance).
+  This is the connective tissue the smell family lacked: the tools were
+  discoverable but nothing said how to avoid false findings with them.
+  The graph is a witness, never the accuser.
+- **`nexus-guide` gains a route-by-question-shape table** including when
+  grep/`Read` is the *correct* choice, and the deferred-tools note.
+
+### Fixed — skill reference drift
+
+- `reference.md` claimed "Tools (35)" against a registry of 40 and
+  documented neither `node_at` nor `workspaces`/`use_workspace`. Added,
+  corrected, and **pinned by a new drift-guard test** alongside the
+  existing README↔registry guard.
+
 ### Changed — usage-evidence tunings (issue #15)
 
 Seven weeks of real ORPHEUS sessions (806 journaled tool calls, 842 injected

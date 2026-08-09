@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sphinxcontrib.nexus import __version__
+from sphinxcontrib.nexus.install import MANIFEST_NAME, Payload
 
 if TYPE_CHECKING:
     from sphinxcontrib.nexus.query import GraphQuery
@@ -55,7 +56,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     setup_cmd.add_argument(
         "--global", dest="global_install", action="store_true",
-        help="Install to ~/.claude/skills/ (global, all projects).",
+        help="Install to ~/.claude/skills/ (global, all projects). "
+        "Skips the always-on routing rule.",
+    )
+    setup_cmd.add_argument(
+        "--check", action="store_true",
+        help="Report install state per file (missing / stale / locally "
+        "modified) and exit non-zero if anything needs attention. "
+        "Writes nothing.",
+    )
+    setup_cmd.add_argument(
+        "--diff", action="store_true",
+        help="Show what the consumer changed in locally-modified files "
+        "('+' lines are theirs). Writes nothing.",
+    )
+    setup_cmd.add_argument(
+        "--force", action="store_true",
+        help="Overwrite locally-modified files (keeps a .bak). Read "
+        "--diff first: a local edit is often the better version.",
+    )
+    setup_cmd.add_argument(
+        "--no-rules", dest="no_rules", action="store_true",
+        help="Do not install the always-on routing rule into "
+        ".claude/rules/.",
     )
     setup_cmd.add_argument("-v", "--verbose", action="store_true")
 
@@ -534,6 +557,40 @@ def main(argv: list[str] | None = None) -> int:
         help="Max results (default: 50; 0 = all).",
     )
 
+    # --- dead-references ---
+    # Deliberately offers a --format text mode, unlike its JSON-only
+    # siblings: this is the command projects inject into an agent's
+    # context with `!` (slash commands) or a hook. Pushing the FINDING
+    # beats steering an agent to go look for it — steering is
+    # probabilistic, injection is not, and a dead reference draws no
+    # Sphinx warning at any severity, so nothing else raises it.
+    deadref_cmd = sub.add_parser(
+        "dead-references",
+        help="Docs/docstrings citing symbols or equation labels that no "
+             "longer exist (Sphinx renders these as plain text, no warning)",
+    )
+    deadref_cmd.add_argument(
+        "--db", type=Path, default=Path("_nexus/graph.db"),
+    )
+    deadref_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max dead targets, most-referenced first (default: 50; 0 = all).",
+    )
+    deadref_cmd.add_argument(
+        "--format", choices=("json", "text"), default="json",
+        help="'text' is a compact human/agent-readable digest for context "
+             "injection; 'json' is the full payload with every site.",
+    )
+    deadref_cmd.add_argument(
+        "--quiet-when-clean", action="store_true",
+        help="Print nothing when there are no dead references. For hooks "
+             "and `!` injection: an empty finding must cost zero context.",
+    )
+    deadref_cmd.add_argument(
+        "--exit-code", action="store_true",
+        help="Exit 1 when any dead reference is found, so this can gate CI.",
+    )
+
     # --- protocol-conformers ---
     pc_cmd = sub.add_parser(
         "protocol-conformers",
@@ -842,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
         "twin-paths": _run_twin_paths,
         "discriminations": _run_discriminations,
         "dead-functions": _run_dead_functions,
+        "dead-references": _run_dead_references,
         "protocol-conformers": _run_protocol_conformers,
         "runtime-ingest": _run_runtime_ingest,
         "runtime-runs": _run_runtime_runs,
@@ -880,43 +938,168 @@ def _load_query(db_path: Path) -> GraphQuery:
     return GraphQuery(load_sqlite(db_path))
 
 
+def _setup_targets(
+    args: argparse.Namespace,
+) -> tuple[Path, Path | None, Path | None, Path | None, Path]:
+    """Resolve targets for (skills, rules, commands, hooks, manifest).
+
+    ``rules_target`` is ``None`` when the caller declined the always-on
+    routing rule, or when installing globally — a rule that auto-loads
+    into EVERY project must be an explicit per-project choice, not a
+    side effect of a global skill install.
+    """
+    if args.target:
+        skills_target = args.target.resolve()
+        claude_dir = skills_target.parent
+    elif args.global_install:
+        claude_dir = Path.home() / ".claude"
+        skills_target = claude_dir / "skills"
+    else:
+        claude_dir = Path.cwd() / ".claude"
+        skills_target = claude_dir / "skills"
+
+    rules_target: Path | None = claude_dir / "rules"
+    commands_target: Path | None = claude_dir / "commands"
+    hooks_target: Path | None = claude_dir / "hooks"
+    if getattr(args, "no_rules", False) or args.global_install:
+        rules_target = None
+    # Commands and hooks are project-shaped (they reference the
+    # project's graph path), so a global install never places them.
+    if args.global_install:
+        commands_target = hooks_target = None
+    return (skills_target, rules_target, commands_target, hooks_target,
+            claude_dir / MANIFEST_NAME)
+
+
 def _run_setup(args: argparse.Namespace) -> int:
     import shutil
 
-    if args.target:
-        target = args.target.resolve()
-    elif args.global_install:
-        target = Path.home() / ".claude" / "skills"
-    else:
-        target = Path.cwd() / ".claude" / "skills"
+    from sphinxcontrib.nexus.install import (
+        classify,
+        diff_payload,
+        install_payload,
+        iter_payloads,
+        load_manifest,
+        write_manifest,
+    )
 
-    skills_src = Path(__file__).parent / "skills"
-    if not skills_src.exists():
-        print(f"Error: bundled skills not found at {skills_src}", file=sys.stderr)
+    package_root = Path(__file__).parent
+    if not (package_root / "skills").is_dir():
+        print(
+            f"Error: bundled skills not found at {package_root / 'skills'}",
+            file=sys.stderr,
+        )
         return 1
 
-    installed = []
-    for skill_dir in sorted(skills_src.iterdir()):
-        if not skill_dir.is_dir():
-            continue
-        skill_file = skill_dir / "SKILL.md"
-        if not skill_file.exists():
-            continue
-        dest_dir = target / skill_dir.name
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        # Copy all skill files (SKILL.md, reference.md, scripts/)
-        for item in skill_dir.rglob("*"):
-            if item.is_file() and item.name != ".DS_Store":
-                rel = item.relative_to(skill_dir)
-                dest_file = dest_dir / rel
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest_file)
-        installed.append(skill_dir.name)
+    (skills_target, rules_target, commands_target, hooks_target,
+     manifest_path) = _setup_targets(args)
+    manifest = load_manifest(manifest_path)
+    payloads = list(iter_payloads(
+        package_root, skills_target, rules_target,
+        commands_target, hooks_target,
+    ))
+    statuses = {p.key: classify(p, manifest) for p in payloads}
 
-    print(f"Installed {len(installed)} skills to {target}/")
-    for name in installed:
-        files = list((target / name).rglob("*.md"))
-        print(f"  {name}/ ({len(files)} files)")
+    # --- read-only modes -------------------------------------------------
+    if args.check or args.diff:
+        modified = [p for p in payloads
+                    if statuses[p.key].state.startswith("modified")]
+        stale = [p for p in payloads if statuses[p.key].state == "stale"]
+        missing = [p for p in payloads if statuses[p.key].state == "missing"]
+
+        if args.diff:
+            if not modified:
+                print("No locally-modified files — nothing to harvest.")
+            for payload in modified:
+                lines = diff_payload(payload)
+                if not lines:
+                    continue
+                print(f"\n=== {payload.key} "
+                      f"({statuses[payload.key].state}) ===")
+                print("".join(lines), end="")
+            if modified:
+                print(
+                    "\n'+' lines are the consumer's and not ours — the "
+                    "harvest direction. A local edit may be the better "
+                    "version; read before overwriting."
+                )
+            return 1 if modified else 0
+
+        print(f"nexus {__version__} — {len(payloads)} bundled files")
+        print(f"  skills → {skills_target}")
+        if rules_target is not None:
+            print(f"  rules  → {rules_target}")
+        for label, group in (
+            ("missing (never installed)", missing),
+            ("stale (safe to update)", stale),
+            ("locally modified (NOT overwritten without --force)", modified),
+        ):
+            if not group:
+                continue
+            print(f"\n{label}: {len(group)}")
+            for payload in group:
+                version = statuses[payload.key].installed_version or "unknown"
+                print(f"  {payload.key}  (installed from {version})")
+        if not (missing or stale or modified):
+            print("\nEverything up to date.")
+            return 0
+        if modified:
+            print("\nRun 'nexus setup --diff' to see what the consumer changed.")
+        return 1
+
+    # --- install ---------------------------------------------------------
+    written: list[Payload] = []
+    skipped: list[Payload] = []
+    for payload in payloads:
+        state = statuses[payload.key].state
+        if state.startswith("modified") and not args.force:
+            skipped.append(payload)
+            continue
+        # --force over a local edit keeps a .bak: the edit may be the
+        # better version and this tool must not be able to destroy it.
+        install_payload(
+            payload, backup=args.force and state.startswith("modified"),
+        )
+        written.append(payload)
+
+    write_manifest(manifest_path, written, manifest)
+
+    skill_names = sorted({
+        p.key.split("/")[1] for p in payloads if p.key.startswith("skills/")
+    })
+    print(f"Installed {len(written)} files "
+          f"({len(skill_names)} skills) to {skills_target}/")
+    for name in skill_names:
+        print(f"  {name}/")
+    if rules_target is not None:
+        rule_files = [p for p in written if p.key.startswith("rules/")]
+        if rule_files:
+            print(f"\nInstalled always-on routing rule to {rules_target}/")
+            for payload in rule_files:
+                print(f"  {payload.dest.name}")
+            print("  (reference it from CLAUDE.md so it auto-loads; "
+                  "skip with --no-rules)")
+
+    cmd_files = [p for p in written if p.key.startswith("commands/")]
+    hook_files = [p for p in written if p.key.startswith("hooks/")]
+    if cmd_files or hook_files:
+        print("\nPush channels — these inject findings instead of waiting "
+              "to be asked:")
+        for payload in cmd_files:
+            print(f"  /{payload.dest.stem}  (slash command; its `!` lines "
+                  f"run at invocation)")
+        for payload in hook_files:
+            print(f"  {payload.dest}  (wire into .claude/settings.json; "
+                  f"see the header)")
+
+    if skipped:
+        print(f"\nSKIPPED {len(skipped)} locally-modified file(s) — not "
+              f"overwritten:")
+        for payload in skipped:
+            print(f"  {payload.key}")
+        print("  Review with 'nexus setup --diff' (their edit may be the "
+              "better version), then 'nexus setup --force' to replace "
+              "(keeps a .bak).")
 
     # Install MCP server configuration. Paths are anchored on
     # ${CLAUDE_PROJECT_DIR} (set by Claude Code in the spawned server's
@@ -943,13 +1126,40 @@ def _run_setup(args: argparse.Namespace) -> int:
             claude_json.write_text(json.dumps(data, indent=2) + "\n")
             print(f"\nCreated {claude_json} with nexus MCP server (user-level)")
     else:
-        # Project-level: add to .mcp.json
+        # Project-level: add to .mcp.json. An EXISTING nexus entry is
+        # left alone unless --force: projects legitimately point the
+        # server somewhere other than the default (a non-standard build
+        # dir, another checkout's graph, an absolute interpreter path),
+        # and silently rewriting that to the template breaks every query
+        # in the project with no error — the server starts fine, it just
+        # answers from a database that isn't there. Same no-clobber
+        # discipline the skills and rules already get.
         mcp_json = Path.cwd() / ".mcp.json"
         if mcp_json.exists():
-            existing = json.loads(mcp_json.read_text())
-            existing.setdefault("mcpServers", {})["nexus"] = nexus_server_config
-            mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
-            print(f"\nUpdated {mcp_json} with nexus MCP server (project-level)")
+            try:
+                existing = json.loads(mcp_json.read_text())
+            except ValueError:
+                print(f"\n{mcp_json} is not valid JSON — leaving it alone. "
+                      f"Add the nexus server manually:", file=sys.stderr)
+                print(json.dumps({"nexus": nexus_server_config}, indent=2))
+                existing = None
+            if existing is not None:
+                servers = existing.setdefault("mcpServers", {})
+                if "nexus" in servers and servers["nexus"] != nexus_server_config:
+                    if args.force:
+                        servers["nexus"] = nexus_server_config
+                        mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+                        print(f"\nReplaced the customized nexus entry in "
+                              f"{mcp_json} (--force)")
+                    else:
+                        print(f"\nKept the existing customized nexus entry in "
+                              f"{mcp_json} — pass --force to replace it with "
+                              f"the default.")
+                else:
+                    servers["nexus"] = nexus_server_config
+                    mcp_json.write_text(json.dumps(existing, indent=2) + "\n")
+                    print(f"\nUpdated {mcp_json} with nexus MCP server "
+                          f"(project-level)")
         else:
             mcp_json.write_text(json.dumps({"mcpServers": {"nexus": nexus_server_config}}, indent=2) + "\n")
             print(f"\nCreated {mcp_json} with nexus MCP server (project-level)")
@@ -1316,6 +1526,47 @@ def _run_discriminations(args: argparse.Namespace) -> int:
         min_sites=args.min_sites, exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
+
+
+def _run_dead_references(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+
+    q = _load_query(args.db)
+    result = q.dead_references()
+    dead = result.dead if args.limit <= 0 else result.dead[: args.limit]
+
+    if args.format == "json":
+        payload = to_dict(result)
+        payload["dead"] = payload["dead"][: len(dead)]
+        _json_out(payload)
+        return 1 if (args.exit_code and result.total_dead) else 0
+
+    if not result.total_dead:
+        if not args.quiet_when_clean:
+            print("No dead documentation references.")
+        return 0
+
+    # Text mode leads with the imperative, not the count: this text is
+    # read by an agent that did not ask for it, so it has to say what
+    # the finding IS and what to do about it before any detail.
+    print(
+        f"DEAD DOCUMENTATION REFERENCES — {result.total_dead} target(s) "
+        f"referenced from {result.total_sites} site(s). These docs cite "
+        f"code or equations that no longer exist; Sphinx renders them as "
+        f"plain text with no warning. Each needs updating or removing."
+    )
+    for entry in dead:
+        print(f"\n  {entry.target_name}  [{entry.kind}] "
+              f"— {entry.site_count} site(s)")
+        for site in entry.sites[:4]:
+            where = site.source.file_path or site.source.docname or ""
+            line = f":{site.source.lineno}" if site.source.lineno else ""
+            print(f"      {site.source.id}{f'  ({where}{line})' if where else ''}")
+        if entry.site_count > 4:
+            print(f"      … and {entry.site_count - 4} more")
+    if result.total_dead > len(dead):
+        print(f"\n  … and {result.total_dead - len(dead)} more target(s)")
+    return 1 if args.exit_code else 0
 
 
 def _run_dead_functions(args: argparse.Namespace) -> int:

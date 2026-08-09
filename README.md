@@ -35,9 +35,27 @@ nexus serve --db graph.db --project-root /path/to/project
 ### Install Skills + MCP Server for Claude Code
 
 ```bash
-nexus setup           # project-level: .mcp.json + .claude/skills/
-nexus setup --global  # user-level: ~/.claude.json + ~/.claude/skills/ (all projects)
+nexus setup           # project: .mcp.json + .claude/skills/ + .claude/rules/
+nexus setup --global  # user-level: ~/.claude.json + ~/.claude/skills/ (no rule)
+
+nexus setup --check   # what's missing / stale / locally modified (exit 1 if any)
+nexus setup --diff    # what THIS project changed — '+' lines are yours
+nexus setup --force   # overwrite local edits (keeps .bak); read --diff first
+nexus setup --no-rules  # skip the always-on routing rule
 ```
+
+`setup` also installs an always-on routing rule (`.claude/rules/nexus-tools.md`)
+carrying the question→tool table — including when `grep`/`Read` is the *correct*
+choice — and the deferred-tool gotcha (`mcp__nexus__*` surfacing as deferred is
+not unavailability; one `ToolSearch` loads them). Reference it from your
+`CLAUDE.md` so it auto-loads. Positive routing must be always-on: a skill the
+agent never invokes cannot steer it.
+
+**Your local edits are safe.** Skills evolve in the projects that use them, so
+`setup` never overwrites a locally-modified file without `--force`, and tracks
+what it wrote in `.claude/nexus-install-manifest.json`. Use `--diff` to see what
+your project changed — those edits are field-tested against real sessions and
+are often worth sending upstream.
 
 ### Ingest a Paper
 
@@ -206,21 +224,59 @@ Journaling never blocks or fails a tool call.
 | `nexus://graph/schema` | Node types, edge types, ID format |
 | `nexus://briefing` | Session briefing for AI agents |
 
-## Skills (9)
+## Skills (10)
 
 Installed via `nexus setup`. Each skill triggers on natural language:
 
 | Skill | Triggers on |
 |-------|------------|
-| `nexus-exploring` | "How does X work?", "What calls this?" |
+| `nexus-exploring` | "How does X work?", "What calls this?", "Find dead code / clones / missing types" |
 | `nexus-impact` | "Is it safe to change X?", "What tests to re-run?" |
 | `nexus-debugging` | "Why is X failing?", "Which equation is wrong?" |
 | `nexus-refactoring` | "Rename this", "Extract this into a module" |
-| `nexus-verification` | "What's verified?", "Which docs are stale?" |
+| `nexus-verification` | "What's verified?", "Which docs are stale?", "Do docs cite things that no longer exist?" |
+| `nexus-elegance` | "Review this diff for architectural decay", "Is this a twin path?" |
 | `nexus-migration` | "Plan numpy→jax migration" |
 | `nexus-guide` | "What Nexus tools are available?" |
 | `nexus-cli` | "Analyze the codebase", "Start the server" |
-| `behavioral-auto-regression` | "Agent is using Grep instead of Nexus", "Tool selection is wrong" |
+| `behavioral-auto-regression` | Break-glass: an agent grepped for a structural question |
+
+## Steering Evals
+
+Skills and the routing rule are instructions whose runtime is a language model, so whether they work is an **empirical question with a moving answer**. `evals/` measures it: each scenario is a natural-language *symptom* a user would type, run as an isolated headless session, graded on the **journal** — which tools were actually called — not on how good the answer sounds.
+
+```bash
+./evals/run_evals.py --project . --model haiku      # measure
+./evals/scorecard.py --results runs/haiku:haiku     # aggregate view
+```
+
+### Prompt style decides what a score means
+
+| style | prompt | measures |
+|---|---|---|
+| `direct` | paraphrases the tool's own description | keyword matching — **a floor** |
+| `indirect` | describes the situation, never names the concept | routing inference |
+| `proactive` | doesn't ask at all; using the tool is part of the job | initiative |
+| `control` | has a correct **non**-graph answer | over-steering (compliance theater) |
+
+A battery of direct prompts scores near-perfectly and predicts nothing — `dead_references` is reached by a direct prompt regardless of what instructions are installed, because the words line up.
+
+### Current steering capability (2026-08-09, nexus 0.15.0)
+
+Fraction of runs reaching an intended tool. Empty journal counts as a miss; only permission-denied runs are excluded.
+
+| model | direct (floor) | indirect | proactive | controls |
+|---|---|---|---|---|
+| Fable 5 | 11/11 | — | — | — |
+| Opus | 15/15 | — | — | — |
+| Sonnet | 15/16 | — | — | — |
+| Haiku 4.5 | 18/22 | 6/9 | 4/6 | 3/3 |
+
+The situational rows are measured on Haiku deliberately: **weak models fail first**, so they localize instruction gaps most cheaply, and an instruction that steers Haiku steers everything above it. Controls are clean everywhere — the instructions do not push agents into using the graph where `grep`/`Read` is correct.
+
+The gap between the direct and situational columns is the honest measure of steering, and it is why findings that **must not be missed** are pushed rather than steered — `/doc-health` and the `SessionStart` hook inject dead-reference findings deterministically instead of hoping an agent asks.
+
+Ablation against a no-instructions arm gives **instructed 3/6 vs bare 0/6** on situational scenarios: eighteen bare runs produced zero correct selections, so nothing in the instruction surface is redundant with model priors. Per-round records, self-grades, and what changed as a result live in [`evals/BASELINE.md`](evals/BASELINE.md); the authoring methodology and its pitfall catalogue live in `.claude/skills/eval-authoring/`.
 
 ## V&V Integration
 

@@ -21,7 +21,12 @@ keywords = [
 dependencies = [
     "Sphinx>=7.0",
     "networkx>=3.0",
-    "mcp>=1.0",
+    # Upper bound is load-bearing: mcp 2.0.0 REMOVED `mcp.server.fastmcp`,
+    # which server.py is built on, so an unpinned install silently ships a
+    # broken MCP server (import error at startup, every tool unavailable).
+    # Migrating to the 2.x server API is tracked separately — until then
+    # this bound is the difference between a working and a dead install.
+    "mcp>=1.0,<2",
     "PyYAML>=6.0",
 ]
 classifiers = [
