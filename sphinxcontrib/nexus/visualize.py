@@ -22,6 +22,7 @@ _NODE_COLORS = {
     "method": "#27AE60", "class": "#E74C3C", "module": "#F39C12",
     "equation": "#9B59B6", "term": "#1ABC9C", "attribute": "#95A5A6",
     "data": "#95A5A6", "exception": "#E74C3C", "type": "#3498DB",
+    "proof_object": "#8E44AD",
     "external": "#BDC3C7", "unresolved": "#555", "unknown": "#555",
 }
 
@@ -30,6 +31,10 @@ _EDGE_COLORS = {
     "contains": "#555", "documents": "#4A90D9", "references": "#7B68EE",
     "implements": "#9B59B6", "type_uses": "#1ABC9C", "equation_ref": "#9B59B6",
     "cites": "#E67E22",
+    # The math-to-math relations share the equation hue: on a rendered
+    # graph they read as one spine rather than three unrelated colours.
+    "discretizes": "#9B59B6", "derives_from": "#9B59B6",
+    "approximates": "#9B59B6",
 }
 
 # The entire visualizer is a single self-contained HTML file.

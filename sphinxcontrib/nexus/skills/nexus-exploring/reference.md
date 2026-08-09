@@ -53,7 +53,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 ### Code+Doc Fusion
 | Tool | What it answers | Key args |
 |------|----------------|----------|
-| `provenance_chain` | Citation → equation → code chain | `node_id` |
+| `provenance_chain` | Citation → equation → code chain, plus the math-to-math spine in `relations` (what a discrete form discretizes / derives from / approximates) | `node_id` |
 | `verification_coverage` | V&V status map | `status_filter` |
 | `verification_audit` | Complete V&V audit (single call) | — |
 | `verification_gaps` | Untagged tests, unverified equations, missing err catchers | `module`, `level` |
@@ -96,11 +96,12 @@ py:method:orpheus.cp.solver.CPMesh.compute_pinf_group
 py:module:orpheus.sn.solver
 py:tag:geometry
 math:equation:alpha-recursion
+prf:algorithm:transport-sweep
 doc:theory/discrete_ordinates
 std:label:theory-collision-probability
 ```
 
-## Edge Types (13)
+## Edge Types (16)
 
 | Edge | Meaning | Source |
 |------|---------|--------|
@@ -117,6 +118,9 @@ std:label:theory-collision-probability
 | `tests` | Test function → tested function | AST |
 | `derives` | Derivation → equation | AST |
 | `discriminates_on` | Function → tag it branches on (`if x == "..."`, `match`) | AST |
+| `discretizes` | Discrete statement → the continuous one it discretizes | Directive |
+| `derives_from` | Specialization → the parent it was reduced from | Directive |
+| `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
 ## graph_query Pattern Syntax
 

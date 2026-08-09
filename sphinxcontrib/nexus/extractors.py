@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from docutils import nodes as docutils_nodes
 from sphinx import addnodes
 
 from sphinxcontrib.nexus._mappings import (
@@ -112,6 +113,119 @@ def extract_domain_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None
                 ))
 
 
+def _is_auto_proof_label(label: str, realtype: str) -> bool:
+    """True for the synthetic label sphinx-proof gives an unlabelled block.
+
+    An environment written without ``:label:`` gets ``<type>-<serialno>``,
+    where the serial is a per-build counter — it shifts whenever anything
+    above it moves. Such a block is also unreferenceable by design
+    (``noindex`` is forced on). Admitting them would churn node ids on
+    every edit and add nodes no query can reach.
+    """
+    if not label.startswith(f"{realtype}-"):
+        return False
+    return label[len(realtype) + 1:].isdigit()
+
+
+def _proof_title(title: str) -> str:
+    """The environment's own title, without the rendering wrapper.
+
+    sphinx-proof stores the title already formatted by
+    ``proof_title_format``, whose default ``"(%t)"`` produces
+    ``"(Angular flux)"`` so it reads as *Definition 1 (Angular flux)* on
+    the page. Only the name belongs in a node's display_name, so a
+    single matched outer pair of parens comes off.
+    """
+    title = title.strip()
+    if len(title) > 2 and title.startswith("(") and title.endswith(")"):
+        inner = title[1:-1]
+        # Bail on "(a) and (b)" — the outer parens aren't a wrapper there.
+        if "(" not in inner and ")" not in inner:
+            return inner.strip()
+    return title
+
+
+def _proof_statement_text(node: docutils_nodes.Element, limit: int = 400) -> str:
+    """The environment's prose, whitespace-collapsed and truncated.
+
+    ``env.proof_list`` records where a theorem lives but not what it
+    says, and what it says is the part worth reading — in ``context``
+    output today, as an embedding target once semantic search lands.
+    """
+    for child in node.children:
+        if isinstance(child, docutils_nodes.section):
+            text = " ".join(child.astext().split())
+            if len(text) > limit:
+                return text[:limit].rstrip() + "…"
+            return text
+    return ""
+
+
+def extract_proof_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
+    """Create a node for every labelled ``sphinx-proof`` environment.
+
+    The ``prf`` domain implements neither ``object_types`` nor
+    ``get_objects()`` — every environment is recorded on
+    ``env.proof_list`` instead — so the generic domain walk in
+    :func:`extract_domain_objects` sees nothing and these have to be
+    read directly, exactly as the math domain is.
+
+    No-op when sphinx-proof isn't installed or no environment is used.
+    """
+    proof_list = getattr(env, "proof_list", None) or {}
+    for label, info in proof_list.items():
+        realtype = info.get("realtype", "")
+        docname = info.get("docname", "")
+        if not realtype or _is_auto_proof_label(label, realtype):
+            continue
+
+        node_id = _node_id("prf", realtype, label)
+        graph.add_node(GraphNode(
+            id=node_id,
+            type=NodeType.PROOF_OBJECT,
+            name=label,
+            display_name=label,
+            domain="prf",
+            docname=docname,
+            anchor=label,
+            metadata={
+                "prf_type": realtype,
+                "numbered": not info.get("nonumber", False),
+            },
+        ))
+
+        doc_id = _doc_node_id(docname)
+        if graph.has_node(doc_id):
+            graph.add_edge(GraphEdge(
+                source=doc_id,
+                target=node_id,
+                type=EdgeType.CONTAINS,
+            ))
+
+
+def _enrich_proof_nodes(doctree: docutils_nodes.document, graph: KnowledgeGraph) -> None:
+    """Attach title and statement text to proof nodes from one doctree.
+
+    Piggy-backs on the doctree load :func:`extract_references` already
+    pays for. Proof nodes are matched structurally (a ``realtype`` and a
+    ``label`` attribute) so the optional extension is never imported.
+    """
+    for node in doctree.findall(docutils_nodes.Element):
+        realtype = node.get("realtype")
+        label = node.get("label")
+        if not realtype or not label:
+            continue
+        attrs = graph.nxgraph.nodes.get(_node_id("prf", realtype, label))
+        if attrs is None:
+            continue
+        title = _proof_title(node.get("title") or "")
+        if title:
+            attrs["display_name"] = title
+        statement = _proof_statement_text(node)
+        if statement:
+            attrs["statement"] = statement
+
+
 def _is_valid_identifier(reftarget: str) -> bool:
     """Check if reftarget looks like a real Python/RST identifier.
 
@@ -215,6 +329,12 @@ def _get_project_modules(env: BuildEnvironment) -> frozenset[str]:
 def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
     """Walk doctrees for pending_xref nodes and create edges."""
     project_modules = _get_project_modules(env)
+    # The enrichment pass is a full doctree traversal per page. Most
+    # projects have no proof environments at all — check once rather
+    # than pay for it on every document.
+    enrich_proofs = any(
+        isinstance(n, str) and n.startswith("prf:") for n in graph.nxgraph
+    )
 
     for docname in env.all_docs:
         try:
@@ -222,6 +342,9 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
         except Exception:
             logger.debug("Could not load doctree for %s", docname)
             continue
+
+        if enrich_proofs:
+            _enrich_proof_nodes(doctree, graph)
 
         source_id = _doc_node_id(docname)
         seen_edges: set[tuple[str, str, str]] = set()  # (source, target, edge_type)
@@ -312,5 +435,7 @@ def build_graph(env: BuildEnvironment) -> KnowledgeGraph:
     graph = KnowledgeGraph()
     extract_documents(env, graph)
     extract_domain_objects(env, graph)
+    # Before references: an xref can only resolve to a node that exists.
+    extract_proof_objects(env, graph)
     extract_references(env, graph)
     return graph

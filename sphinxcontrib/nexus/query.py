@@ -339,6 +339,18 @@ class RenameResult:
     total_edits: int
 
 
+#: Authored relations between mathematical statements. Stored
+#: specific → general, so following an edge forwards climbs toward the
+#: continuous / exact / parent form.
+STATEMENT_RELATIONS: frozenset[str] = frozenset({
+    "discretizes", "derives_from", "approximates",
+})
+
+#: Node types that carry a mathematical statement — equations and the
+#: sphinx-proof environments (definition, theorem, algorithm, …).
+STATEMENT_TYPES: frozenset[str] = frozenset({"equation", "proof_object"})
+
+
 @dataclass
 class ProvenanceStep:
     """One step in a provenance chain."""
@@ -349,6 +361,20 @@ class ProvenanceStep:
 
 
 @dataclass
+class StatementRelation:
+    """One authored link between two mathematical statements.
+
+    Always read forwards — ``source`` *discretizes* / *derives_from* /
+    *approximates* ``target`` — so no inverse vocabulary is needed and
+    an edge appears once however it was reached.
+    """
+
+    source: NodeResult
+    relation: str
+    target: NodeResult
+
+
+@dataclass
 class ProvenanceResult:
     """Full citation → equation → code traceability chain."""
 
@@ -356,6 +382,11 @@ class ProvenanceResult:
     chain: list[ProvenanceStep]
     equations: list[NodeResult]
     citations: list[str]
+    relations: list[StatementRelation] = field(default_factory=list)
+    """Authored math-to-math structure reachable from this node — the
+    spine a validator walks when asking what a test actually pins down.
+    Empty unless the project declares ``discretizes`` / ``derives-from``
+    / ``approximates`` relations."""
 
 
 @dataclass
@@ -1271,15 +1302,68 @@ class GraphQuery:
     # Feature 1: Provenance Chain
     # ------------------------------------------------------------------
 
+    def _statement_relations(
+        self,
+        roots: list[str],
+        max_depth: int = 4,
+    ) -> list[StatementRelation]:
+        """Collect authored math-to-math edges around statement nodes.
+
+        Walks both directions: outgoing edges climb toward the general
+        form — a discrete equation points at the continuous one it
+        discretizes — and incoming edges descend toward the specific.
+        The question this exists to answer ("what does this test
+        actually pin down?") needs the whole spine, not one hop of it.
+
+        Deduplication is by **edge**, not by node, because the roots are
+        typically every statement on one page: a node-visited set would
+        suppress exactly the links between them, which are the ones
+        worth having. ``max_depth`` bounds hops away from the roots.
+        """
+        relations: list[StatementRelation] = []
+        seen_edges: set[tuple[str, str, str]] = set()
+        visited: set[str] = set()
+        frontier: list[tuple[str, int]] = [(r, 0) for r in roots]
+
+        while frontier:
+            current, depth = frontier.pop(0)
+            if current in visited or depth >= max_depth:
+                continue
+            visited.add(current)
+
+            incident = list(self._g.out_edges(current, data=True))
+            incident += list(self._g.in_edges(current, data=True))
+            for src, tgt, data in incident:
+                relation = data.get("type", "")
+                if relation not in STATEMENT_RELATIONS:
+                    continue
+                key = (src, relation, tgt)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                relations.append(StatementRelation(
+                    source=self._node_result(src),
+                    relation=relation,
+                    target=self._node_result(tgt),
+                ))
+                frontier.append((tgt if src == current else src, depth + 1))
+        return relations
+
     def provenance_chain(self, node_id: str) -> ProvenanceResult:
         """Trace citation → equation → code for a symbol.
 
         Given a code symbol, find which doc pages reference it, what
         equations those pages contain, and what citations they use.
-        Given an equation, find the code documented on the same page.
+        Given an equation or proof environment, find the code documented
+        on the same page.
 
         Traverses: code ←DOCUMENTS– doc –CONTAINS→ equations
                                         –CITES→ citations
+
+        Every statement reached is then used as a root for
+        :meth:`_statement_relations`, so any authored ``discretizes`` /
+        ``derives-from`` / ``approximates`` structure comes back in
+        ``relations``.
         """
         equations: list[NodeResult] = []
         citations: list[str] = []
@@ -1310,9 +1394,10 @@ class GraphQuery:
                             edge_type="documented_by", depth=1,
                         ))
 
-        elif node.type == "equation":
+        elif node.type in STATEMENT_TYPES:
             seen_eqs.add(node_id)
-            equations.append(node)
+            if node.type == "equation":
+                equations.append(node)
             for src, _, data in self._g.in_edges(node_id, data=True):
                 src_type = self._g.nodes.get(src, {}).get("type", "")
                 if src_type == "file" and data.get("type") == "contains":
@@ -1333,18 +1418,31 @@ class GraphQuery:
                                         edge_type="implemented_by", depth=2,
                                     ))
 
-        # From doc pages, collect equations and citations
+        # From doc pages, collect statements and citations
+        statements: list[str] = (
+            [node_id] if node.type in STATEMENT_TYPES else []
+        )
         for doc_id in doc_pages:
             for _, tgt, data in self._g.out_edges(doc_id, data=True):
                 tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
                 edge_type = data.get("type", "")
 
-                if tgt_type == "equation" and tgt not in seen_eqs:
+                if tgt_type in STATEMENT_TYPES and tgt not in seen_eqs:
                     seen_eqs.add(tgt)
-                    eq_node = self._node_result(tgt)
-                    equations.append(eq_node)
+                    statements.append(tgt)
+                    stmt_node = self._node_result(tgt)
+                    # ``equations`` is the historical field name and its
+                    # consumers expect equations; proof environments ride
+                    # in the chain and relation walk instead.
+                    if tgt_type == "equation":
+                        equations.append(stmt_node)
                     chain.append(ProvenanceStep(
-                        node=eq_node, edge_type="equation_on_page", depth=2,
+                        node=stmt_node,
+                        edge_type=(
+                            "equation_on_page" if tgt_type == "equation"
+                            else "statement_on_page"
+                        ),
+                        depth=2,
                     ))
 
                 if edge_type == "cites":
@@ -1357,11 +1455,14 @@ class GraphQuery:
                             edge_type="cites", depth=3,
                         ))
 
+        relations = self._statement_relations(statements)
+
         return ProvenanceResult(
             target=node_id,
             chain=chain,
             equations=equations,
             citations=list(set(citations)),
+            relations=relations,
         )
 
     # ------------------------------------------------------------------

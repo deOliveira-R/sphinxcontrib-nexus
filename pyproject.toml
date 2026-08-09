@@ -54,7 +54,9 @@ Issues = "https://github.com/deOliveira-R/sphinxcontrib-nexus/issues"
 nexus = "sphinxcontrib.nexus.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest"]
+# sphinx-proof is optional for users but required to test the `prf`
+# extractor against a real build rather than a hand-built fixture.
+test = ["pytest", "sphinx-proof"]
 dev = ["ruff", "mypy"]
 viz = []  # Sigma.js loaded from CDN, no Python deps needed
 

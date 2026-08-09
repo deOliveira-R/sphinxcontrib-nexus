@@ -25,6 +25,12 @@ class NodeType(str, Enum):
     EXTERNAL = "external"
     UNRESOLVED = "unresolved"
     TAG = "tag"
+    #: A ``sphinx-proof`` environment — definition, theorem, lemma,
+    #: algorithm, and the dozen other ``prf:`` types. One node type for
+    #: all of them, with the specific environment kept in the node id
+    #: (``prf:theorem:label``) and in ``metadata["prf_type"]``; fifteen
+    #: near-identical NodeTypes would buy nothing a filter can't.
+    PROOF_OBJECT = "proof_object"
 
 
 class EdgeType(str, Enum):
@@ -39,8 +45,16 @@ class EdgeType(str, Enum):
     INHERITS = "inherits"
     TYPE_USES = "type_uses"
     TESTS = "tests"
+    #: Paper-level lineage written by ``ingest.py`` — distinct from the
+    #: authored, equation-level ``DERIVES_FROM`` below.
     DERIVES = "derives"
     DISCRIMINATES_ON = "discriminates_on"
+    # Authored relations between mathematical statements (equations and
+    # sphinx-proof environments). Direction is always specific → general:
+    # the discrete form points at the continuous one it discretizes.
+    DISCRETIZES = "discretizes"
+    DERIVES_FROM = "derives_from"
+    APPROXIMATES = "approximates"
 
 
 @dataclass
