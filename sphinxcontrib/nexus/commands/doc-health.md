@@ -1,6 +1,6 @@
 ---
 description: Documentation health — dead references and drift, computed now
-allowed-tools: Bash(nexus:*)
+allowed-tools: Bash
 ---
 
 The following was computed from the knowledge graph at the moment you were
@@ -8,11 +8,11 @@ invoked. It is a finding, not a suggestion to go look for one.
 
 ## Dead documentation references
 
-!`nexus dead-references --db docs/_build/html/_nexus/graph.db --format text --limit 25`
+!`N="${CLAUDE_PROJECT_DIR:-.}/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-${CLAUDE_PROJECT_DIR:-.}/docs/_build/html/_nexus/graph.db}"; if [ -n "$N" ] && [ -f "$D" ]; then "$N" dead-references --db "$D" --format text --limit 25; else echo "(nexus or graph not found — run 'nexus setup' and build the docs; set NEXUS_DB to override the graph path)"; fi`
 
 ## Timestamp drift
 
-!`nexus staleness --db docs/_build/html/_nexus/graph.db 2>/dev/null | head -40`
+!`N="${CLAUDE_PROJECT_DIR:-.}/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-${CLAUDE_PROJECT_DIR:-.}/docs/_build/html/_nexus/graph.db}"; if [ -n "$N" ] && [ -f "$D" ]; then "$N" staleness --db "$D" 2>/dev/null | head -40; fi`
 
 ---
 
