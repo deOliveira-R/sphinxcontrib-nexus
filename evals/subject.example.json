@@ -1,0 +1,9 @@
+{
+  "smell_module": "orpheus.sn.loss_representation",
+  "impact_symbol": "Quadrature.ordinate_permutation",
+  "equation_label": "sn-within-group-system",
+  "module_a": "the quadrature subsystem (orpheus.numerics.quadrature)",
+  "module_b": "the SN solver (orpheus.sn.solver)",
+  "source_dir": "orpheus/sn/",
+  "known_file": "orpheus/sn/solver.py"
+}
