@@ -3,6 +3,10 @@
 Re-run after a model release and compare. A drop here means the instructions
 stopped steering the new model — not that the model got worse.
 
+Each round records: model, version, per-scenario verdicts (keyed by scenario
+id so they compare across releases), **the eval's own self-grade**, and what
+changed as a result. Method and pitfalls: `.claude/skills/eval-authoring/`.
+
 ## 2026-08-08 · Haiku 4.5 · nexus 0.15.0 (unreleased)
 
 Clean room built by `nexus setup` only, pointed at a real ~180 MB graph.
@@ -46,6 +50,33 @@ are mostly runs where it answered with *no tool calls at all* rather than
 picking the wrong tool. Steering has limits on a small model, which is the
 argument for the push channels (`/doc-health`, the dead-refs hook): for
 findings that must not be missed, inject rather than steer.
+
+### Self-grade of this eval
+
+```
+flake rate      5/12 — raise --repeat
+situational mix 5/6 indirect+proactive — acceptable
+leak rate       0/5 situational hits with NO instructions — clean
+discrimination  3/6 vs 0/6 (Δ+3) — instructions are load-bearing
+controls        present, clean in both conditions
+void rate       0 — harness sound
+```
+
+**Reading it:** the battery discriminates and does not leak, so the Δ+3 is
+real evidence. The flake rate is the weak point — 5 of 12 target cells were
+non-unanimous at n=3, which is why only the unanimous cells (`parallel-work`,
+`onboarding-health`) are quoted as findings. **Next round: `--repeat 5`.**
+
+### What changed as a result
+
+- Skills and the routing rule gained a *what-the-user-actually-says* table and
+  an explicit "sweeps you run without being asked" section (validated: two
+  scenarios 0/3 → 3/3).
+- `dead_references` got a CLI, a `/doc-health` slash command, and a
+  `SessionStart` hook — because its miss is silent, and steering has a
+  ceiling this eval measured.
+- Nothing was deleted from the instruction surface: bare 0/6 killed the
+  redundancy hypothesis.
 
 ### Method notes worth keeping
 

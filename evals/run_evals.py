@@ -300,6 +300,103 @@ def grade_cell(scenario: dict, cell: Path) -> dict:
     }
 
 
+#: Condition names understood as "no instructions installed". The bare
+#: arm is what makes a battery falsifiable: without it you cannot tell a
+#: prompt that STEERS from a prompt that merely NAMES the answer.
+_BARE_NAMES = ("bare", "neither", "none", "control", "baseline")
+
+
+def self_grade(
+    scenarios: list[dict],
+    rows: dict[str, list[dict]],
+    conditions: list[str],
+) -> list[str]:
+    """Grade the EVAL, not the agent.
+
+    A battery can score well and mean nothing. These metrics catch the
+    ways that happens; each maps to a specific authoring defect
+    documented in the eval-authoring skill's reference.
+    """
+    style_of = {s["id"]: s.get("style", "direct") for s in scenarios}
+    lines: list[str] = []
+    bare = next((c for c in conditions if c.lower() in _BARE_NAMES), None)
+    rich = next((c for c in conditions if c != bare), None)
+
+    def hits(condition: str, styles: tuple[str, ...]) -> tuple[int, int]:
+        group = [
+            g for g in rows[condition]
+            if style_of[g["id"]] in styles
+            and g["verdict"].startswith(("HIT", "MISS", "FLAKY"))
+        ]
+        return sum(1 for g in group if g["verdict"].startswith("HIT")), len(group)
+
+    all_rows = [g for c in conditions for g in rows[c]]
+    targets = [g for g in all_rows if style_of[g["id"]] != "control"]
+
+    void = sum(1 for g in all_rows if g["verdict"] == "VOID")
+    if void:
+        lines.append(
+            f"HARNESS UNSOUND — {void} void cell(s). Nothing below is "
+            f"interpretable. Fix the environment and re-run."
+        )
+
+    flaky = sum(1 for g in targets if g["verdict"].endswith("?")
+                or g["verdict"] == "FLAKY")
+    if targets:
+        rate = flaky / len(targets)
+        verdict = "raise --repeat" if rate > 0.34 else "acceptable"
+        lines.append(f"flake rate      {flaky}/{len(targets)} — {verdict}")
+
+    styles = {style_of[s["id"]] for s in scenarios}
+    n_target = sum(1 for s in scenarios if s.get("style") != "control")
+    n_situational = sum(
+        1 for s in scenarios
+        if s.get("style") in ("indirect", "proactive")
+    )
+    if n_target:
+        share = n_situational / n_target
+        verdict = ("PREDICTS LITTLE — mostly direct prompts"
+                   if share < 0.4 else "acceptable")
+        lines.append(
+            f"situational mix {n_situational}/{n_target} "
+            f"indirect+proactive — {verdict}"
+        )
+    if "control" not in styles:
+        lines.append(
+            "NO CONTROLS — over-steering is undetectable. Add a scenario "
+            "where grep/Read is the correct answer."
+        )
+
+    if bare and rich:
+        leak, leak_n = hits(bare, ("indirect", "proactive"))
+        if leak_n:
+            verdict = ("PROMPTS LEAK — a situational prompt should not "
+                       "land with no instructions installed; suspect "
+                       "keyword overlap with the tool description"
+                       if leak else "clean")
+            lines.append(f"leak rate       {leak}/{leak_n} situational "
+                         f"hits with NO instructions — {verdict}")
+
+        rich_hits, rich_n = hits(rich, ("direct", "indirect", "proactive"))
+        bare_hits, _ = hits(bare, ("direct", "indirect", "proactive"))
+        delta = rich_hits - bare_hits
+        if rich_n:
+            verdict = ("MEASURES NOTHING — instructions changed no "
+                       "outcome. Either they don't work, the prompts "
+                       "leak, or the harness is broken"
+                       if delta <= 0 else "instructions are load-bearing")
+            lines.append(
+                f"discrimination  {rich_hits}/{rich_n} vs {bare_hits}/{rich_n} "
+                f"(Δ{delta:+d}) — {verdict}"
+            )
+    else:
+        lines.append(
+            "NO BARE ARM — cannot separate steering from keyword match. "
+            "Add a condition with no instructions installed."
+        )
+    return lines
+
+
 def report(scenarios: list[dict], out_root: Path, conditions: list[str]) -> int:
     rows: dict[str, list[dict]] = {}
     for condition in conditions:
@@ -355,6 +452,13 @@ def report(scenarios: list[dict], out_root: Path, conditions: list[str]) -> int:
                 f"{rows[c][i]['verdict']:>{width + 2}}" for c in conditions
             )
             print(f"  {scenario['id']:16}{cells}")
+
+    grades = self_grade(scenarios, rows, conditions)
+    if grades:
+        print("\n== self-grade: is this EVAL sound? "
+              "(a battery can score well and mean nothing) ==")
+        for line in grades:
+            print(f"  {line}")
     return 1 if failed else 0
 
 

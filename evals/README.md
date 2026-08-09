@@ -1,5 +1,10 @@
 # Tool-selection evals
 
+> **Authoring or extending this battery? Load the `eval-authoring` skill
+> first** (`.claude/skills/eval-authoring/`). Its reference catalogues the
+> ways an eval returns a confident wrong answer — most of them do not look
+> like errors, they look like results.
+
 Skills and the routing rule are load-bearing instructions, and whether they
 work is an **empirical question that changes as models change**. This suite
 answers "do our instructions still steer agents to the right tool?" without
