@@ -395,3 +395,149 @@ def test_infer_implements_still_fires_without_explicit_edge():
     )
     types = [d.get("type") for d in edges.values()]
     assert "implements" in types
+
+
+# ---------------------------------------------------------------------------
+# Ambiguous short names must not be reconciled by iteration order
+# ---------------------------------------------------------------------------
+#
+# The unresolved-reconciliation index used to be a plain dict:
+#
+#     ast_by_short_name[short] = node_id
+#
+# so when several nodes shared a short name, whichever the walk reached
+# LAST silently became the answer. Measured on ORPHEUS: a docstring's
+# bare ``:mod:`derivations``` — whose leaf matches `orpheus.derivations`,
+# `tests.derivations`, and a sibling `...origins.derivations`, all real —
+# bound to the TEST package. The dead-reference count went *down*,
+# because a visible unknown had become a silent misattribution.
+#
+# There is no symptom to notice downstream: the edge looks legitimate and
+# points at a node that exists. Only refusing to guess makes it visible.
+
+
+def _ambiguous_pair() -> tuple[KnowledgeGraph, KnowledgeGraph]:
+    sphinx = KnowledgeGraph()
+    sphinx.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                              display_name="page", domain="std"))
+    sphinx.add_node(GraphNode(
+        id="py:module:derivations", type=NodeType.UNRESOLVED,
+        name="derivations", display_name="derivations", domain="py",
+    ))
+    sphinx.add_edge(GraphEdge(source="doc:page", target="py:module:derivations",
+                              type=EdgeType.REFERENCES))
+
+    ast_g = KnowledgeGraph()
+    for full in ("pkg.derivations", "tests.derivations",
+                 "pkg.deep.origins.derivations"):
+        ast_g.add_node(GraphNode(
+            id=f"py:module:{full}", type=NodeType.MODULE, name=full,
+            display_name="derivations", domain="py",
+            metadata={"file_path": f"/{full.replace('.', '/')}/__init__.py"},
+        ))
+    return sphinx, ast_g
+
+
+def test_ambiguous_short_name_is_left_unresolved():
+    merged = merge_graphs(*_ambiguous_pair())
+    g = merged.nxgraph
+    assert "py:module:derivations" in g, (
+        "an ambiguous short name must stay unresolved and be reported, "
+        "not be folded onto an arbitrary same-leaf candidate"
+    )
+    targets = {t for _, t, d in g.edges(data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:module:tests.derivations" not in targets
+
+
+def test_unambiguous_short_name_still_reconciles():
+    """Declining on ambiguity must not disable reconciliation."""
+    sphinx, ast_g = _ambiguous_pair()
+    # Drop the competitors: one candidate left, so the answer is certain.
+    ast_g.nxgraph.remove_node("py:module:tests.derivations")
+    ast_g.nxgraph.remove_node("py:module:pkg.deep.origins.derivations")
+
+    g = merge_graphs(sphinx, ast_g).nxgraph
+    assert "py:module:derivations" not in g
+    targets = {t for _, t, d in g.edges(data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:module:pkg.derivations" in targets
+
+
+def test_placeholder_never_wins_reconciliation():
+    """A real definition outranks a same-named placeholder."""
+    sphinx = KnowledgeGraph()
+    sphinx.add_node(GraphNode(
+        id="py:function:widget", type=NodeType.UNRESOLVED, name="widget",
+        display_name="widget", domain="py",
+    ))
+    ast_g = KnowledgeGraph()
+    ast_g.add_node(GraphNode(
+        id="py:function:gone.widget", type=NodeType.UNRESOLVED,
+        name="gone.widget", display_name="widget", domain="py",
+    ))
+    ast_g.add_node(GraphNode(
+        id="py:function:pkg.widget", type=NodeType.FUNCTION, name="pkg.widget",
+        display_name="widget", domain="py",
+        metadata={"file_path": "/pkg/__init__.py"},
+    ))
+    g = merge_graphs(sphinx, ast_g).nxgraph
+    assert "py:function:pkg.widget" in g
+    assert "py:function:widget" not in g
+
+
+def test_ambiguity_is_judged_across_directories_not_within_one():
+    """The rival may arrive in a LATER merge pass.
+
+    ``merge_graphs`` runs once per source directory, so a name with
+    rivals elsewhere in the project looks unique inside any single
+    slice. The ORPHEUS shape: the main tree holds two same-leaf modules
+    (ambiguous — correctly declined), then the ``tests`` slice offers
+    exactly ONE candidate, and judged against that slice alone the bare
+    ``:mod:`derivations``` bound to the TEST package.
+
+    Nothing downstream can see that — the edge is well-formed and points
+    at a node that exists — so it is pinned here.
+    """
+    sphinx = KnowledgeGraph()
+    sphinx.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                              display_name="page", domain="std"))
+    sphinx.add_node(GraphNode(
+        id="py:module:derivations", type=NodeType.UNRESOLVED,
+        name="derivations", display_name="derivations", domain="py",
+    ))
+    sphinx.add_edge(GraphEdge(source="doc:page", target="py:module:derivations",
+                              type=EdgeType.REFERENCES))
+
+    # Pass 1 — the main tree offers two same-leaf modules, so the name
+    # is ambiguous here and reconciliation correctly declines.
+    main = KnowledgeGraph()
+    for full in ("pkg.derivations", "pkg.deep.origins.derivations"):
+        main.add_node(GraphNode(
+            id=f"py:module:{full}", type=NodeType.MODULE, name=full,
+            display_name="derivations", domain="py",
+            metadata={"file_path": f"/{full.replace('.', '/')}/__init__.py"},
+        ))
+    merged = merge_graphs(sphinx, main)
+    assert "py:module:derivations" in merged.nxgraph, (
+        "two same-leaf candidates in one slice must already decline"
+    )
+
+    # Pass 2 — the tests dir offers exactly ONE candidate. Within this
+    # slice the name looks unique; only the accumulated graph knows it
+    # is not.
+    tests_g = KnowledgeGraph()
+    tests_g.add_node(GraphNode(
+        id="py:module:tests.derivations", type=NodeType.MODULE,
+        name="tests.derivations", display_name="derivations", domain="py",
+        metadata={"file_path": "/tests/derivations/__init__.py"},
+    ))
+    g = merge_graphs(merged, tests_g).nxgraph
+
+    targets = {t for _, t, d in g.edges(data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:module:tests.derivations" not in targets, (
+        "a reference was silently rebound to the test package because "
+        "the later slice saw only its own candidate"
+    )
+    assert "py:module:derivations" in g

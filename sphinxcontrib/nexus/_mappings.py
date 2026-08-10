@@ -81,14 +81,6 @@ PRF_OBJECT_TYPES: tuple[str, ...] = (
     "theorem",
 )
 
-# Node types that stand in for a symbol nexus could not place. They are
-# minted so a reference has *something* to point at; none of them is a
-# definition. When a suffix match has to choose between candidates, a
-# real definition always outranks a placeholder.
-_PLACEHOLDER_TYPES: frozenset[str] = frozenset(
-    {NodeType.UNRESOLVED.value, NodeType.EXTERNAL.value}
-)
-
 # Map pending_xref reftype to EdgeType.
 REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "ref": EdgeType.REFERENCES,
@@ -111,6 +103,113 @@ REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "envvar": EdgeType.REFERENCES,
     "citation": EdgeType.CITES,
 }
+
+
+# ---------------------------------------------------------------------------
+# Candidate ranking — the one answer to "which node did this name mean?"
+# ---------------------------------------------------------------------------
+#
+# Three passes independently ask that question, at three different moments:
+#
+#   * ``resolve_target_id`` (below) — a Sphinx ``pending_xref`` at
+#     doctree-read time, with a reftype and domain in hand.
+#   * ``ast_analyzer._canonicalize_phantoms`` — a post-merge fold of
+#     placeholder nodes onto the real definitions they shadow.
+#   * ``merge.merge_graphs`` — the same node id typed differently by the
+#     Sphinx and AST sides.
+#
+# They used to carry three separate rank tables; two were byte-identical
+# copies and the third was a binary real-vs-placeholder test. Divergence
+# between them is how a graph starts disagreeing with itself about what a
+# name refers to, so the ranking lives here once and the passes differ
+# only in what they do with the verdict.
+
+#: Concreteness ranking. Lower is more concrete, so a real definition
+#: sorts ahead of the placeholders (``external`` / ``unresolved`` /
+#: untyped) that exist only because some reference could not be placed.
+#: ``class`` beats ``function`` so a mistyped constructor call lands on
+#: the class rather than a same-leaf function elsewhere.
+TYPE_RANK: dict[str, int] = {
+    NodeType.CLASS.value: 0,
+    NodeType.EXCEPTION.value: 1,
+    NodeType.METHOD.value: 2,
+    NodeType.FUNCTION.value: 3,
+    NodeType.TYPE.value: 4,
+    NodeType.ATTRIBUTE.value: 5,
+    NodeType.DATA.value: 6,
+    NodeType.MODULE.value: 7,
+    NodeType.EQUATION.value: 8,
+    NodeType.SECTION.value: 9,
+    NodeType.TERM.value: 10,
+    NodeType.FILE.value: 11,
+    NodeType.EXTERNAL.value: 12,
+    NodeType.UNRESOLVED.value: 13,
+    "": 14,
+}
+
+#: Node types that stand in for a symbol nexus could not place. They are
+#: minted so a reference has *something* to point at; none of them is a
+#: definition, and binding a live reference to one manufactures a dead
+#: reference out of a symbol that exists.
+PLACEHOLDER_TYPES: frozenset[str] = frozenset(
+    {NodeType.UNRESOLVED.value, NodeType.EXTERNAL.value, ""}
+)
+
+#: How many leading components of :func:`candidate_rank` describe *what
+#: kind of thing* a candidate is, as opposed to which of several equally
+#: good ones to pick. Two candidates agreeing across this slice are
+#: genuinely ambiguous — see :func:`candidates_are_ambiguous`.
+_IDENTITY_RANK_WIDTH = 4
+
+
+def candidate_rank(
+    node_id: str,
+    name: str,
+    attrs: dict[str, Any],
+    objtype_rank: int = 0,
+) -> tuple[int, int, int, int, int, str]:
+    """Rank one candidate node as the referent of a name.
+
+    Sorted ascending; the smallest key wins. In order:
+
+    1. **Real definition over placeholder.** Unconditional, and ahead of
+       the role's own preference: a ``:exc:`` role must not bind to an
+       ``unresolved`` ``py:exception:`` tombstone when a real class of
+       that name exists.
+    2. **The role's type preference** (``objtype_rank``), for callers
+       that have one — a ``:class:`` role prefers a class. Callers
+       without reftype context pass ``0`` and skip this level.
+    3. **Concreteness** (:data:`TYPE_RANK`).
+    4. **File-backed over not** — a node with a ``file_path`` came from
+       a real definition site.
+    5. **Shortest qualified name** — prefer ``pkg.solve`` to
+       ``pkg.deep.nested.solve`` when nothing above separates them.
+    6. **Node id**, so the order is total and stable across builds.
+    """
+    node_type = attrs.get("type") or ""
+    return (
+        1 if node_type in PLACEHOLDER_TYPES else 0,
+        objtype_rank,
+        TYPE_RANK.get(node_type, 99),
+        0 if attrs.get("file_path") else 1,
+        len(name),
+        node_id,
+    )
+
+
+def candidates_are_ambiguous(ranked: list[tuple[Any, ...]]) -> bool:
+    """True when the top candidates are indistinguishable in kind.
+
+    Levels 5 and 6 of :func:`candidate_rank` (name length, node id) exist
+    to make the sort total, not to justify a choice — two candidates
+    separated only by those are a coin flip. Callers that must not guess
+    check this and decline; callers that must return *something* take the
+    minimum and accept the tiebreak.
+    """
+    if len(ranked) < 2:
+        return False
+    head = ranked[0][:_IDENTITY_RANK_WIDTH]
+    return sum(1 for key in ranked if key[:_IDENTITY_RANK_WIDTH] == head) > 1
 
 
 def resolve_proof_id(nxgraph: nx.MultiDiGraph, label: str) -> str | None:
@@ -182,7 +281,7 @@ def resolve_target_id(
     for objtype in candidate_objtypes:
         nid = f"{refdomain}:{objtype}:{reftarget}"
         if nid in nxgraph:
-            if nxgraph.nodes[nid].get("type", "") not in _PLACEHOLDER_TYPES:
+            if nxgraph.nodes[nid].get("type", "") not in PLACEHOLDER_TYPES:
                 return nid
             if exact_placeholder is None:
                 exact_placeholder = nid
@@ -193,13 +292,16 @@ def resolve_target_id(
     # placeholder minted from some retired import path can both end in
     # ``.compute_G_bc``. Returning whichever the graph happens to yield
     # first makes resolution depend on insertion order, and picking the
-    # placeholder invents a dead reference out of a live symbol. So rank
-    # every candidate instead: a real definition beats a placeholder,
-    # then earlier obj_types win, then the shortest qualified name, then
-    # the id itself so the result is stable across builds.
+    # placeholder invents a dead reference out of a live symbol, so every
+    # candidate is ranked by the shared :func:`candidate_rank`.
+    #
+    # A reference must produce an edge, so an ambiguous best is taken
+    # rather than declined — unlike the phantom fold, which rewires the
+    # graph and must not guess. That difference in consequence, not in
+    # ranking, is why the two passes read the same verdict differently.
     suffix = f".{reftarget}"
-    best: tuple[int, int, int, str] | None = None
-    for rank_objtype, objtype in enumerate(candidate_objtypes):
+    best: tuple[int, int, int, int, int, str] | None = None
+    for objtype_rank, objtype in enumerate(candidate_objtypes):
         prefix = f"{refdomain}:{objtype}:"
         for node_id in nxgraph:
             if not isinstance(node_id, str) or not node_id.startswith(prefix):
@@ -207,14 +309,14 @@ def resolve_target_id(
             name = node_id[len(prefix):]
             if not (name.endswith(suffix) or name == reftarget):
                 continue
-            node_type = nxgraph.nodes[node_id].get("type", "")
-            rank_real = 1 if node_type in _PLACEHOLDER_TYPES else 0
-            key = (rank_real, rank_objtype, len(name), node_id)
+            key = candidate_rank(
+                node_id, name, nxgraph.nodes[node_id], objtype_rank,
+            )
             if best is None or key < best:
                 best = key
 
     if best is not None and best[0] == 0:
-        return best[3]
+        return best[-1]
 
     # Nothing real matched anywhere. An exact-name placeholder is the
     # better answer than a suffix-matched one — equally uninformative,
@@ -222,4 +324,4 @@ def resolve_target_id(
     # it avoids minting a second phantom for the same symbol.
     if exact_placeholder is not None:
         return exact_placeholder
-    return best[3] if best is not None else None
+    return best[-1] if best is not None else None

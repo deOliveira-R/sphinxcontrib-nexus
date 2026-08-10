@@ -61,25 +61,45 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
-### Fixed — reference resolution no longer prefers a tombstone (#36)
+### Fixed — reference resolution stops inventing answers (#36)
 
-`resolve_target_id` took the *first* node whose name ended in the reftarget, so
-a placeholder minted from a retired import path competed on equal footing with
-a real definition and won on graph-insertion order. On ORPHEUS a bare
-``:func:`compute_G_bc``` bound to the phantom
-`orpheus.derivations.peierls_geometry.compute_G_bc` instead of the live
-`...peierls_nystrom.geometry.compute_G_bc` — and `dead_references` then reported
-the phantom the resolver had just invented, on a surface agents are told to
-trust.
+Four passes independently decide "which node did this name mean?" — Sphinx
+`pending_xref` resolution, the post-merge phantom fold, merge-time type
+conflicts, and merge-time unresolved reconciliation. They carried three
+separate rank tables (two byte-identical) and, between them, three ways to
+pick wrongly.
 
-Candidates are now ranked: a real definition beats a placeholder, then obj_type
-order, then the shortest qualified name, then the id — so resolution no longer
-depends on build order. The exact-match fast path carried the same defect one
-level up (an exact hit on a bare tombstone short-circuited before ranking ran);
-it is now held as a fallback and used only when nothing real matches anywhere.
+**Ranking, not insertion order.** `resolve_target_id` returned the first node
+whose name ended in the reftarget, so a placeholder minted from a retired
+import path could beat a real definition by luck of graph order. On ORPHEUS a
+bare ``:func:`compute_G_bc``` bound to a phantom instead of the live function,
+and `dead_references` then reported the phantom the resolver had just invented.
+The exact-match fast path had the same defect one level up: an exact hit on a
+bare tombstone short-circuited before ranking ran.
 
-Measured on a real ORPHEUS rebuild: dead references 14 → 7, with zero new
-findings and no change in kind to the rest of the graph.
+**One ranking, shared.** `_mappings.candidate_rank` is now the single answer —
+real definition over placeholder, then the role's type preference, concreteness,
+file-backed, shortest qualified name, node id. `candidates_are_ambiguous` names
+the other half: the last two levels make the sort total, not correct. Passes
+that rewire the graph decline on ambiguity; passes that must return something
+take the minimum.
+
+**Ambiguity judged across passes.** `merge_graphs` runs once per source
+directory, so a name with rivals elsewhere looks unique inside any one slice.
+ORPHEUS merges `tests` after the main tree, and a docstring's bare
+``:mod:`derivations``` bound to the TEST package — unambiguous within the
+slice, wrong across the project. The candidate index now spans the incoming
+slice and the accumulated graph.
+
+Measured across three real ORPHEUS rebuilds: dead references 14 → 7. The
+last step raised the count from 6, and that is the intended direction — a
+silent misattribution became a visible unknown. 281 nodes that were being
+wrongly folded now stand alone, almost all docstring prose fragments
+(`optional`, `N`, `ng`) that had been attaching to real symbols and
+manufacturing false edges.
+
+Remaining ORPHEUS findings are tracked in #40 (attributes bound after the
+class body) and #37 (namespace-aware resolution).
 
 ## 0.16.1 — 2026-08-09
 

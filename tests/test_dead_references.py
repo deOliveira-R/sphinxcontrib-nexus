@@ -727,3 +727,91 @@ def test_exact_real_match_still_short_circuits():
     assert resolve_target_id(
         kg.nxgraph, _StubPyDomain(), "py", "func", "pkg.mod.solve",
     ) == "py:function:pkg.mod.solve"
+
+
+# ---------------------------------------------------------------------------
+# One ranking, three resolvers
+# ---------------------------------------------------------------------------
+#
+# Reference resolution happens in three passes at three moments (Sphinx
+# pending_xref, post-merge phantom fold, merge-time type conflict). They
+# once carried three rank tables — two byte-identical copies and a binary
+# real-vs-placeholder test. Divergence between them is how a graph starts
+# disagreeing with itself about what a name refers to.
+
+
+def test_rank_tables_are_not_duplicated():
+    """The table lives in _mappings and nowhere else."""
+    import inspect
+
+    from sphinxcontrib.nexus import ast_analyzer, merge
+
+    for module in (ast_analyzer, merge):
+        src = inspect.getsource(module)
+        assert "NodeType.UNRESOLVED.value: 13" not in src, (
+            f"{module.__name__} redeclares the concreteness ranking; "
+            f"import TYPE_RANK from _mappings instead"
+        )
+
+
+def test_all_three_passes_share_one_ranking():
+    from sphinxcontrib.nexus import merge
+    from sphinxcontrib.nexus._mappings import TYPE_RANK
+    from sphinxcontrib.nexus.ast_analyzer import _canonical_rank_key
+
+    # The phantom fold delegates rather than reimplementing.
+    key = _canonical_rank_key("py:class:pkg.Thing", "pkg.Thing",
+                              {"type": "class", "file_path": "/x.py"})
+    assert key[2] == TYPE_RANK["class"]
+    assert key[3] == 0  # file-backed
+    # merge_graphs consults the same object, not a copy.
+    assert merge.TYPE_RANK is TYPE_RANK
+
+
+def test_placeholder_ranks_below_every_real_type():
+    from sphinxcontrib.nexus._mappings import PLACEHOLDER_TYPES, TYPE_RANK
+
+    worst_real = max(
+        rank for ntype, rank in TYPE_RANK.items()
+        if ntype not in PLACEHOLDER_TYPES
+    )
+    assert all(
+        TYPE_RANK[ntype] > worst_real for ntype in PLACEHOLDER_TYPES
+    ), "a placeholder must never outrank a real definition"
+
+
+def test_ambiguity_is_decided_on_kind_not_tiebreak():
+    """Name length and node id order the sort; they don't justify it."""
+    from sphinxcontrib.nexus._mappings import (
+        candidate_rank,
+        candidates_are_ambiguous,
+    )
+
+    attrs = {"type": "module", "file_path": "/x.py"}
+    # Three real modules sharing a leaf — the ORPHEUS `derivations` case.
+    tied = sorted(
+        candidate_rank(f"py:module:{n}", n, attrs)
+        for n in ("orpheus.derivations", "tests.derivations",
+                  "orpheus.deep.origins.derivations")
+    )
+    assert candidates_are_ambiguous(tied)
+
+    # A real definition against a placeholder is NOT ambiguous.
+    decided = sorted([
+        candidate_rank("py:module:a.thing", "a.thing", attrs),
+        candidate_rank("py:module:thing", "thing", {"type": "unresolved"}),
+    ])
+    assert not candidates_are_ambiguous(decided)
+    assert decided[0][-1] == "py:module:a.thing"
+
+
+def test_single_candidate_is_never_ambiguous():
+    from sphinxcontrib.nexus._mappings import (
+        candidate_rank,
+        candidates_are_ambiguous,
+    )
+
+    assert not candidates_are_ambiguous([])
+    assert not candidates_are_ambiguous(
+        [candidate_rank("py:class:pkg.A", "pkg.A", {"type": "class"})]
+    )

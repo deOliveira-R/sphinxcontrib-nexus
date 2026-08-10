@@ -15,6 +15,10 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Iterator
 
+from sphinxcontrib.nexus._mappings import (
+    candidate_rank,
+    candidates_are_ambiguous,
+)
 from sphinxcontrib.nexus.fingerprint import body_fingerprint
 from sphinxcontrib.nexus.graph import (
     EdgeType,
@@ -1449,29 +1453,6 @@ _ID_PREFIX_TO_TYPE: dict[str, str] = {
     "py:data:": NodeType.DATA.value,
 }
 
-#: Concreteness ranking used when a leaf-name fold has multiple
-#: canonical candidates. Lower rank = more concrete — the fold
-#: picks the winner with the lowest rank and ties break on
-#: ``file_path``-bearing nodes. ``class`` beats ``function`` beats
-#: everything else so mistyped class constructors land on the
-#: class, not on a same-leaf function from a different module.
-_TYPE_RANK: dict[str, int] = {
-    NodeType.CLASS.value: 0,
-    NodeType.EXCEPTION.value: 1,
-    NodeType.METHOD.value: 2,
-    NodeType.FUNCTION.value: 3,
-    NodeType.TYPE.value: 4,
-    NodeType.ATTRIBUTE.value: 5,
-    NodeType.DATA.value: 6,
-    NodeType.MODULE.value: 7,
-    NodeType.EQUATION.value: 8,
-    NodeType.SECTION.value: 9,
-    NodeType.TERM.value: 10,
-    NodeType.FILE.value: 11,
-    NodeType.EXTERNAL.value: 12,
-    NodeType.UNRESOLVED.value: 13,
-    "": 14,
-}
 
 
 def _upgrade_types_from_signals(graph: KnowledgeGraph) -> int:
@@ -1590,21 +1571,15 @@ def _chase_reexports(name: str, reexports: dict[str, str]) -> str:
 
 def _canonical_rank_key(
     cid: str, cname: str, attrs: dict,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, int, int, int, str]:
     """Sort key for canonical-candidate tie-breaking.
 
-    Lower sorts first (= winner). The composite is:
-
-    1. ``_TYPE_RANK[type]`` — most-concrete-type wins. Class beats
-       method beats function beats external beats unresolved.
-    2. ``0`` if the node has ``file_path`` set, else ``1`` —
-       file-backed nodes win over bare references.
-    3. The node id as a final tiebreaker, so the sort is
-       deterministic when all other signals are equal.
+    Delegates to :func:`_mappings.candidate_rank`, the single ranking
+    shared with Sphinx-side reference resolution — this pass has no
+    reftype to express a preference with, so it takes the default
+    ``objtype_rank``. See that function for the ordering.
     """
-    type_rank = _TYPE_RANK.get(attrs.get("type") or "", 99)
-    has_file = 0 if attrs.get("file_path") else 1
-    return (type_rank, has_file, cid)
+    return candidate_rank(cid, cname, attrs)
 
 
 def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
@@ -1727,17 +1702,19 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
         matched.sort(key=lambda pair: _canonical_rank_key(
             pair[0], pair[1], g.nodes[pair[0]],
         ))
-        # If multiple candidates share the best rank AND file_path
-        # status, the leaf is ambiguous — skip rather than guess.
-        best_key = _canonical_rank_key(
-            matched[0][0], matched[0][1], g.nodes[matched[0][0]],
-        )
-        tied = [
-            pair for pair in matched
-            if _canonical_rank_key(pair[0], pair[1], g.nodes[pair[0]])[:2]
-            == best_key[:2]
-        ]
-        if len(tied) > 1:
+        # Two candidates that differ only in name length or node id are
+        # a coin flip, and this pass rewires edges — guessing wrong
+        # silently reattributes a reference. Decline instead.
+        #
+        # ORPHEUS has a live example: a bare ``:mod:`derivations``` whose
+        # leaf matches ``orpheus.derivations``, ``tests.derivations`` and
+        # a sibling ``...origins.derivations``, all real modules. Folding
+        # onto the shortest would be wrong — Sphinx resolves it to the
+        # sibling, which only the referring node's namespace can tell you.
+        if candidates_are_ambiguous([
+            _canonical_rank_key(pair[0], pair[1], g.nodes[pair[0]])
+            for pair in matched
+        ]):
             continue
 
         canonical, _canonical_name = matched[0]
