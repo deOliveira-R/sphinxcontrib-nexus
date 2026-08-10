@@ -5,7 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from sphinxcontrib.nexus._mappings import TYPE_RANK
+from sphinxcontrib.nexus._mappings import (
+    TYPE_RANK,
+    candidate_rank,
+    candidates_are_ambiguous,
+)
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 
 if TYPE_CHECKING:
@@ -68,14 +72,53 @@ def merge_graphs(
             sg.add_node(node_id, **attrs)
 
     # Step 4: reconcile UNRESOLVED nodes
-    # Build a lookup: short name → AST concrete node ID
-    ast_by_short_name: dict[str, str] = {}
-    for node_id, attrs in ag.nodes(data=True):
-        name = attrs.get("name", "")
-        if name:
-            short = name.rsplit(".", 1)[-1]
-            ast_by_short_name[short] = node_id
-            ast_by_short_name[name] = node_id
+    #
+    # Index every candidate under both its full and its short name. Names
+    # collide — three real modules can share the leaf ``derivations`` —
+    # so each key holds every candidate and the winner is chosen by the
+    # shared ranking, not by whichever node the walk happened to reach
+    # last. This pass rewires edges, so an ambiguous name is declined
+    # rather than guessed: silently reattributing a reference to the
+    # wrong symbol is worse than leaving it unresolved, where
+    # ``dead_references`` will at least surface it.
+    #
+    # The index spans BOTH graphs, and that is load-bearing.
+    # ``merge_graphs`` runs once per source directory, so the incoming
+    # ``ag`` is one slice of the project — a name with rivals elsewhere
+    # looks unique inside it. ORPHEUS merges ``tests`` after the main
+    # tree, and indexing ``ag`` alone bound a docstring's bare
+    # ``:mod:`derivations``` to the TEST package: unambiguous within the
+    # slice, wrong across the project. Candidates already folded into
+    # ``sg`` by earlier passes have to compete too.
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    seen_ids: set[str] = set()
+    for graph_view in (ag, sg):
+        for node_id, attrs in graph_view.nodes(data=True):
+            if node_id in seen_ids:
+                continue
+            name = attrs.get("name", "")
+            if not name or attrs.get("type") == NodeType.UNRESOLVED.value:
+                continue
+            seen_ids.add(node_id)
+            by_name.setdefault(name.rsplit(".", 1)[-1], []).append(
+                (node_id, name),
+            )
+            by_name.setdefault(name, []).append((node_id, name))
+
+    def _attrs_of(cid: str) -> dict:
+        return ag.nodes[cid] if cid in ag else sg.nodes[cid]
+
+    def _best_match(name: str) -> str | None:
+        candidates = by_name.get(name)
+        if not candidates:
+            return None
+        ranked = sorted(
+            candidate_rank(cid, cname, _attrs_of(cid))
+            for cid, cname in candidates
+        )
+        if candidates_are_ambiguous(ranked):
+            return None
+        return ranked[0][-1]
 
     unresolved_to_remove: list[str] = []
     for node_id, attrs in list(sg.nodes(data=True)):
@@ -83,7 +126,7 @@ def merge_graphs(
             continue
         name = attrs.get("name", "")
         # Try to find a concrete AST node matching this name
-        concrete_id = ast_by_short_name.get(name)
+        concrete_id = _best_match(name)
         if concrete_id and concrete_id in sg and concrete_id != node_id:
             # Retarget all edges pointing to the unresolved node
             for src, _, key, data in list(sg.in_edges(node_id, keys=True, data=True)):
