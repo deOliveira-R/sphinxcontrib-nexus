@@ -198,7 +198,10 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # then apply any non-LLM verification registries. Both paths run
     # BEFORE ``_infer_implements`` so the token-intersection heuristic
     # honors every explicit edge as "already-known".
-    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+    from sphinxcontrib.nexus.ast_analyzer import (
+        _canonicalize_phantoms,
+        _resolve_relative_references,
+    )
     from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
@@ -214,6 +217,12 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # couldn't see get collapsed into their AST-derived canonicals.
     # This is the "post-merge" pass that catches the ORPHEUS
     # re-export shape where both sides contribute half of the bug.
+    #
+    # Relative references resolve FIRST. Namespace context is an answer
+    # — it reproduces what Sphinx itself would link — while leaf-matching
+    # is a guess among same-named candidates. An answer must not lose to
+    # a guess that happens to sort first.
+    _resolve_relative_references(graph)
     _canonicalize_phantoms(graph)
 
     write_verifies_edges(graph.nxgraph)
