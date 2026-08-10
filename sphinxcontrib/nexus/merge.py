@@ -5,39 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from sphinxcontrib.nexus._mappings import TYPE_RANK
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 
 if TYPE_CHECKING:
     import networkx as nx
 
 logger = logging.getLogger(__name__)
-
-
-#: Same ranking used in ``ast_analyzer._canonicalize_phantoms`` —
-#: lower is more concrete. ``merge_graphs`` consults it when both
-#: the Sphinx and AST sides have the same node id but disagree on
-#: the type: the more concrete winner takes precedence so a
-#: Sphinx placeholder ``py:class:pkg.mod.Thing`` (type=unresolved
-#: from a pending_xref that couldn't resolve at parse time)
-#: upgrades to ``type=class`` when the AST layer has the
-#: corresponding ``ClassDef`` with ``file_path`` + ``lineno``.
-_MERGE_TYPE_RANK: dict[str, int] = {
-    NodeType.CLASS.value: 0,
-    NodeType.EXCEPTION.value: 1,
-    NodeType.METHOD.value: 2,
-    NodeType.FUNCTION.value: 3,
-    NodeType.TYPE.value: 4,
-    NodeType.ATTRIBUTE.value: 5,
-    NodeType.DATA.value: 6,
-    NodeType.MODULE.value: 7,
-    NodeType.EQUATION.value: 8,
-    NodeType.SECTION.value: 9,
-    NodeType.TERM.value: 10,
-    NodeType.FILE.value: 11,
-    NodeType.EXTERNAL.value: 12,
-    NodeType.UNRESOLVED.value: 13,
-    "": 14,
-}
 
 
 def merge_graphs(
@@ -83,8 +57,8 @@ def merge_graphs(
             ast_type = ast_attrs.get("type", "")
             if ast_type:
                 sphinx_type = sg.nodes[node_id].get("type", "")
-                ast_rank = _MERGE_TYPE_RANK.get(ast_type, 99)
-                sphinx_rank = _MERGE_TYPE_RANK.get(sphinx_type, 99)
+                ast_rank = TYPE_RANK.get(ast_type, 99)
+                sphinx_rank = TYPE_RANK.get(sphinx_type, 99)
                 if ast_rank < sphinx_rank:
                     sg.nodes[node_id]["type"] = ast_type
         else:
