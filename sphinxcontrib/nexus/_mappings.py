@@ -81,6 +81,14 @@ PRF_OBJECT_TYPES: tuple[str, ...] = (
     "theorem",
 )
 
+# Node types that stand in for a symbol nexus could not place. They are
+# minted so a reference has *something* to point at; none of them is a
+# definition. When a suffix match has to choose between candidates, a
+# real definition always outranks a placeholder.
+_PLACEHOLDER_TYPES: frozenset[str] = frozenset(
+    {NodeType.UNRESOLVED.value, NodeType.EXTERNAL.value}
+)
+
 # Map pending_xref reftype to EdgeType.
 REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "ref": EdgeType.REFERENCES,
@@ -162,20 +170,56 @@ def resolve_target_id(
             if reftype in obj_type.roles and obj_type_name not in candidate_objtypes:
                 candidate_objtypes.append(obj_type_name)
 
-    # Try exact match first
+    # Try exact match first — the common case, and an O(1) lookup
+    # rather than a scan of the whole graph.
+    #
+    # A placeholder does NOT short-circuit. ``py:function:compute_G_bc``
+    # is a tombstone: it exists only because some bare role could not be
+    # placed, so binding a live reference to it manufactures a dead
+    # reference out of a symbol that does exist. Hold it as a fallback
+    # and let the suffix scan look for a real definition first.
+    exact_placeholder: str | None = None
     for objtype in candidate_objtypes:
         nid = f"{refdomain}:{objtype}:{reftarget}"
         if nid in nxgraph:
-            return nid
+            if nxgraph.nodes[nid].get("type", "") not in _PLACEHOLDER_TYPES:
+                return nid
+            if exact_placeholder is None:
+                exact_placeholder = nid
 
-    # Suffix match: "CPMesh" matches "collision_probability.CPMesh"
+    # Suffix match: "CPMesh" matches "collision_probability.CPMesh".
+    #
+    # Several nodes routinely share a suffix — a live definition and a
+    # placeholder minted from some retired import path can both end in
+    # ``.compute_G_bc``. Returning whichever the graph happens to yield
+    # first makes resolution depend on insertion order, and picking the
+    # placeholder invents a dead reference out of a live symbol. So rank
+    # every candidate instead: a real definition beats a placeholder,
+    # then earlier obj_types win, then the shortest qualified name, then
+    # the id itself so the result is stable across builds.
     suffix = f".{reftarget}"
-    for objtype in candidate_objtypes:
+    best: tuple[int, int, int, str] | None = None
+    for rank_objtype, objtype in enumerate(candidate_objtypes):
         prefix = f"{refdomain}:{objtype}:"
         for node_id in nxgraph:
-            if isinstance(node_id, str) and node_id.startswith(prefix):
-                name = node_id[len(prefix):]
-                if name.endswith(suffix) or name == reftarget:
-                    return node_id
+            if not isinstance(node_id, str) or not node_id.startswith(prefix):
+                continue
+            name = node_id[len(prefix):]
+            if not (name.endswith(suffix) or name == reftarget):
+                continue
+            node_type = nxgraph.nodes[node_id].get("type", "")
+            rank_real = 1 if node_type in _PLACEHOLDER_TYPES else 0
+            key = (rank_real, rank_objtype, len(name), node_id)
+            if best is None or key < best:
+                best = key
 
-    return None
+    if best is not None and best[0] == 0:
+        return best[3]
+
+    # Nothing real matched anywhere. An exact-name placeholder is the
+    # better answer than a suffix-matched one — equally uninformative,
+    # but at least it is the name the author actually wrote, and reusing
+    # it avoids minting a second phantom for the same symbol.
+    if exact_placeholder is not None:
+        return exact_placeholder
+    return best[3] if best is not None else None
