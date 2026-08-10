@@ -61,6 +61,26 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Fixed — reference resolution no longer prefers a tombstone (#36)
+
+`resolve_target_id` took the *first* node whose name ended in the reftarget, so
+a placeholder minted from a retired import path competed on equal footing with
+a real definition and won on graph-insertion order. On ORPHEUS a bare
+``:func:`compute_G_bc``` bound to the phantom
+`orpheus.derivations.peierls_geometry.compute_G_bc` instead of the live
+`...peierls_nystrom.geometry.compute_G_bc` — and `dead_references` then reported
+the phantom the resolver had just invented, on a surface agents are told to
+trust.
+
+Candidates are now ranked: a real definition beats a placeholder, then obj_type
+order, then the shortest qualified name, then the id — so resolution no longer
+depends on build order. The exact-match fast path carried the same defect one
+level up (an exact hit on a bare tombstone short-circuited before ranking ran);
+it is now held as a fallback and used only when nothing real matches anywhere.
+
+Measured on a real ORPHEUS rebuild: dead references 14 → 7, with zero new
+findings and no change in kind to the rest of the graph.
+
 ## 0.16.1 — 2026-08-09
 
 ### Fixed
