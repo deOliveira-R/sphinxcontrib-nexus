@@ -578,3 +578,152 @@ def test_cli_exit_code_gates_ci(tmp_path, capsys):
     ))
     capsys.readouterr()
     assert code == 1
+
+
+# ---------------------------------------------------------------------------
+# Suffix-match ranking (issue #36)
+# ---------------------------------------------------------------------------
+#
+# The shape that produced a 46 % false-positive rate on ORPHEUS: a
+# retired module path survives in prototype/archive source, so the AST
+# pass mints ``py:function:orpheus.derivations.peierls_geometry.
+# compute_G_bc`` as a placeholder — while the live definition sits at
+# ``...peierls_nystrom.geometry.compute_G_bc``. A bare ``:func:`` role
+# suffix-matches BOTH. Picking the placeholder turns a live symbol into
+# a reported dead reference; the graph invents the drift it then flags.
+
+
+class _ObjType:
+    def __init__(self, *roles: str) -> None:
+        self.roles = roles
+
+
+class _StubPyDomain:
+    """The slice of ``PythonDomain`` the resolver reads.
+
+    ``resolve_target_id`` widens a reftype ("func") into candidate
+    obj_types ("function") through ``domain.object_types``. Passing
+    ``None`` would leave only the literal reftype, and ``py:func:``
+    matches no node — so the stub is what makes these tests exercise
+    the suffix path at all.
+    """
+
+    object_types = {
+        "function": _ObjType("func", "obj"),
+        "class": _ObjType("class", "exc", "obj"),
+        "method": _ObjType("meth", "obj"),
+    }
+
+
+def _ranking_graph() -> KnowledgeGraph:
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:pkg.retired.compute_G_bc", NodeType.UNRESOLVED,
+          "pkg.retired.compute_G_bc")
+    _node(kg, "py:function:pkg.live.geometry.compute_G_bc", NodeType.FUNCTION,
+          "pkg.live.geometry.compute_G_bc")
+    return kg
+
+
+def test_suffix_match_prefers_definition_over_placeholder():
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    resolved = resolve_target_id(
+        _ranking_graph().nxgraph, _StubPyDomain(), "py", "func", "compute_G_bc",
+    )
+    assert resolved == "py:function:pkg.live.geometry.compute_G_bc"
+
+
+def test_suffix_match_ranking_ignores_insertion_order():
+    """The placeholder inserted FIRST must still lose.
+
+    The pre-fix resolver returned whichever candidate ``nxgraph``
+    yielded first, so the answer rode on build order.
+    """
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:a.retired.thing", NodeType.UNRESOLVED,
+          "a.retired.thing")
+    _node(kg, "py:function:z.live.thing", NodeType.FUNCTION, "z.live.thing")
+    assert resolve_target_id(kg.nxgraph, _StubPyDomain(), "py", "func", "thing") == (
+        "py:function:z.live.thing"
+    )
+
+
+def test_suffix_match_still_resolves_when_only_placeholder_exists():
+    """Ranking must not become a filter.
+
+    A placeholder is still the best available answer when nothing real
+    shares the suffix — dropping to ``None`` here would mint a SECOND
+    phantom rather than reuse the one already standing.
+    """
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:pkg.retired.only", NodeType.UNRESOLVED,
+          "pkg.retired.only")
+    assert resolve_target_id(kg.nxgraph, _StubPyDomain(), "py", "func", "only") == (
+        "py:function:pkg.retired.only"
+    )
+
+
+def test_suffix_match_breaks_ties_on_shortest_path():
+    """Two live definitions: deterministic, and the shallower wins."""
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:pkg.deep.nested.here.solve", NodeType.FUNCTION,
+          "pkg.deep.nested.here.solve")
+    _node(kg, "py:function:pkg.solve", NodeType.FUNCTION, "pkg.solve")
+    assert resolve_target_id(kg.nxgraph, _StubPyDomain(), "py", "func", "solve") == (
+        "py:function:pkg.solve"
+    )
+
+
+def test_exact_placeholder_does_not_shadow_real_definition():
+    """The bare tombstone must not win by being exact.
+
+    On ORPHEUS a bare ``:func:`compute_G_bc`` had minted
+    ``py:function:compute_G_bc``; the exact-match lookup returned it
+    before suffix ranking ever ran, so the live definition was
+    unreachable and the reference reported dead.
+    """
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:compute_G_bc", NodeType.UNRESOLVED, "compute_G_bc")
+    _node(kg, "py:function:pkg.live.geometry.compute_G_bc", NodeType.FUNCTION,
+          "pkg.live.geometry.compute_G_bc")
+    assert resolve_target_id(
+        kg.nxgraph, _StubPyDomain(), "py", "func", "compute_G_bc",
+    ) == "py:function:pkg.live.geometry.compute_G_bc"
+
+
+def test_exact_placeholder_wins_over_suffix_placeholder():
+    """With nothing real anywhere, prefer the name as written.
+
+    Reusing the exact tombstone keeps one phantom per missing symbol
+    instead of splitting references across two.
+    """
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:widget", NodeType.UNRESOLVED, "widget")
+    _node(kg, "py:function:pkg.retired.widget", NodeType.UNRESOLVED,
+          "pkg.retired.widget")
+    assert resolve_target_id(
+        kg.nxgraph, _StubPyDomain(), "py", "func", "widget",
+    ) == "py:function:widget"
+
+
+def test_exact_real_match_still_short_circuits():
+    """The fast path survives: an exact hit on a real definition wins
+    outright, without paying for a graph scan."""
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:function:pkg.mod.solve", NodeType.FUNCTION, "pkg.mod.solve")
+    _node(kg, "py:function:other.solve", NodeType.FUNCTION, "other.solve")
+    assert resolve_target_id(
+        kg.nxgraph, _StubPyDomain(), "py", "func", "pkg.mod.solve",
+    ) == "py:function:pkg.mod.solve"
