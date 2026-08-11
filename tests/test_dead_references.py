@@ -1320,3 +1320,102 @@ def test_prose_references_do_not_count_as_minting():
     entry = next(d for d in GraphQuery(kg).dead_references().dead
                  if d.target_name == "proj.retired.compute")
     assert entry.minted_by == ["/proj/scratch/probe.py"]
+
+
+# ---------------------------------------------------------------------------
+# The test tree must not absorb production references
+# ---------------------------------------------------------------------------
+#
+# Bare-name fuzzy matching is deliberately more permissive than Sphinx —
+# it recovers thousands of real doc-page-to-class links that Sphinx
+# renders as plain text. The test tree is where that generosity goes
+# wrong: test modules are full of short generic names, so they act as a
+# magnet for any bare name with no better candidate. Measured on
+# ORPHEUS: 578 bare references from production code landed on test
+# helpers, including a reactor-physics operator's `:attr:`K`` binding to
+# a test class's attribute.
+
+
+def _test_magnet_graph(referrer_is_test: bool = False) -> KnowledgeGraph:
+    kg = KnowledgeGraph()
+    _node(kg, "py:module:proj.solver", NodeType.MODULE, "proj.solver",
+          file_path="/proj/solver.py", **({"in_test_file": True} if referrer_is_test else {}))
+    # The only same-leaf candidate lives in the test tree.
+    _node(kg, "py:attribute:tests.test_rate.Case.K", NodeType.ATTRIBUTE,
+          "tests.test_rate.Case.K", file_path="/tests/test_rate.py",
+          in_test_file=True)
+    _node(kg, "py:attribute:K", NodeType.UNRESOLVED, "K")
+    kg.add_edge(GraphEdge(source="py:module:proj.solver", target="py:attribute:K",
+                          type=EdgeType.REFERENCES, metadata={"reftarget": "K"}))
+    return kg
+
+
+def test_production_reference_does_not_bind_to_a_test_helper():
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+
+    kg = _test_magnet_graph()
+    _canonicalize_phantoms(kg)
+    targets = {t for _, t, d in kg.nxgraph.out_edges("py:module:proj.solver", data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:attribute:tests.test_rate.Case.K" not in targets, (
+        "a production docstring's bare name bound to a test helper"
+    )
+    assert "py:attribute:K" in targets
+
+
+def test_test_to_test_bare_reference_still_binds():
+    """The direction is the discriminator, not the name.
+
+    A test module referencing a test helper is legitimate and must keep
+    working — otherwise this rule would just be a blanket ban.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+
+    kg = _test_magnet_graph(referrer_is_test=True)
+    _canonicalize_phantoms(kg)
+    targets = {t for _, t, d in kg.nxgraph.out_edges("py:module:proj.solver", data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:attribute:tests.test_rate.Case.K" in targets
+
+
+def test_non_test_candidate_is_unaffected():
+    """Production-to-production bare matching keeps its generosity."""
+    from sphinxcontrib.nexus.ast_analyzer import _canonicalize_phantoms
+
+    kg = KnowledgeGraph()
+    _node(kg, "py:module:proj.docs", NodeType.MODULE, "proj.docs",
+          file_path="/proj/docs.py")
+    _node(kg, "py:class:proj.cp.solver.CPMesh", NodeType.CLASS,
+          "proj.cp.solver.CPMesh", file_path="/proj/cp/solver.py")
+    _node(kg, "py:class:CPMesh", NodeType.UNRESOLVED, "CPMesh")
+    kg.add_edge(GraphEdge(source="py:module:proj.docs", target="py:class:CPMesh",
+                          type=EdgeType.REFERENCES, metadata={"reftarget": "CPMesh"}))
+    _canonicalize_phantoms(kg)
+    targets = {t for _, t, d in kg.nxgraph.out_edges("py:module:proj.docs", data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:class:proj.cp.solver.CPMesh" in targets
+
+
+def test_test_helpers_inside_the_test_root_are_flagged(tmp_path):
+    """``is_test`` must cover helper modules, not just ``test_*.py``.
+
+    Test patterns are written project-relative (``tests/*``) but paths
+    were matched relative to the SOURCE DIR — and when that dir is
+    itself the test root, the prefix is gone and only the filename
+    patterns fire. 2113 of ORPHEUS's test-tree nodes carried no
+    ``is_test``, and they were exactly the ones catching bad bindings.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+
+    (tmp_path / "tests" / "_harness").mkdir(parents=True)
+    (tmp_path / "tests" / "__init__.py").write_text("")
+    (tmp_path / "tests" / "_harness" / "__init__.py").write_text("")
+    (tmp_path / "tests" / "_harness" / "registry.py").write_text(
+        "def record():\n    pass\n"
+    )
+    # Analyzed as its own source dir, the way nexus_extra_source_dirs does.
+    g = analyze_directory(
+        source_dir=tmp_path / "tests", project_root=tmp_path, exclude_patterns=[],
+    ).nxgraph
+    node = next(n for n in g if str(n).endswith("registry.record"))
+    assert g.nodes[node].get("in_test_file") is True

@@ -9,6 +9,7 @@ from sphinxcontrib.nexus._mappings import (
     TYPE_RANK,
     candidate_rank,
     candidates_are_ambiguous,
+    test_node_is_off_limits,
 )
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 
@@ -45,7 +46,14 @@ def merge_graphs(
     for node_id, ast_attrs in ag.nodes(data=True):
         if node_id in sg:
             # Enrich existing Sphinx node with AST metadata.
-            for key in ("file_path", "lineno", "end_lineno"):
+            # ``in_test_file`` / ``is_test`` are facts about the FILE a
+            # symbol was defined in, which only the AST side can know —
+            # the Sphinx side has no opinion on them. Without copying
+            # them, any test symbol that is also autodoc'd loses the
+            # flag, and the rule that stops test helpers absorbing
+            # production references silently stops applying to it.
+            for key in ("file_path", "lineno", "end_lineno",
+                        "in_test_file", "is_test"):
                 if key in ast_attrs:
                     sg.nodes[node_id][key] = ast_attrs[key]
             sg.nodes[node_id]["source"] = "both"
@@ -121,8 +129,14 @@ def reconcile_unresolved(graph: KnowledgeGraph) -> int:
         by_name.setdefault(name.rsplit(".", 1)[-1], []).append((node_id, name))
         by_name.setdefault(name, []).append((node_id, name))
 
-    def _best_match(name: str) -> str | None:
+    def _best_match(name: str, phantom_id: str) -> str | None:
         candidates = by_name.get(name)
+        if not candidates:
+            return None
+        candidates = [
+            (cid, cname) for cid, cname in candidates
+            if not test_node_is_off_limits(g, cid, phantom_id)
+        ]
         if not candidates:
             return None
         ranked = sorted(
@@ -137,7 +151,7 @@ def reconcile_unresolved(graph: KnowledgeGraph) -> int:
     for node_id, attrs in list(g.nodes(data=True)):
         if attrs.get("type") != NodeType.UNRESOLVED.value:
             continue
-        concrete_id = _best_match(attrs.get("name", ""))
+        concrete_id = _best_match(attrs.get("name", ""), node_id)
         if not concrete_id or concrete_id == node_id or concrete_id not in g:
             continue
         for src, _, key, data in list(g.in_edges(node_id, keys=True, data=True)):
