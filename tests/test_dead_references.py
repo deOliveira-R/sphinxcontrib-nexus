@@ -1246,3 +1246,77 @@ def test_numref_does_not_hijack_non_equation_targets():
                           name="fig-mesh", display_name="fig-mesh", domain="std"))
     resolved = resolve_target_id(kg.nxgraph, None, "std", "numref", "fig-mesh")
     assert resolved != "math:equation:fig-mesh"
+
+
+# ---------------------------------------------------------------------------
+# Placeholder provenance (issue #39)
+# ---------------------------------------------------------------------------
+#
+# The ORPHEUS shape behind #36: a prototyping directory still imported a
+# module retired months earlier, so nexus minted placeholders for the
+# unresolvable path — and bare roles on unrelated theory pages bound to
+# them. Ranking (#41/#42) stopped a placeholder from beating a real
+# definition, so that harm is gone. What is still worth surfacing is the
+# weaker case: the placeholder is the only match, the reference IS dead,
+# and the reason is that some corner of the tree names a symbol nothing
+# defines. Naming those files turns "this reference is dead" into "this
+# directory is minting a namespace".
+
+
+def _minting_fixture() -> KnowledgeGraph:
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                          display_name="page", domain="std", docname="page"))
+    # A prototype module that still imports something retired. Its
+    # file_path is what makes ``proj`` a project-owned top level, so the
+    # phantom below is project-internal rather than external.
+    _node(kg, "py:module:proj.scratch.probe", NodeType.MODULE,
+          "proj.scratch.probe", file_path="/proj/scratch/probe.py")
+    _node(kg, "py:function:proj.retired.compute", NodeType.UNRESOLVED,
+          "proj.retired.compute")
+    kg.add_edge(GraphEdge(source="py:module:proj.scratch.probe",
+                          target="py:function:proj.retired.compute",
+                          type=EdgeType.IMPORTS))
+    # A theory page references it too — this is the reported site.
+    kg.add_edge(GraphEdge(source="doc:page",
+                          target="py:function:proj.retired.compute",
+                          type=EdgeType.DOCUMENTS, metadata={"reftype": "func"}))
+    return kg
+
+
+def test_dead_reference_names_the_code_that_minted_it():
+    result = GraphQuery(_minting_fixture()).dead_references()
+    entry = next(d for d in result.dead
+                 if d.target_name == "proj.retired.compute")
+    assert entry.minted_by == ["/proj/scratch/probe.py"]
+
+
+def test_ordinary_drift_has_no_minting_files():
+    """A symbol nothing names is simply absent — that is normal drift."""
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                          display_name="page", domain="std", docname="page"))
+    _node(kg, "py:module:proj.live", NodeType.MODULE, "proj.live",
+          file_path="/proj/live.py")
+    _node(kg, "py:class:proj.Gone", NodeType.UNRESOLVED, "proj.Gone")
+    kg.add_edge(GraphEdge(source="doc:page", target="py:class:proj.Gone",
+                          type=EdgeType.DOCUMENTS, metadata={"reftype": "class"}))
+    entry = next(d for d in GraphQuery(kg).dead_references().dead
+                 if d.target_name == "proj.Gone")
+    assert entry.minted_by == []
+
+
+def test_prose_references_do_not_count_as_minting():
+    """Only code that NAMES the target mints it.
+
+    A doc page mentioning a vanished symbol is the reference being
+    reported, not the cause of it — counting prose would make every
+    finding look self-inflicted.
+    """
+    kg = _minting_fixture()
+    kg.add_edge(GraphEdge(source="doc:page",
+                          target="py:function:proj.retired.compute",
+                          type=EdgeType.REFERENCES))
+    entry = next(d for d in GraphQuery(kg).dead_references().dead
+                 if d.target_name == "proj.retired.compute")
+    assert entry.minted_by == ["/proj/scratch/probe.py"]

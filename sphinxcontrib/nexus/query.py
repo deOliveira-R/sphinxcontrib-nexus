@@ -465,6 +465,13 @@ class DeadReference:
     kind: str  # "python" | "equation"
     site_count: int
     sites: list[DeadReferenceSite]
+    #: Source files whose own code (an import, call, or annotation)
+    #: minted this placeholder. Non-empty means the target is not simply
+    #: absent — it exists as a name only because these files reference
+    #: it, and a bare role elsewhere then bound to it. When they all sit
+    #: in one unmaintained corner of the tree, that directory is the
+    #: finding, not the reference. See ``minting_files``.
+    minted_by: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2025,6 +2032,51 @@ class GraphQuery:
         "abc.ABC",
     })
 
+    #: Edge kinds that mean "this file's own code names the target",
+    #: as opposed to prose that merely mentions it. An import or a call
+    #: is what MINTS a placeholder; a doc reference only consumes one.
+    _MINTING_EDGE_TYPES: frozenset[str] = frozenset({
+        "imports", "calls", "type_uses", "inherits",
+    })
+
+    def _minting_files(self, target_id: str, limit: int = 5) -> list[str]:
+        """Source files whose code created this placeholder.
+
+        The ORPHEUS shape behind #36: a prototyping directory still
+        imported a module retired months earlier, so nexus minted
+        placeholder nodes for the unresolvable path — and bare
+        ``:func:`name``` roles on unrelated theory pages then bound to
+        them. Live symbols were reported dead against a namespace only a
+        throwaway prototype defined.
+
+        Ranking (#41/#42) stopped a placeholder from outranking a real
+        definition, so that specific harm is gone. What remains worth
+        surfacing is the weaker case: the placeholder is the ONLY match,
+        the reference is genuinely reported dead, and the reason is that
+        some corner of the tree names a symbol nothing defines. Pointing
+        at those files turns "this reference is dead" into "this
+        directory is minting a namespace", which is the actionable form.
+
+        Empty when nothing in the codebase names the target — then it is
+        simply absent, which is ordinary drift.
+        """
+        g = self._g
+        if target_id not in g:
+            return []
+        files: list[str] = []
+        seen: set[str] = set()
+        for src, _, data in g.in_edges(target_id, data=True):
+            if data.get("type") not in self._MINTING_EDGE_TYPES:
+                continue
+            path = (g.nodes.get(src) or {}).get("file_path")
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            files.append(path)
+            if len(files) >= limit:
+                break
+        return sorted(files)
+
     def dead_references(
         self, max_sites_per_target: int = 25,
     ) -> DeadReferencesResult:
@@ -2136,6 +2188,7 @@ class GraphQuery:
                 kind=kinds[tgt],
                 site_count=len(sites),
                 sites=sites[:max_sites_per_target],
+                minted_by=self._minting_files(tgt),
             ))
 
         dead.sort(key=lambda d: (-d.site_count, d.target_name))
