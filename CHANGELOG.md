@@ -61,6 +61,30 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Changed — reconciliation decides once, over the whole graph (#46)
+
+`merge_graphs` runs once per source directory, and unresolved-node
+reconciliation lived inside it — a decision needing project-wide knowledge,
+taken from a single slice. The previous fix widened its index to span both
+graphs, which repaired the observed binding but left the failure mode: a rival
+arriving in a *later* slice could not retroactively make an earlier decision
+ambiguous. It was safe only because ORPHEUS merges its main tree first.
+
+Now `merge.reconcile_unresolved(graph)`, called once after every merge in both
+the Sphinx and CLI paths. `merge_graphs` is a pure merge again.
+
+### Added — dead references name the code that minted them (#39)
+
+`DeadReference.minted_by` lists the source files whose own code — an import,
+call, annotation, or base class — created a placeholder. Non-empty means the
+target is not simply absent: it exists as a name only because those files
+reference it, and a role elsewhere then bound to it. When they sit in one
+unmaintained corner of the tree, that directory is the finding rather than the
+reference.
+
+Prose does not count as minting. A page mentioning a vanished symbol is the
+reference being reported, not its cause.
+
 ### Added — relative references resolve against their namespace (#37)
 
 Half of a real project's Python references are relative —

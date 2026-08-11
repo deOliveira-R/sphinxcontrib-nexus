@@ -205,6 +205,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
+        reconcile_unresolved,
         write_verifies_edges,
     )
     from sphinxcontrib.nexus.registry import (
@@ -222,6 +223,10 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # — it reproduces what Sphinx itself would link — while leaf-matching
     # is a guess among same-named candidates. An answer must not lose to
     # a guess that happens to sort first.
+    # Reconciliation decides against the COMPLETE graph, not the last
+    # slice merged — see ``reconcile_unresolved`` for the wrong binding
+    # that the per-directory version produced.
+    reconcile_unresolved(graph)
     _resolve_relative_references(graph)
     _canonicalize_phantoms(graph)
 

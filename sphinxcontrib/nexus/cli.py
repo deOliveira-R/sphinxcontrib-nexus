@@ -1196,7 +1196,7 @@ def _run_setup(args: argparse.Namespace) -> int:
 def _run_analyze(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus.ast_analyzer import analyze_directory
     from sphinxcontrib.nexus.export import load_sqlite, write_json, write_sqlite
-    from sphinxcontrib.nexus.merge import merge_graphs
+    from sphinxcontrib.nexus.merge import merge_graphs, reconcile_unresolved
 
     source_dir = args.source_dir.resolve()
     if not source_dir.is_dir():
@@ -1216,6 +1216,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
     if args.db.exists():
         sphinx_graph = load_sqlite(args.db)
         merged = merge_graphs(sphinx_graph, ast_graph)
+        # merge_graphs no longer reconciles — that decision needs the
+        # whole graph, which here is everything merged above.
+        reconcile_unresolved(merged)
         print(f"Merged with existing graph from {args.db}")
     else:
         merged = ast_graph
@@ -1564,6 +1567,14 @@ def _run_dead_references(args: argparse.Namespace) -> int:
             print(f"      {site.source.id}{f'  ({where}{line})' if where else ''}")
         if entry.site_count > 4:
             print(f"      … and {entry.site_count - 4} more")
+        if entry.minted_by:
+            # The target is not simply absent — this code names it, and a
+            # reference elsewhere bound to the placeholder that created.
+            # When these all sit in one unmaintained corner of the tree,
+            # that directory is the finding, not the reference.
+            print("      minted by code in:")
+            for path in entry.minted_by:
+                print(f"        {path}")
     if result.total_dead > len(dead):
         print(f"\n  … and {result.total_dead - len(dead)} more target(s)")
     return 1 if args.exit_code else 0

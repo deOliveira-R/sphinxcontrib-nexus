@@ -71,81 +71,6 @@ def merge_graphs(
             attrs["source"] = "ast_only"
             sg.add_node(node_id, **attrs)
 
-    # Step 4: reconcile UNRESOLVED nodes
-    #
-    # Index every candidate under both its full and its short name. Names
-    # collide — three real modules can share the leaf ``derivations`` —
-    # so each key holds every candidate and the winner is chosen by the
-    # shared ranking, not by whichever node the walk happened to reach
-    # last. This pass rewires edges, so an ambiguous name is declined
-    # rather than guessed: silently reattributing a reference to the
-    # wrong symbol is worse than leaving it unresolved, where
-    # ``dead_references`` will at least surface it.
-    #
-    # The index spans BOTH graphs, and that is load-bearing.
-    # ``merge_graphs`` runs once per source directory, so the incoming
-    # ``ag`` is one slice of the project — a name with rivals elsewhere
-    # looks unique inside it. ORPHEUS merges ``tests`` after the main
-    # tree, and indexing ``ag`` alone bound a docstring's bare
-    # ``:mod:`derivations``` to the TEST package: unambiguous within the
-    # slice, wrong across the project. Candidates already folded into
-    # ``sg`` by earlier passes have to compete too.
-    by_name: dict[str, list[tuple[str, str]]] = {}
-    seen_ids: set[str] = set()
-    for graph_view in (ag, sg):
-        for node_id, attrs in graph_view.nodes(data=True):
-            if node_id in seen_ids:
-                continue
-            name = attrs.get("name", "")
-            if not name or attrs.get("type") == NodeType.UNRESOLVED.value:
-                continue
-            seen_ids.add(node_id)
-            by_name.setdefault(name.rsplit(".", 1)[-1], []).append(
-                (node_id, name),
-            )
-            by_name.setdefault(name, []).append((node_id, name))
-
-    def _attrs_of(cid: str) -> dict:
-        return ag.nodes[cid] if cid in ag else sg.nodes[cid]
-
-    def _best_match(name: str) -> str | None:
-        candidates = by_name.get(name)
-        if not candidates:
-            return None
-        ranked = sorted(
-            candidate_rank(cid, cname, _attrs_of(cid))
-            for cid, cname in candidates
-        )
-        if candidates_are_ambiguous(ranked):
-            return None
-        return ranked[0][-1]
-
-    unresolved_to_remove: list[str] = []
-    for node_id, attrs in list(sg.nodes(data=True)):
-        if attrs.get("type") != NodeType.UNRESOLVED.value:
-            continue
-        name = attrs.get("name", "")
-        # Try to find a concrete AST node matching this name
-        concrete_id = _best_match(name)
-        if concrete_id and concrete_id in sg and concrete_id != node_id:
-            # Retarget all edges pointing to the unresolved node
-            for src, _, key, data in list(sg.in_edges(node_id, keys=True, data=True)):
-                sg.add_edge(src, concrete_id, **data)
-                sg.remove_edge(src, node_id, key=key)
-            for _, tgt, key, data in list(sg.out_edges(node_id, keys=True, data=True)):
-                sg.add_edge(concrete_id, tgt, **data)
-                sg.remove_edge(node_id, tgt, key=key)
-            unresolved_to_remove.append(node_id)
-
-    for node_id in unresolved_to_remove:
-        sg.remove_node(node_id)
-
-    if unresolved_to_remove:
-        logger.info(
-            "Reconciled %d UNRESOLVED nodes with AST-found symbols",
-            len(unresolved_to_remove),
-        )
-
     # Step 5: copy all AST edges
     for src, tgt, _key, data in ag.edges(keys=True, data=True):
         sg.add_edge(src, tgt, **data)
@@ -157,6 +82,81 @@ def merge_graphs(
     _tag_confidence(sg)
 
     return sphinx_kg
+
+
+
+def reconcile_unresolved(graph: KnowledgeGraph) -> int:
+    """Fold UNRESOLVED nodes onto the real definitions that share a name.
+
+    Runs ONCE over the complete graph, on purpose. This used to live
+    inside :func:`merge_graphs`, which is called once per source
+    directory — so it judged "is this name ambiguous?" against a single
+    slice of the project, and a name with rivals elsewhere looked
+    unique inside it. ORPHEUS merges ``tests`` after the main tree, and
+    a docstring's bare ``:mod:`derivations``` bound to the TEST package:
+    unambiguous within the slice that decided it, wrong across the
+    project.
+
+    Widening the index to span both graphs fixed the observed case but
+    left the pass order-sensitive by construction — a rival arriving in
+    a LATER slice still could not retroactively make an earlier decision
+    ambiguous. Deciding after every merge removes the failure mode
+    rather than narrowing it.
+
+    Names are indexed under both their full and their short form, every
+    candidate competes under the shared ranking, and an ambiguous name
+    is declined: this rewires edges, and silently reattributing a
+    reference to the wrong symbol is worse than leaving it unresolved,
+    where ``dead_references`` will surface it.
+
+    Returns the number of nodes folded away.
+    """
+    g = graph.nxgraph
+
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    for node_id, attrs in g.nodes(data=True):
+        name = attrs.get("name", "")
+        if not name or attrs.get("type") == NodeType.UNRESOLVED.value:
+            continue
+        by_name.setdefault(name.rsplit(".", 1)[-1], []).append((node_id, name))
+        by_name.setdefault(name, []).append((node_id, name))
+
+    def _best_match(name: str) -> str | None:
+        candidates = by_name.get(name)
+        if not candidates:
+            return None
+        ranked = sorted(
+            candidate_rank(cid, cname, g.nodes[cid])
+            for cid, cname in candidates
+        )
+        if candidates_are_ambiguous(ranked):
+            return None
+        return ranked[0][-1]
+
+    folded: list[str] = []
+    for node_id, attrs in list(g.nodes(data=True)):
+        if attrs.get("type") != NodeType.UNRESOLVED.value:
+            continue
+        concrete_id = _best_match(attrs.get("name", ""))
+        if not concrete_id or concrete_id == node_id or concrete_id not in g:
+            continue
+        for src, _, key, data in list(g.in_edges(node_id, keys=True, data=True)):
+            g.add_edge(src, concrete_id, **data)
+            g.remove_edge(src, node_id, key=key)
+        for _, tgt, key, data in list(g.out_edges(node_id, keys=True, data=True)):
+            g.add_edge(concrete_id, tgt, **data)
+            g.remove_edge(node_id, tgt, key=key)
+        folded.append(node_id)
+
+    for node_id in folded:
+        g.remove_node(node_id)
+
+    if folded:
+        logger.info(
+            "Reconciled %d UNRESOLVED nodes with AST-found symbols",
+            len(folded),
+        )
+    return len(folded)
 
 
 def _tag_confidence(g: "nx.MultiDiGraph") -> None:
