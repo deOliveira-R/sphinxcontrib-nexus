@@ -7,6 +7,12 @@ build/
 .pytest_cache/
 _nexus/
 *.db
-.claude/
+# Everything under .claude/ is machine-local EXCEPT rules/, which are
+# instruction-authority and belong to the repo — a rule that vanishes on
+# clone cannot guide the next contributor, agent or human. Git will not
+# descend into an ignored directory, so the contents are ignored rather
+# than the directory itself.
+.claude/*
+!.claude/rules/
 # Sphinx output for nexus's own docs (includes the self-graph).
 docs/_build/

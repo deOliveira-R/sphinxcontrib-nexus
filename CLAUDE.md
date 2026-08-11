@@ -85,6 +85,19 @@ sphinxcontrib/nexus/
 4. Tag `vX.Y.Z` — CI publishes to PyPI on tags.
 5. Delete the merged feature branch.
 
+## Project rules (`.claude/rules/`)
+
+Behavioural rules live in `.claude/rules/` — in-repo and
+instruction-authority, so they survive a clone and bind every session
+rather than one machine. Everything else under `.claude/` is local.
+
+- **`measurement-discipline.md`** — how to know a change worked. A count
+  is not a fitness function; a byte-identical result is inert, not
+  conservative; verify the test against the unfixed code; measure an
+  issue's premise before implementing it; prove a gate can fail before
+  trusting it green. Written from the 0.17.0 cycle, where the
+  dead-reference count fell twice *because resolution got worse*.
+
 ## Git workflow
 
 - Branch naming: `<type>/<topic>` (`feature|fix|docs|refactor|test|chore`).
