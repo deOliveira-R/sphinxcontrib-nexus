@@ -197,6 +197,39 @@ def candidate_rank(
     )
 
 
+def test_node_is_off_limits(
+    nxgraph: "nx.MultiDiGraph", candidate_id: str, phantom_id: str,
+) -> bool:
+    """True when a test-tree node must not absorb this phantom.
+
+    Bare-name fuzzy matching is deliberately more permissive than
+    Sphinx: an api page writing ``:class:`CPMesh``` with no
+    ``currentmodule`` fails Sphinx's own lookup and renders as plain
+    text, while nexus resolves it. That generosity is worth keeping —
+    it recovers thousands of real doc-page-to-class links.
+
+    The test tree is where it goes wrong. Test modules are full of short
+    generic names (``K``, ``record``, ``slab``, ``omega_dot_n``), so
+    they act as a magnet for any bare name with no better candidate.
+    Measured on ORPHEUS: 578 bare references from production code landed
+    on test helpers — a reactor-physics operator's ``:attr:`K``` bound
+    to a test class's attribute.
+
+    Production code does not reference test helpers, so the direction is
+    the discriminator, not the name. Test-to-test bare references are
+    untouched; only a candidate inside the test tree, for a phantom that
+    something outside it references, is refused.
+    """
+    if not (nxgraph.nodes.get(candidate_id) or {}).get("in_test_file"):
+        return False
+    # The phantom is shared by every referrer that spelled the name, so
+    # one production referrer is enough to rule the candidate out.
+    return any(
+        not (nxgraph.nodes.get(src) or {}).get("in_test_file")
+        for src, _ in nxgraph.in_edges(phantom_id)
+    )
+
+
 def candidates_are_ambiguous(ranked: list[tuple[Any, ...]]) -> bool:
     """True when the top candidates are indistinguishable in kind.
 

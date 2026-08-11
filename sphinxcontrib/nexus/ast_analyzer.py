@@ -19,6 +19,7 @@ from sphinxcontrib.nexus._mappings import (
     PLACEHOLDER_TYPES,
     candidate_rank,
     candidates_are_ambiguous,
+    test_node_is_off_limits,
 )
 from sphinxcontrib.nexus.fingerprint import body_fingerprint
 from sphinxcontrib.nexus.graph import (
@@ -1519,6 +1520,10 @@ def analyze_directory(
         if nested_trees and not nested_trees.isdisjoint(filepath.parents):
             continue
         rel = filepath.relative_to(source_dir).as_posix()
+        try:
+            rel_to_root = filepath.relative_to(project_root).as_posix()
+        except ValueError:
+            rel_to_root = rel
         # Match exclude patterns against the relative POSIX path, not the
         # path tail (Path.match anchors to the right, which silently
         # skips nested matches for patterns like ``tests/*``).
@@ -1533,12 +1538,34 @@ def analyze_directory(
             continue
 
         module_name = resolver.file_to_module(filepath)
-        is_test_file = any(fnmatch(rel, pat) for pat in test_patterns)
+        # Test patterns are written project-relative (``tests/*``), but
+        # ``rel`` is relative to the SOURCE DIR — and when that dir is
+        # itself the test root (``nexus_extra_source_dirs = ['tests']``)
+        # the ``tests/`` prefix is gone, so ``tests/*`` cannot match and
+        # only the ``test_*.py`` filename patterns fire. Helper modules
+        # inside the test tree (``_harness/registry.py``, snapshot
+        # generators) were therefore never flagged: 2113 of ORPHEUS's
+        # test-tree nodes carried no ``is_test``. Match both spellings.
+        is_test_file = any(
+            fnmatch(rel, pat) or fnmatch(rel_to_root, pat)
+            for pat in test_patterns
+        )
         visitor = CodeVisitor(
             module_name, str(filepath), is_test_file=is_test_file,
             attr_comments=attribute_comments(source),
         )
         visitor.visit(tree)
+
+        if is_test_file:
+            # ``is_test`` means "this IS a test" — name-based for
+            # functions, so a helper like ``_harness.registry.record``
+            # never carries it, and ``retest`` / ``dead_functions``
+            # depend on that meaning. ``in_test_file`` is the different
+            # question — "does this live in the test tree?" — which is
+            # what fuzzy name matching needs in order not to let a test
+            # helper absorb a reference from production code.
+            for node in visitor.nodes:
+                node.metadata["in_test_file"] = True
 
         for node in visitor.nodes:
             graph.add_node(node)
@@ -2009,6 +2036,13 @@ def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:
                 # Bare-name phantom — the phantom has no module path, so
                 # fall back to "unique leaf match across the whole graph".
                 matched = list(all_candidates)
+
+        # A test helper must not absorb a name that production code
+        # references — see ``test_node_is_off_limits``.
+        matched = [
+            pair for pair in matched
+            if not test_node_is_off_limits(g, pair[0], nid)
+        ]
 
         if not matched:
             continue
