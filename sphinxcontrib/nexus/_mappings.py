@@ -270,6 +270,14 @@ def resolve_target_id(
         nid = f"math:equation:{reftarget}"
         if nid in nxgraph:
             return nid
+        # Figures and tables carry ``:name:`` labels, which Sphinx's std
+        # domain publishes as ordinary labels — the same node a ``:ref:``
+        # to that name would bind to. Exact key, no fuzzy matching, so
+        # there is no ambiguity to get wrong: the reference either names
+        # a label that exists or it does not.
+        nid = f"std:label:{reftarget}"
+        if nid in nxgraph:
+            return nid
     if refdomain == "prf":
         return resolve_proof_id(nxgraph, reftarget)
 
