@@ -227,7 +227,26 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
 
             if tgt_type == "equation" and tgt not in eq_map:
                 eq_map[tgt] = _tokenize(tgt_name)
-            elif tgt_type in code_types and edge_type == "documents" and tgt not in code_map:
+            elif (
+                tgt_type in code_types
+                and edge_type == "documents"
+                and tgt not in code_map
+                # A test does not IMPLEMENT an equation — it VERIFIES
+                # one, which the graph already models with TESTS edges
+                # (``@pytest.mark.verifies``, the ``verifies``
+                # directive). Inferring IMPLEMENTS onto a test inverts
+                # the relationship the V&V surface reads: an equation
+                # whose only implementer is a test class reads as
+                # implemented when nothing implements it, and that is a
+                # false ALIVE — the direction that stays silent.
+                #
+                # Test classes are unusually prone to it because the
+                # match is on shared name tokens:
+                # ``TestSlabViaUnifiedDiscrepancyDiagnostic`` shares
+                # ``slab`` / ``peierls`` / ``multigroup`` with half the
+                # equations on its page and collects a dozen edges.
+                and not tgt_attrs.get("in_test_file")
+            ):
                 code_map[tgt] = _tokenize(tgt_name)
 
         equations = list(eq_map.items())

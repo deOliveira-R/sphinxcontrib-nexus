@@ -61,6 +61,22 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Fixed — a test verifies an equation, it does not implement one (#49)
+
+`_infer_implements` pairs a doc page's equations with the code symbols it
+documents, on shared name tokens, and nothing excluded test code. Test classes
+were unusually prone to it: `TestSlabViaUnifiedDiscrepancyDiagnostic` shares
+`slab` / `peierls` / `multigroup` with half the equations on its page.
+
+IMPLEMENTS means "this code is the equation"; a test verifies one, which the
+graph already models with TESTS edges. Now excludes nodes flagged
+`in_test_file` — a recorded fact about the defining file, not a name heuristic.
+
+On ORPHEUS this removes 194 edges. `verification_coverage` reports the same
+implemented and verified counts before and after, so no equation was drawing its
+status from a test-implements edge — the false ALIVE was latent rather than
+active on that corpus.
+
 ### Fixed — test helpers no longer absorb production references
 
 Bare-name fuzzy matching is deliberately more permissive than Sphinx: an api
