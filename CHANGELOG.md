@@ -61,6 +61,33 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Fixed — test helpers no longer absorb production references
+
+Bare-name fuzzy matching is deliberately more permissive than Sphinx: an api
+page writing ``:class:`CPMesh``` with no `currentmodule` fails Sphinx's own
+lookup and renders as plain text, while nexus resolves it. That generosity
+recovers thousands of real doc-page-to-class links and is kept.
+
+The test tree is where it went wrong — test modules are full of short generic
+names, so they acted as a magnet for any bare name with no better candidate. On
+ORPHEUS a reactor-physics operator's ``:attr:`K``` bound to a test class's
+attribute, and ``record`` to `tests._harness.registry`. The direction is the
+discriminator: a test-tree candidate is refused for a phantom that anything
+outside the test tree references. Test-to-test references are untouched, and
+explicit fully-qualified references never create a phantom so are unaffected.
+
+Two supporting fixes: `is_test` was never set on test-tree nodes when the test
+root was itself the analysed source dir (patterns are project-relative, paths
+were source-dir-relative), and `merge_graphs` dropped the flag for any test
+symbol that was also autodoc'd. A new `in_test_file` marker answers "does this
+live in the test tree?", which is a different question from `is_test`'s "is this
+a test case?" — the latter is name-based and load-bearing for `retest` and
+`dead_functions`.
+
+This surfaced one true dead reference on ORPHEUS that leaf-matching had been
+hiding: a docstring naming `tests.sn.test_scattering_operator` after the module
+moved under `operators/`.
+
 ### Added — `:numref:` binds to figure and table labels (#45)
 
 `:numref:` names a target by its number rather than its title, but it names the
