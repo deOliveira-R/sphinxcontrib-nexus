@@ -259,6 +259,17 @@ def resolve_target_id(
     if reftype == "eq":
         nid = f"math:equation:{reftarget}"
         return nid if nid in nxgraph else None
+    if reftype == "numref":
+        # ``:numref:`peierls-3d``` on an equation label is a legitimate
+        # and common spelling — it renders the equation NUMBER rather
+        # than the label, but it names the same target. Without this it
+        # minted a ``math:numref:`` placeholder standing beside the real
+        # equation node, splitting one equation's references across two
+        # ids. Falls through to the ordinary std-domain path (figures,
+        # tables, sections) when no such equation exists.
+        nid = f"math:equation:{reftarget}"
+        if nid in nxgraph:
+            return nid
     if refdomain == "prf":
         return resolve_proof_id(nxgraph, reftarget)
 

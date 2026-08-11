@@ -674,6 +674,71 @@ def _discriminated_tags(
 # ---------------------------------------------------------------------------
 
 
+def attribute_comments(source: str) -> dict[int, str]:
+    """Map each ``#:``-documented statement's line to its comment prose.
+
+    Sphinx's attribute-comment form documents the statement below it::
+
+        #: Spatial axis names, positional-by-axis — the crosswalk that
+        #: :class:`FaceLayout` and :attr:`SNMesh.bc` both key on.
+        AXIS_NAMES = ("x", "y", "z")
+
+    That prose carries real cross-references (168 py-domain roles on
+    ORPHEUS) and ``ast`` discards comments outright, so the token stream
+    is the only way to see it. ``tokenize`` rather than a line regex
+    specifically so a ``#:`` inside a string literal is not mistaken for
+    an attribute comment.
+
+    A trailing form (``x = 1  #: doc``) documents the statement it sits
+    on; a leading block documents the next one. Both are returned keyed
+    by the documented statement's line number.
+    """
+    import io
+    import tokenize as _tokenize
+
+    result: dict[int, str] = {}
+    block: list[str] = []
+    block_start_seen = False
+    try:
+        tokens = list(_tokenize.generate_tokens(io.StringIO(source).readline))
+    except (_tokenize.TokenError, IndentationError, SyntaxError):
+        # Malformed source: ast.parse already reports it. Losing the
+        # comments is strictly better than failing the whole analysis.
+        return result
+
+    prev_end_row = 0
+    for tok in tokens:
+        if tok.type == _tokenize.COMMENT:
+            text = tok.string
+            if not text.startswith("#:"):
+                block = []
+                block_start_seen = False
+                continue
+            prose = text[2:].strip()
+            # A comment sharing a line with code is a trailing comment:
+            # it documents THAT line, not the next statement.
+            if tok.start[1] > 0 and tok.line[:tok.start[1]].strip():
+                result[tok.start[0]] = prose
+                block = []
+                block_start_seen = False
+            else:
+                block.append(prose)
+                block_start_seen = True
+        elif tok.type in (_tokenize.NL, _tokenize.COMMENT):
+            continue
+        elif tok.type in (_tokenize.NEWLINE, _tokenize.INDENT,
+                          _tokenize.DEDENT, _tokenize.ENDMARKER):
+            continue
+        elif block_start_seen:
+            # First real token after a ``#:`` block — the statement it
+            # documents.
+            result[tok.start[0]] = " ".join(block)
+            block = []
+            block_start_seen = False
+        prev_end_row = tok.end[0]
+    return result
+
+
 def _iter_name_targets(target: ast.expr) -> Iterator[str]:
     """Yield plain names bound by an assignment target.
 
@@ -715,6 +780,7 @@ class CodeVisitor(ast.NodeVisitor):
         module_name: str,
         file_path: str,
         is_test_file: bool = False,
+        attr_comments: dict[int, str] | None = None,
     ) -> None:
         self._module_name = module_name
         self._file_path = file_path
@@ -744,6 +810,16 @@ class CodeVisitor(ast.NodeVisitor):
         # (only ``ast.walk``-ed for calls), so these visitors cannot
         # fire at function scope.
         self._class_depth = 0
+        # Classes defined in THIS module: local name → qualified name.
+        # Used to bind ``Cls.attr = ...`` statements that appear after
+        # the class body back onto the class they extend. Restricted to
+        # locally-defined classes on purpose — ``mod.CONST = 1`` on an
+        # imported module is somebody else's namespace, not ours.
+        self._classes_defined: dict[str, str] = {}
+        # Line number of a ``#:``-documented statement → its prose.
+        # Comments are gone from the AST, so this is pre-scanned from
+        # the token stream and joined back on by line.
+        self._attr_comments: dict[int, str] = attr_comments or {}
         # Module-scope ``from X import Y`` aliases: public dotted path
         # → defining dotted path. ``analyze_directory`` aggregates
         # these into graph metadata so phantom canonicalization can
@@ -800,17 +876,24 @@ class CodeVisitor(ast.NodeVisitor):
         node: ast.AsyncFunctionDef | ast.FunctionDef | ast.ClassDef | ast.Module,
         source_id: str,
     ) -> None:
-        """Extract Sphinx role references from docstring.
+        """Extract Sphinx role references from a docstring."""
+        docstring = ast.get_docstring(node)
+        if docstring:
+            self._add_text_refs(docstring, source_id)
+
+    def _add_text_refs(self, docstring: str, source_id: str) -> None:
+        """Extract Sphinx role references from documentation prose.
 
         Python-domain roles produce ``py:<objtype>:<name>`` target IDs that
         reconcile against AST-discovered symbols. The math roles ``:math:``
         and ``:eq:`` instead point at Sphinx math equation labels in the
         ``math:equation:<label>`` namespace, which is what Sphinx's math
         extractor produces for ``.. math:: :label: foo`` blocks.
+
+        Takes text rather than a node because docstrings are not the only
+        place documentation prose lives — ``#:`` attribute comments carry
+        the same roles and are invisible to ``ast`` entirely.
         """
-        docstring = ast.get_docstring(node)
-        if not docstring:
-            return
 
         # Equation labels DEFINED in this docstring (``.. math::``
         # with ``:label:``). Emitted as concrete equation nodes so
@@ -966,15 +1049,31 @@ class CodeVisitor(ast.NodeVisitor):
             source=parent_id, target=binding_id, type=EdgeType.CONTAINS,
             metadata={"source": "ast"},
         ))
+        self._attach_attr_comment(binding_id, lineno)
+
+    def _attach_attr_comment(self, binding_id: str, lineno: int) -> None:
+        """Hang a ``#:`` comment block's prose on the binding it documents.
+
+        The references inside it are indistinguishable from docstring
+        references once extracted, so they go through the same path.
+        """
+        prose = self._attr_comments.get(lineno)
+        if prose:
+            self._add_text_refs(prose, binding_id)
 
     def _emit_instance_attribute(
-        self, cls_qname: str, name: str, lineno: int,
+        self,
+        cls_qname: str,
+        name: str,
+        lineno: int,
+        annotation: str | None = None,
     ) -> None:
         """Emit an ATTRIBUTE node for a ``self.<name>`` binding.
 
         Same node namespace as class-level bindings, so an annotated
         declaration and the ``__init__`` assignment collapse into one
-        node.
+        node. Also used for ``Cls.attr = ...`` bound after the class
+        body, which lands in the same namespace for the same reason.
         """
         attr_id = self._node_id("attribute", f"{cls_qname}.{name}")
         if attr_id in self._bindings_emitted:
@@ -987,6 +1086,8 @@ class CodeVisitor(ast.NodeVisitor):
         }
         if self._is_test_file:
             meta["is_test"] = True
+        if annotation:
+            meta["annotation"] = annotation
         self.nodes.append(GraphNode(
             id=attr_id,
             type=NodeType.ATTRIBUTE,
@@ -1001,18 +1102,63 @@ class CodeVisitor(ast.NodeVisitor):
             type=EdgeType.CONTAINS,
             metadata={"source": "ast"},
         ))
+        self._attach_attr_comment(attr_id, lineno)
+
+    def _emit_post_class_attribute(
+        self,
+        target: ast.expr,
+        lineno: int,
+        annotation: str | None = None,
+    ) -> bool:
+        """Bind ``Cls.attr = ...`` written after the class body.
+
+        The standard way to build enum-like singletons on a non-Enum
+        class, and how a lot of code registers defaults and sentinels::
+
+            @dataclass(frozen=True)
+            class BC:
+                kind: str
+
+            BC.vacuum = BC("vacuum")      # type: ignore[attr-defined]
+
+        These are real class attributes at import time — autodoc picks
+        them up and ``:data:`BC.vacuum``` renders as a working link — but
+        the class body holds no trace of them, so the graph reported
+        every such reference as dead. The ``type: ignore`` markers are a
+        good tell: the author already knows static tools cannot see it.
+
+        Returns True when the target was handled as a class attribute.
+        """
+        if not isinstance(target, ast.Attribute):
+            return False
+        owner = target.value
+        if not isinstance(owner, ast.Name):
+            return False
+        cls_qname = self._classes_defined.get(owner.id)
+        if cls_qname is None:
+            return False
+        self._emit_instance_attribute(
+            cls_qname, target.attr, lineno, annotation=annotation,
+        )
+        return True
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for tgt in node.targets:
+            if self._emit_post_class_attribute(tgt, node.lineno):
+                continue
             for name in _iter_name_targets(tgt):
                 self._emit_binding(name, node.lineno)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        try:
+            annotation = ast.unparse(node.annotation)
+        except Exception:
+            annotation = None
+        if self._emit_post_class_attribute(
+            node.target, node.lineno, annotation=annotation,
+        ):
+            return
         if isinstance(node.target, ast.Name):
-            try:
-                annotation = ast.unparse(node.annotation)
-            except Exception:
-                annotation = None
             self._emit_binding(
                 node.target.id, node.lineno, annotation=annotation,
             )
@@ -1021,6 +1167,11 @@ class CodeVisitor(ast.NodeVisitor):
         self._scope.append(node.name)
         qname = self._qualified_name
         class_id = self._node_id("class", qname)
+        # Register before visiting the body so a later ``Cls.attr = ...``
+        # can find it. Only top-level classes are addressable by a bare
+        # name at module scope, which is the form this binds.
+        if self._class_depth == 0:
+            self._classes_defined[node.name] = qname
 
         class_meta: dict[str, object] = {
             "file_path": self._file_path,
@@ -1383,7 +1534,10 @@ def analyze_directory(
 
         module_name = resolver.file_to_module(filepath)
         is_test_file = any(fnmatch(rel, pat) for pat in test_patterns)
-        visitor = CodeVisitor(module_name, str(filepath), is_test_file=is_test_file)
+        visitor = CodeVisitor(
+            module_name, str(filepath), is_test_file=is_test_file,
+            attr_comments=attribute_comments(source),
+        )
         visitor.visit(tree)
 
         for node in visitor.nodes:
