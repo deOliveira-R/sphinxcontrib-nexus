@@ -61,6 +61,21 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Added — `:numref:` binds to figure and table labels (#45)
+
+`:numref:` names a target by its number rather than its title, but it names the
+same object every other role does. The equation case landed in #38; figures and
+tables were still minting a placeholder beside the real node, splitting one
+figure's references across two ids and surfacing the placeholder as a dead
+reference. They carry `:name:` labels, which Sphinx's std domain publishes as
+ordinary labels — an exact key lookup, guarded by an existence check, so a
+`:numref:` naming nothing stays unresolved rather than being handed a fabricated
+node.
+
+Validated by fixture (`tests/roots/test-numref`, a real `sphinx-build`) rather
+than against ORPHEUS, which contains zero `.. figure::` or `.. table::`
+directives and uses only the math-domain `:math:numref:` spelling.
+
 ### Changed — reconciliation decides once, over the whole graph (#46)
 
 `merge_graphs` runs once per source directory, and unresolved-node
