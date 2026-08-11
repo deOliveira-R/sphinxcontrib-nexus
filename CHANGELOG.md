@@ -2,7 +2,25 @@
 
 All notable changes to sphinxcontrib-nexus.
 
-## Unreleased
+## 0.17.0 — 2026-08-11
+
+### Added — documentation, built by the extension it documents (#52)
+
+A Sphinx guide under `docs/`, split by audience: **authoring** (what you write,
+what you get), **vocabulary** (node and edge types, id format, metadata),
+**tools** (the 40 MCP tools grouped by the question they answer), **cli**, and
+**python-api**.
+
+The docs enable `sphinxcontrib.nexus`, so building them runs the whole pipeline
+against a real project — 3061 nodes and 10887 edges of nexus analyzing itself.
+CI builds with `-W`, asserts the self-graph is non-trivial, and gates on
+`dead-references --exit-code`.
+
+Writing it surfaced a limit worth recording: nexus catches references whose
+*target* vanished, but not references the *parser* never recognised. RST role
+syntax in a MyST file renders as literal text and never becomes a reference at
+all, so there is nothing for `dead_references` to find. Both look like plain
+text to a reader; only one is detectable.
 
 ### Added — the math has structure now (#19, #21)
 
