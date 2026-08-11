@@ -28,6 +28,55 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v
 
+  docs:
+    # The documentation enables the extension, so building it runs the
+    # whole pipeline — Sphinx extraction, AST analysis, merge, export —
+    # against a real project. A unit-test suite cannot catch a build that
+    # only breaks with a real BuildEnvironment; this does.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install with docs extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[docs]"
+
+      # -W turns Sphinx warnings into errors: a broken cross-reference in
+      # the guide is exactly the drift nexus exists to catch, so its own
+      # docs should not ship one.
+      - name: Build docs
+        run: python -m sphinx -b html docs docs/_build/html -E -W
+
+      - name: The graph nexus built of itself must be non-trivial
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from sphinxcontrib.nexus.export import load_sqlite
+
+          db = Path("docs/_build/html/_nexus/graph.db")
+          assert db.exists(), "no graph written by the docs build"
+          g = load_sqlite(db).nxgraph
+          # Guards the shape, not a magic number: a build that silently
+          # extracted nothing would still write a valid empty database.
+          assert g.number_of_nodes() > 500, g.number_of_nodes()
+          assert g.number_of_edges() > 1000, g.number_of_edges()
+          types = {a.get("type") for _, a in g.nodes(data=True)}
+          for expected in ("module", "class", "function", "file"):
+              assert expected in types, f"no {expected} nodes in self-graph"
+          print(f"self-graph: {g.number_of_nodes()} nodes, "
+                f"{g.number_of_edges()} edges")
+          PY
+
+      - name: Nexus must not report drift in its own documentation
+        run: |
+          python -m sphinxcontrib.nexus.cli dead-references \
+            --db docs/_build/html/_nexus/graph.db --exit-code
+
   pyright:
     runs-on: ubuntu-latest
     steps:

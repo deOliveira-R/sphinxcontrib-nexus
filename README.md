@@ -4,6 +4,13 @@ A unified code + documentation knowledge graph extracted from Sphinx builds and 
 
 **What makes it unique:** Nexus is the only tool that puts code structure (call graphs, imports, inheritance, type annotations) and documentation structure (equations, cross-references, citations, theory pages) in the same graph. This enables queries that are impossible with code-only or doc-only tools — like tracing from a literature citation through an equation to the function that implements it.
 
+**Documentation:** `docs/` builds a full guide with Sphinx — [authoring](docs/guide/authoring.md) (what you write, what you get), [vocabulary](docs/guide/vocabulary.md) (node and edge types, id format), [tools](docs/guide/tools.md) (the 40 MCP tools by the question they answer), and [CLI](docs/guide/cli.md). The docs enable the extension, so building them is also an end-to-end exercise of nexus against a real project — its own.
+
+```bash
+pip install -e ".[docs]"
+python -m sphinx -b html docs docs/_build/html
+```
+
 ## Quick Start
 
 ```bash
@@ -92,6 +99,47 @@ Nexus works with any Python project:
 - **Flat modules**: directories with `.py` files but no `__init__.py` — detected automatically
 - **Custom sys.path**: projects that add directories to `sys.path` in `conf.py` — picked up from the Sphinx build environment
 
+## How References Resolve
+
+A reference in prose becomes an edge only if nexus can decide what it names.
+The rules matter because a *wrong* binding is invisible — it produces a
+well-formed edge pointing at a node that exists, which nothing downstream can
+question — while a missing one shows up in `dead_references`.
+
+**Namespace first.** A relative reference (`` :meth:`Quadrature.product` ``,
+`` :class:`SNMesh` ``) resolves against the namespace of the node it is
+written in, following Sphinx's `PythonDomain.find_obj`: `modname.classname.target`,
+then `modname.target`, then `target` as a fully qualified key. The same bare
+name in two classes resolves to two different methods, so resolution is
+per-reference rather than once per name.
+
+**Then ranked matching.** When namespace context does not decide it, candidates
+are ranked: a real definition always beats a placeholder, then the role's own
+type preference, then concreteness, then a file-backed node, then the shortest
+qualified name. Passes that rewire the graph decline when the top candidates
+are indistinguishable in kind; passes that must return something take the
+minimum.
+
+**Deliberately more generous than Sphinx.** An api page writing
+`` :class:`CPMesh` `` with no `currentmodule` fails Sphinx's own lookup and
+renders as plain text — nexus resolves it. That recovers thousands of real
+doc-page-to-class links.
+
+**Except into the test tree.** Test modules are full of short generic names
+(`K`, `record`, `slab`), so they act as a magnet for any bare name with no
+better candidate. A test-tree candidate is refused for a reference from
+production code; test-to-test references and fully-qualified references are
+unaffected.
+
+**Scanned directories define the namespace.** Any directory you analyze
+contributes names that bare references can bind to. A prototyping directory
+importing a module retired months ago mints placeholders that roles elsewhere
+then match — exclude it:
+
+```python
+nexus_source_exclude_patterns = ["scratch/*"]
+```
+
 ## What the Graph Contains
 
 ### Node Types (16)
@@ -106,9 +154,9 @@ Nexus works with any Python project:
 | `function` | Sphinx + AST | Python functions |
 | `class` | Sphinx + AST | Python classes |
 | `method` | Sphinx + AST | Python methods |
-| `attribute` | Sphinx + AST | Class attributes |
+| `attribute` | Sphinx + AST | Class and instance attributes — including `self.x: T` in `__init__`, `#:`-documented bindings, and `Cls.attr = ...` bound after the class body |
 | `module` | Sphinx + AST | Python modules |
-| `data` | Sphinx | Module-level data |
+| `data` | Sphinx + AST | Module-level constants |
 | `exception` | Sphinx | Exception classes |
 | `type` | Sphinx | Type aliases |
 | `external` | Auto-detected | stdlib, builtins, installed packages (numpy, scipy, ...) |
@@ -178,7 +226,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 - **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list (supports `group_by` and `include_tests`)
 - **`verification_gaps`** — untagged tests, unverified equations, missing err catchers (supports `module` and `level` filters)
 - **`staleness`** — detect docs that drifted from code: git-timestamp drift plus a dead-reference summary
-- **`dead_references`** — doc/docstring references whose code target no longer exists (deleted/renamed symbols still referenced by theory pages, docstrings, or quoted type annotations — Sphinx renders these as plain text with no warning); project-rooted names only, with re-export and inheritance rescue passes to keep false positives out
+- **`dead_references`** — doc/docstring references whose code target no longer exists (deleted/renamed symbols still referenced by theory pages, docstrings, or quoted type annotations — Sphinx renders these as plain text with no warning); project-rooted names only, with re-export and inheritance rescue passes to keep false positives out. Findings carry `minted_by`: the files whose own code created the placeholder the reference bound to, so an unmaintained directory minting a namespace is named directly rather than showing up as N unrelated dead references
 - **`session_briefing`** — AI agent context restoration
 - **`trace_error`** — trace from failing test to equations on call path
 - **`migration_plan`** — plan dependency migration with phased blast radius

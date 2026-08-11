@@ -58,6 +58,9 @@ nexus = "sphinxcontrib.nexus.cli:main"
 # extractor against a real build rather than a hand-built fixture.
 test = ["pytest", "sphinx-proof"]
 dev = ["ruff", "mypy"]
+# Building nexus's own documentation. The docs enable the extension, so a
+# docs build is also an end-to-end exercise of it against a real project.
+docs = ["myst-parser", "sphinx"]
 viz = []  # Sigma.js loaded from CDN, no Python deps needed
 
 [tool.flit.module]

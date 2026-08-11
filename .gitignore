@@ -8,3 +8,5 @@ build/
 _nexus/
 *.db
 .claude/
+# Sphinx output for nexus's own docs (includes the self-graph).
+docs/_build/
