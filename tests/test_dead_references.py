@@ -1035,3 +1035,214 @@ def test_namespace_walk_ignores_documenting_doc_pages():
     _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply",
                  "apply")
     assert _resolve_relative_references(kg) == 1
+# Attributes bound after the class body (issue #40)
+# ---------------------------------------------------------------------------
+#
+# The standard way to build enum-like singletons on a non-Enum class.
+# They are real class attributes at import time — autodoc documents them
+# and `:data:`BC.vacuum`` renders as a working link — but the class body
+# holds no trace, so every such reference was reported dead. 6 of the 7
+# findings remaining on ORPHEUS after #36 were this one shape.
+
+
+def test_post_class_body_attribute_is_indexed(tmp_path):
+    graph = _analyze_source(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BC:\n"
+        "    kind: str\n"
+        "\n"
+        "BC.vacuum = BC('vacuum')          # type: ignore[attr-defined]\n"
+        "BC.reflective = BC('reflective')  # type: ignore[attr-defined]\n",
+    )
+    g = graph.nxgraph
+    for attr in ("kind", "vacuum", "reflective"):
+        nid = f"py:attribute:pkg.mod.BC.{attr}"
+        assert nid in g, f"{attr} missing"
+        assert g.nodes[nid]["type"] == NodeType.ATTRIBUTE.value
+    # Bound to the class, not left floating at module scope.
+    children = {
+        t for _, t, d in g.out_edges("py:class:pkg.mod.BC", data=True)
+        if d.get("type") == EdgeType.CONTAINS.value
+    }
+    assert "py:attribute:pkg.mod.BC.vacuum" in children
+    assert "py:data:pkg.mod.BC.vacuum" not in g
+
+
+def test_post_class_attribute_carries_annotation(tmp_path):
+    graph = _analyze_source(
+        tmp_path,
+        "class Reg:\n"
+        "    pass\n"
+        "\n"
+        "Reg.default: 'Reg' = Reg()\n",
+    )
+    node = graph.nxgraph.nodes["py:attribute:pkg.mod.Reg.default"]
+    assert node["annotation"] == "'Reg'"
+
+
+def test_attribute_on_imported_module_is_not_claimed(tmp_path):
+    """``mod.CONST = 1`` is somebody else's namespace.
+
+    Only classes defined in THIS module are extended — otherwise
+    monkey-patching an import would forge attributes onto a foreign
+    symbol the graph does not own.
+    """
+    graph = _analyze_source(
+        tmp_path,
+        "import os\n"
+        "\n"
+        "class Local:\n"
+        "    pass\n"
+        "\n"
+        "os.environ = {}\n"
+        "Local.ok = 1\n",
+    )
+    g = graph.nxgraph
+    assert "py:attribute:pkg.mod.Local.ok" in g
+    assert not any("environ" in str(n) for n in g)
+
+
+def test_post_class_attribute_rescues_the_reference(tmp_path):
+    """End to end: the reference stops being reported dead."""
+    graph = _analyze_source(
+        tmp_path,
+        "class BC:\n"
+        '    """Boundary tags.\n'
+        "\n"
+        "    See :data:`pkg.mod.BC.vacuum` and :data:`pkg.mod.BC.gone`.\n"
+        '    """\n'
+        "\n"
+        "BC.vacuum = BC()\n",
+    )
+    dead = {d.target_name for d in GraphQuery(graph).dead_references().dead}
+    assert "pkg.mod.BC.vacuum" not in dead
+    assert "pkg.mod.BC.gone" in dead
+
+
+def test_nested_class_attribute_binding_is_not_forged(tmp_path):
+    """Only top-level classes are addressable by a bare name."""
+    graph = _analyze_source(
+        tmp_path,
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        pass\n"
+        "\n"
+        "Outer.tag = 1\n",
+    )
+    g = graph.nxgraph
+    assert "py:attribute:pkg.mod.Outer.tag" in g
+    # `Inner` is not bindable as a bare name at module scope.
+    assert "py:attribute:pkg.mod.Outer.Inner.x" not in g
+
+
+# ---------------------------------------------------------------------------
+# `#:` attribute comments and the :numref: crosswalk (issue #38)
+# ---------------------------------------------------------------------------
+
+
+def test_attribute_comment_block_references_are_extracted(tmp_path):
+    """`#:` prose carries real cross-references and `ast` drops it."""
+    graph = _analyze_source(
+        tmp_path,
+        "class FaceLayout:\n"
+        "    pass\n"
+        "\n"
+        "#: The axis crosswalk that :class:`pkg.mod.FaceLayout` keys on.\n"
+        "#: Continued on a second line, citing :func:`pkg.mod.absent`.\n"
+        "AXIS_NAMES = ('x', 'y', 'z')\n",
+    )
+    g = graph.nxgraph
+    targets = {t for _, t, d in g.out_edges("py:data:pkg.mod.AXIS_NAMES", data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:class:pkg.mod.FaceLayout" in targets
+    assert "py:function:pkg.mod.absent" in targets
+
+
+def test_attribute_comment_uses_tokens_not_a_line_regex(tmp_path):
+    """A `#:` inside a string literal is not an attribute comment.
+
+    The issue asked for `tokenize` over a line regex precisely for this.
+    """
+    graph = _analyze_source(
+        tmp_path,
+        "class Thing:\n"
+        "    pass\n"
+        "\n"
+        "TEMPLATE = 'prefix #: :class:`pkg.mod.Thing` suffix'\n"
+        "\n"
+        "PLAIN = 1  # :class:`pkg.mod.Thing` in an ordinary comment\n",
+    )
+    g = graph.nxgraph
+    for nid in ("py:data:pkg.mod.TEMPLATE", "py:data:pkg.mod.PLAIN"):
+        refs = {t for _, t, d in g.out_edges(nid, data=True)
+                if d.get("type") == EdgeType.REFERENCES.value}
+        assert not refs, f"{nid} picked up a non-attribute comment"
+
+
+def test_trailing_attribute_comment_documents_its_own_line(tmp_path):
+    graph = _analyze_source(
+        tmp_path,
+        "class Thing:\n"
+        "    pass\n"
+        "\n"
+        "LIMIT = 10  #: capped by :class:`pkg.mod.Thing`\n",
+    )
+    targets = {t for _, t, d in graph.nxgraph.out_edges(
+        "py:data:pkg.mod.LIMIT", data=True)
+        if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:class:pkg.mod.Thing" in targets
+
+
+def test_attribute_comment_citing_an_instance_attribute_is_not_dead(tmp_path):
+    """The ordering hazard #38 documents, verified.
+
+    PEP 526 records ``self.x: T`` nowhere at runtime — it is function-local
+    and discarded — so an import-based checker sees no such attribute and
+    calls this reference dead. An AST indexer has the ``AnnAssign`` right
+    there, which is why widening the scanned surface is safe HERE and was
+    not safe in the consumer-side tool.
+    """
+    graph = _analyze_source(
+        tmp_path,
+        "class SNMesh:\n"
+        "    def __init__(self):\n"
+        "        self.bc: dict = {}\n"
+        "\n"
+        "#: Keyed on :attr:`pkg.mod.SNMesh.bc`.\n"
+        "AXIS_NAMES = ('x',)\n",
+    )
+    dead = {d.target_name for d in GraphQuery(graph).dead_references().dead}
+    assert "pkg.mod.SNMesh.bc" not in dead
+
+
+def test_numref_crosswalks_to_the_equation(tmp_path):
+    """`:numref:`label`` on an equation names the same target as `:eq:`."""
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="math:equation:peierls-3d", type=NodeType.EQUATION,
+                          name="peierls-3d", display_name="peierls-3d",
+                          domain="math"))
+    assert resolve_target_id(
+        kg.nxgraph, None, "std", "numref", "peierls-3d",
+    ) == "math:equation:peierls-3d"
+
+
+def test_numref_does_not_hijack_non_equation_targets():
+    """The crosswalk fires only when the equation actually exists.
+
+    ``:numref:`fig-mesh``` names a figure. It did not resolve before this
+    change and still does not (figures live in the std-label namespace,
+    which is separate work) — what matters is that it is not silently
+    bound to a fabricated equation node.
+    """
+    from sphinxcontrib.nexus._mappings import resolve_target_id
+
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="std:label:fig-mesh", type=NodeType.SECTION,
+                          name="fig-mesh", display_name="fig-mesh", domain="std"))
+    resolved = resolve_target_id(kg.nxgraph, None, "std", "numref", "fig-mesh")
+    assert resolved != "math:equation:fig-mesh"

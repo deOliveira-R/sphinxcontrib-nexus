@@ -92,6 +92,38 @@ Measured on ORPHEUS: **89.6%** of Python-to-Python references land on a real
 definition (10215/11407). The remainder is the honest bucket — builtins,
 third-party (`numpy.linalg.eig`, `mpmath.quad`), and relative names whose own
 namespace genuinely lacks them, none of which Sphinx would link either.
+### Added — attributes bound after the class body, and `#:` comment prose (#40, #38)
+
+Landed together because #38 documents the ordering hazard between them: widening
+the scanned reference surface before the indexer can see an attribute
+manufactures false dead references.
+
+**Post-class-body attributes.** The standard way to build enum-like singletons
+on a non-Enum class was invisible to the indexer::
+
+    @dataclass(frozen=True)
+    class BC:
+        kind: str
+
+    BC.vacuum = BC("vacuum")   # type: ignore[attr-defined]
+
+These are real class attributes at import time — autodoc documents them and
+``:data:`BC.vacuum``` renders as a working link — but the class body holds no
+trace, so every reference was reported dead. Bound only for classes defined in
+the same module: ``os.environ = {}`` is somebody else's namespace.
+
+**`#:` attribute comments.** Sphinx's attribute-comment form carries real
+cross-references (168 py-domain roles on ORPHEUS) and `ast` discards comments
+outright, so the token stream is the only way to read them. Uses `tokenize`
+rather than a line regex, so a ``#:`` inside a string literal is not mistaken
+for one; handles both the leading-block and trailing (``x = 1  #: doc``) forms.
+
+**`:numref:` crosswalk.** ``:numref:`peierls-3d``` on an equation label names the
+same target as ``:eq:``; it was minting a `math:numref:` placeholder beside the
+real equation node, splitting one equation's references across two ids. Guarded
+by an existence check, so a figure reference cannot fabricate an equation.
+`:numref:` to figures and tables remains unresolved — that is the std-label
+namespace and separate work.
 
 ### Fixed — reference resolution stops inventing answers (#36)
 
