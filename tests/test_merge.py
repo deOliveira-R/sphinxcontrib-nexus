@@ -549,3 +549,114 @@ def test_merge_graphs_no_longer_reconciles_on_its_own():
     """The phase boundary is the point — pin it."""
     merged = merge_graphs(*_ambiguous_pair())
     assert "py:module:derivations" in merged.nxgraph
+
+
+# ---------------------------------------------------------------------------
+# IMPLEMENTS is not what a test does to an equation (#49)
+# ---------------------------------------------------------------------------
+#
+# `_infer_implements` pairs a doc page's equations with the code symbols
+# it documents, on shared name tokens. Nothing excluded test code, so a
+# test class reaching a theory page became an implementation candidate —
+# and test classes are unusually prone to it, since
+# `TestSlabViaUnifiedDiscrepancyDiagnostic` shares `slab`/`peierls`/
+# `multigroup` with half the equations on its page.
+#
+# Measured on ORPHEUS: 2722 such edges, 195 of them surviving purely
+# from correctly-qualified references that no resolution change can
+# remove.
+
+
+def _implements_fixture(mark_test: bool = True) -> KnowledgeGraph:
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="doc:theory/slab", type=NodeType.FILE,
+                          name="theory/slab", display_name="slab",
+                          domain="std", docname="theory/slab"))
+    kg.add_node(GraphNode(id="math:equation:peierls-slab-polar",
+                          type=NodeType.EQUATION, name="peierls-slab-polar",
+                          display_name="peierls-slab-polar", domain="math"))
+    kg.add_edge(GraphEdge(source="doc:theory/slab",
+                          target="math:equation:peierls-slab-polar",
+                          type=EdgeType.CONTAINS))
+
+    test_meta = {"file_path": "/tests/test_slab.py"}
+    if mark_test:
+        test_meta["in_test_file"] = True
+    kg.add_node(GraphNode(
+        id="py:class:tests.test_slab.TestSlabPolar", type=NodeType.CLASS,
+        name="tests.test_slab.TestSlabPolar", display_name="TestSlabPolar",
+        domain="py", metadata=test_meta,
+    ))
+    kg.add_edge(GraphEdge(source="doc:theory/slab",
+                          target="py:class:tests.test_slab.TestSlabPolar",
+                          type=EdgeType.DOCUMENTS))
+
+    # A real implementation on the same page, sharing the same token.
+    kg.add_node(GraphNode(
+        id="py:function:proj.slab.solve_slab_polar", type=NodeType.FUNCTION,
+        name="proj.slab.solve_slab_polar", display_name="solve_slab_polar",
+        domain="py", metadata={"file_path": "/proj/slab.py"},
+    ))
+    kg.add_edge(GraphEdge(source="doc:theory/slab",
+                          target="py:function:proj.slab.solve_slab_polar",
+                          type=EdgeType.DOCUMENTS))
+    return kg
+
+
+def _implements_targets(g, source):
+    return {
+        t for _, t, d in g.out_edges(source, data=True)
+        if d.get("type") == EdgeType.IMPLEMENTS.value
+    }
+
+
+def test_test_class_does_not_implement_an_equation():
+    kg = _implements_fixture()
+    _infer_implements(kg.nxgraph)
+    assert not _implements_targets(
+        kg.nxgraph, "py:class:tests.test_slab.TestSlabPolar",
+    ), "a test class was inferred to IMPLEMENT an equation"
+
+
+def test_real_implementation_on_the_same_page_still_infers():
+    """Excluding tests must not disable the inference itself."""
+    kg = _implements_fixture()
+    _infer_implements(kg.nxgraph)
+    assert "math:equation:peierls-slab-polar" in _implements_targets(
+        kg.nxgraph, "py:function:proj.slab.solve_slab_polar",
+    )
+
+
+def test_the_equation_is_not_left_looking_implemented_by_a_test():
+    """The consequence that makes this a false ALIVE.
+
+    An equation whose only IMPLEMENTS edge points at a test class reads
+    as implemented when nothing implements it — and unlike a false DEAD,
+    nothing announces it.
+    """
+    kg = _implements_fixture()
+    # Drop the real implementation: the test class is the only candidate.
+    kg.nxgraph.remove_node("py:function:proj.slab.solve_slab_polar")
+    _infer_implements(kg.nxgraph)
+
+    implementers = {
+        s for s, _, d in kg.nxgraph.in_edges("math:equation:peierls-slab-polar",
+                                             data=True)
+        if d.get("type") == EdgeType.IMPLEMENTS.value
+    }
+    assert not implementers, (
+        "the equation reports an implementer that is only a test"
+    )
+
+
+def test_unmarked_test_node_is_still_inferred():
+    """The exclusion keys on `in_test_file`, nothing heuristic.
+
+    Pinned so the rule cannot quietly start guessing from names — a
+    production class called `TestHarness` is not test code.
+    """
+    kg = _implements_fixture(mark_test=False)
+    _infer_implements(kg.nxgraph)
+    assert _implements_targets(
+        kg.nxgraph, "py:class:tests.test_slab.TestSlabPolar",
+    )
