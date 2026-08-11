@@ -815,3 +815,223 @@ def test_single_candidate_is_never_ambiguous():
     assert not candidates_are_ambiguous(
         [candidate_rank("py:class:pkg.A", "pkg.A", {"type": "class"})]
     )
+
+
+# ---------------------------------------------------------------------------
+# Relative reference resolution (issue #37)
+# ---------------------------------------------------------------------------
+#
+# Half of a real project's py-domain references are relative
+# (:meth:`Quadrature.product`, :class:`SNMesh`, :meth:`apply`) and Sphinx
+# resolves them against the current module and class. The graph already
+# knows each reference's source node, so that context is present — it
+# just was not consulted.
+
+
+def _ns_graph() -> KnowledgeGraph:
+    """A module with a class, both defining an `apply`."""
+    kg = KnowledgeGraph()
+
+    def mod(name):
+        kg.add_node(GraphNode(id=f"py:module:{name}", type=NodeType.MODULE,
+                              name=name, display_name=name.rsplit(".", 1)[-1],
+                              domain="py", metadata={"file_path": f"/{name}.py"}))
+
+    def sym(kind, ntype, name, parent):
+        nid = f"py:{kind}:{name}"
+        kg.add_node(GraphNode(id=nid, type=ntype, name=name,
+                              display_name=name.rsplit(".", 1)[-1], domain="py",
+                              metadata={"file_path": "/x.py"}))
+        kg.add_edge(GraphEdge(source=parent, target=nid, type=EdgeType.CONTAINS))
+        return nid
+
+    mod("pkg.alpha")
+    mod("pkg.beta")
+    sym("class", NodeType.CLASS, "pkg.alpha.Solver", "py:module:pkg.alpha")
+    sym("method", NodeType.METHOD, "pkg.alpha.Solver.apply",
+        "py:class:pkg.alpha.Solver")
+    sym("class", NodeType.CLASS, "pkg.beta.Filter", "py:module:pkg.beta")
+    sym("method", NodeType.METHOD, "pkg.beta.Filter.apply",
+        "py:class:pkg.beta.Filter")
+    return kg
+
+
+def _phantom_ref(kg, source_id, phantom_id, name):
+    if phantom_id not in kg.nxgraph:
+        kg.add_node(GraphNode(id=phantom_id, type=NodeType.UNRESOLVED,
+                              name=name, display_name=name, domain="py"))
+    kg.add_edge(GraphEdge(source=source_id, target=phantom_id,
+                          type=EdgeType.REFERENCES))
+
+
+def test_same_bare_name_resolves_differently_per_namespace():
+    """The load-bearing case: one phantom, two correct answers.
+
+    Measured on ORPHEUS: 532 bare phantoms have more than one distinct
+    referrer, and `:meth:`apply`` alone is referenced from 132. Folding
+    the shared NODE would force one answer on all of them — only the
+    edge carries the namespace that decides.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply", "apply")
+    _phantom_ref(kg, "py:method:pkg.beta.Filter.apply", "py:function:apply", "apply")
+
+    assert _resolve_relative_references(kg) == 2
+    g = kg.nxgraph
+    out = lambda s: {t for _, t, d in g.out_edges(s, data=True)
+                     if d.get("type") == EdgeType.REFERENCES.value}
+    assert out("py:method:pkg.alpha.Solver.apply") == {"py:method:pkg.alpha.Solver.apply"}
+    assert out("py:method:pkg.beta.Filter.apply") == {"py:method:pkg.beta.Filter.apply"}
+    # Fully dereferenced, so the phantom is gone.
+    assert "py:function:apply" not in g
+
+
+def test_class_namespace_beats_module_namespace():
+    """find_obj tries modname.classname.target before modname.target."""
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    # A module-level `apply` competing with the class's.
+    kg.add_node(GraphNode(id="py:function:pkg.alpha.apply", type=NodeType.FUNCTION,
+                          name="pkg.alpha.apply", display_name="apply", domain="py",
+                          metadata={"file_path": "/x.py"}))
+    kg.add_edge(GraphEdge(source="py:module:pkg.alpha",
+                          target="py:function:pkg.alpha.apply",
+                          type=EdgeType.CONTAINS))
+    _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply", "apply")
+
+    _resolve_relative_references(kg)
+    targets = {t for _, t, d in kg.nxgraph.out_edges(
+        "py:method:pkg.alpha.Solver.apply", data=True)
+        if d.get("type") == EdgeType.REFERENCES.value}
+    assert targets == {"py:method:pkg.alpha.Solver.apply"}
+
+
+def test_bare_name_is_looked_up_as_a_full_key():
+    """The counterintuitive rule, encoded.
+
+    The domain registry is keyed by full dotted names, so a bare
+    `:func:`helper`` resolves only if a TOP-LEVEL `helper` exists — not
+    merely because its module was automodule'd. This is why "add autodoc
+    coverage" cannot fix relative references.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    # `zzz` exists nowhere in pkg.alpha's namespace and has no top-level
+    # definition — it must stay unresolved.
+    _phantom_ref(kg, "py:module:pkg.alpha", "py:function:zzz", "zzz")
+    assert _resolve_relative_references(kg) == 0
+    assert "py:function:zzz" in kg.nxgraph
+
+    # Now give it a genuine top-level definition: step 3 finds it.
+    kg2 = _ns_graph()
+    kg2.add_node(GraphNode(id="py:function:zzz", type=NodeType.UNRESOLVED,
+                           name="zzz", display_name="zzz", domain="py"))
+    kg2.add_node(GraphNode(id="py:function:toplevel", type=NodeType.FUNCTION,
+                           name="toplevel", display_name="toplevel", domain="py",
+                           metadata={"file_path": "/t.py"}))
+    kg2.add_edge(GraphEdge(source="py:module:pkg.alpha",
+                           target="py:function:toplevel_ref",
+                           type=EdgeType.REFERENCES))
+    kg2.add_node(GraphNode(id="py:function:toplevel_ref", type=NodeType.UNRESOLVED,
+                           name="toplevel", display_name="toplevel", domain="py"))
+    assert _resolve_relative_references(kg2) == 1
+    targets = {t for _, t, d in kg2.nxgraph.out_edges("py:module:pkg.alpha", data=True)
+               if d.get("type") == EdgeType.REFERENCES.value}
+    assert "py:function:toplevel" in targets
+
+
+def test_phantom_survives_while_any_referrer_still_needs_it():
+    """Partial resolution must not delete the node out from under the rest."""
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    # One referrer can resolve it; one has no namespace at all.
+    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                          display_name="page", domain="std"))
+    _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply", "apply")
+    _phantom_ref(kg, "doc:page", "py:function:apply", "apply")
+
+    assert _resolve_relative_references(kg) == 1
+    g = kg.nxgraph
+    assert "py:function:apply" in g, (
+        "an .rst page with no currentmodule has no namespace to resolve "
+        "against; its reference must survive, not vanish"
+    )
+    assert {t for _, t, d in g.out_edges("doc:page", data=True)} == {"py:function:apply"}
+
+
+def test_no_namespace_means_no_guess():
+    """A page with no module context is declined, not guessed."""
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+                          display_name="page", domain="std"))
+    _phantom_ref(kg, "doc:page", "py:function:apply", "apply")
+    assert _resolve_relative_references(kg) == 0
+
+
+def test_real_targets_are_never_retargeted():
+    from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
+
+    kg = _ns_graph()
+    kg.add_edge(GraphEdge(source="py:module:pkg.beta",
+                          target="py:method:pkg.alpha.Solver.apply",
+                          type=EdgeType.REFERENCES))
+    assert _resolve_relative_references(kg) == 0
+
+
+def test_namespace_walk_ignores_documenting_doc_pages():
+    """A symbol's ``contains`` parents include every doc page that
+    documents it, not just its lexical owner.
+
+    Ordering is what makes this bite: Sphinx extraction runs before AST
+    analysis, so the ``doc:`` parent edge is inserted FIRST and leads
+    ``in_edges``. Measured on ORPHEUS, `CoupledOperator.solve` lists
+    `doc:api/numerics` ahead of `py:class:...CoupledOperator`. Following
+    it dead-ends on a node with no module, which is indistinguishable
+    from "no namespace" — so the reference was declined for the wrong
+    reason and the whole pass looked like a near-no-op.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import (
+        _namespace_of,
+        _resolve_relative_references,
+    )
+
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="py:module:pkg.alpha", type=NodeType.MODULE,
+                          name="pkg.alpha", display_name="alpha", domain="py",
+                          metadata={"file_path": "/a.py"}))
+    kg.add_node(GraphNode(id="doc:api/alpha", type=NodeType.FILE,
+                          name="api/alpha", display_name="alpha", domain="std"))
+    kg.add_node(GraphNode(id="py:class:pkg.alpha.Solver", type=NodeType.CLASS,
+                          name="pkg.alpha.Solver", display_name="Solver",
+                          domain="py", metadata={"file_path": "/a.py"}))
+    kg.add_node(GraphNode(id="py:method:pkg.alpha.Solver.apply",
+                          type=NodeType.METHOD, name="pkg.alpha.Solver.apply",
+                          display_name="apply", domain="py",
+                          metadata={"file_path": "/a.py"}))
+    # Doc-page parents first — the Sphinx-then-AST insertion order.
+    kg.add_edge(GraphEdge(source="doc:api/alpha",
+                          target="py:class:pkg.alpha.Solver",
+                          type=EdgeType.CONTAINS))
+    kg.add_edge(GraphEdge(source="doc:api/alpha",
+                          target="py:method:pkg.alpha.Solver.apply",
+                          type=EdgeType.CONTAINS))
+    kg.add_edge(GraphEdge(source="py:module:pkg.alpha",
+                          target="py:class:pkg.alpha.Solver",
+                          type=EdgeType.CONTAINS))
+    kg.add_edge(GraphEdge(source="py:class:pkg.alpha.Solver",
+                          target="py:method:pkg.alpha.Solver.apply",
+                          type=EdgeType.CONTAINS))
+
+    assert _namespace_of(kg.nxgraph, "py:method:pkg.alpha.Solver.apply") == (
+        "pkg.alpha", "Solver",
+    )
+    _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply",
+                 "apply")
+    assert _resolve_relative_references(kg) == 1

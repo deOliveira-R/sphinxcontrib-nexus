@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from sphinxcontrib.nexus._mappings import (
+    PLACEHOLDER_TYPES,
     candidate_rank,
     candidates_are_ambiguous,
 )
@@ -1580,6 +1581,166 @@ def _canonical_rank_key(
     ``objtype_rank``. See that function for the ordering.
     """
     return candidate_rank(cid, cname, attrs)
+
+
+#: Python-domain node id prefixes, in the order a lookup should prefer
+#: them when the role itself does not say. ``py:obj:``-style roles and
+#: docstring prose rarely name the objtype correctly, so a candidate is
+#: accepted from any of these.
+_PY_LOOKUP_PREFIXES: tuple[str, ...] = (
+    "py:class:", "py:exception:", "py:method:", "py:function:",
+    "py:attribute:", "py:data:", "py:type:", "py:module:",
+)
+
+
+def _namespace_of(g: "Any", node_id: str) -> tuple[str, str]:
+    """The ``(modname, classname)`` a reference in this node resolves against.
+
+    Sphinx resolves a relative Python reference against the *current*
+    module and class. For a docstring that context is the namespace of
+    the node the docstring belongs to, which the graph already records
+    as ``contains`` edges — walk them up rather than re-deriving it from
+    the file path.
+
+    Returns empty strings for either component that does not apply (a
+    module-level function has no class; a module is its own modname).
+    """
+    modname = classname = ""
+    current = node_id
+    for _ in range(4):  # module > class > method is the deepest real chain
+        attrs = g.nodes.get(current) or {}
+        ntype = attrs.get("type", "")
+        name = attrs.get("name", "") or ""
+        if ntype == NodeType.MODULE.value:
+            modname = name
+            break
+        if ntype in (NodeType.CLASS.value, NodeType.EXCEPTION.value):
+            classname = name.rsplit(".", 1)[-1]
+        # A symbol has more than one ``contains`` parent: its lexical
+        # owner (module/class) AND every doc page that documents it.
+        # Only the Python chain carries a namespace — following a
+        # ``doc:`` parent dead-ends on a node with no module, which
+        # reads as "no context" and silently declines the reference.
+        parents = [
+            src for src, _, data in g.in_edges(current, data=True)
+            if data.get("type") == EdgeType.CONTAINS.value
+            and isinstance(src, str) and src.startswith("py:")
+        ]
+        if not parents:
+            break
+        current = parents[0]
+    return modname, classname
+
+
+def _find_in_namespace(
+    g: "Any",
+    target: str,
+    modname: str,
+    classname: str,
+    preferred_prefix: str,
+) -> str | None:
+    """Resolve ``target`` the way ``PythonDomain.find_obj`` would.
+
+    Search order with ``searchmode=0`` (the default — ``refspecific`` is
+    set only by a leading dot):
+
+    1. ``modname.classname.target``
+    2. ``modname.target``
+    3. ``target`` — **as a fully qualified key**, not as a bare name
+
+    Step 3 is the counterintuitive one and it is load-bearing: the domain
+    registry is keyed by full dotted names, so a bare ``:func:`solve```
+    does NOT resolve merely because its module was ``automodule``-d. That
+    is why "just add autodoc coverage" cannot fix relative references,
+    and why this pass has to exist.
+    """
+    candidates = []
+    if modname and classname:
+        candidates.append(f"{modname}.{classname}.{target}")
+    if modname:
+        candidates.append(f"{modname}.{target}")
+    candidates.append(target)
+
+    prefixes = (
+        (preferred_prefix, *(p for p in _PY_LOOKUP_PREFIXES if p != preferred_prefix))
+        if preferred_prefix in _PY_LOOKUP_PREFIXES
+        else _PY_LOOKUP_PREFIXES
+    )
+    for qualname in candidates:
+        for prefix in prefixes:
+            nid = f"{prefix}{qualname}"
+            node = g.nodes.get(nid)
+            if node is not None and node.get("type") not in PLACEHOLDER_TYPES:
+                return nid
+    return None
+
+
+def _resolve_relative_references(graph: KnowledgeGraph) -> int:
+    """Bind relative Python references using the referrer's namespace.
+
+    Half of a real project's py-domain references are relative
+    (``:meth:`Quadrature.product```, ``:class:`SNMesh```, ``:meth:`apply```)
+    and mean different things in different modules. The graph already
+    knows each reference's source node, so the context Sphinx would use
+    is already present — it just was not consulted.
+
+    **Retargets the edge, not the node.** A phantom is shared by every
+    referrer that spelled the same name: measured on ORPHEUS, 532 bare
+    phantoms have more than one distinct source and ``:meth:`apply```
+    alone is referenced from 132. Folding the node would force one
+    answer on all of them; only the edge carries the namespace that
+    decides. Phantoms left with no remaining references are dropped.
+
+    Runs BEFORE ``_canonicalize_phantoms``: namespace context is an
+    answer, leaf-matching is a guess, and an answer must not lose to a
+    guess that happens to sort first.
+    """
+    g = graph.nxgraph
+    resolved = 0
+    namespaces: dict[str, tuple[str, str]] = {}
+    touched: set[str] = set()
+
+    for src, tgt, key, data in list(g.edges(keys=True, data=True)):
+        tgt_attrs = g.nodes.get(tgt) or {}
+        if tgt_attrs.get("type") not in PLACEHOLDER_TYPES:
+            continue
+        if not isinstance(tgt, str) or not tgt.startswith("py:"):
+            continue
+        target_name = tgt_attrs.get("name", "") or ""
+        if not target_name:
+            continue
+
+        if src not in namespaces:
+            namespaces[src] = _namespace_of(g, src)
+        modname, classname = namespaces[src]
+        if not modname:
+            # No namespace to resolve against — an .rst page with no
+            # ``currentmodule``, or a node the contains chain never
+            # reached a module from. Report it as-is rather than guess.
+            continue
+
+        prefix = tgt[:tgt.index(":", 3) + 1] if tgt.count(":") >= 2 else ""
+        found = _find_in_namespace(g, target_name, modname, classname, prefix)
+        if found is None or found == tgt:
+            continue
+
+        g.remove_edge(src, tgt, key=key)
+        g.add_edge(src, found, **data)
+        touched.add(tgt)
+        resolved += 1
+
+    # Drop phantoms nothing points at any more. A phantom with surviving
+    # references is still the honest answer for those referrers.
+    for nid in touched:
+        if nid in g and g.in_degree(nid) == 0 and g.out_degree(nid) == 0:
+            g.remove_node(nid)
+
+    if resolved:
+        logger.info(
+            "Resolved %d relative references against their namespace",
+            resolved,
+        )
+    return resolved
 
 
 def _canonicalize_phantoms(graph: KnowledgeGraph) -> int:

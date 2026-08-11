@@ -61,6 +61,38 @@ Tested against a real `sphinx-proof` build (`tests/roots/test-proof-relations`)
 rather than a fixture guess, since the whole point is what the upstream
 extension actually publishes. `sphinx-proof` is now a test-only dependency.
 
+### Added — relative references resolve against their namespace (#37)
+
+Half of a real project's Python references are relative —
+``:meth:`Quadrature.product```, ``:class:`SNMesh```, ``:meth:`apply``` — and
+Sphinx resolves those against the current module and class. The graph already
+knew each reference's source node, so the context was present and simply never
+consulted.
+
+`_resolve_relative_references` reproduces `PythonDomain.find_obj` with
+`searchmode=0`: `modname.classname.target`, then `modname.target`, then
+`target` **as a fully qualified key**. That last step is the counterintuitive
+one and is now encoded — the registry is keyed by full dotted names, so a bare
+``:func:`solve``` does not resolve merely because its module was
+`automodule`-d, which is why adding autodoc coverage cannot fix relative
+references from the consumer side.
+
+**It retargets the edge, not the node.** A phantom is shared by every referrer
+that spelled the same name: on ORPHEUS, 532 bare phantoms have more than one
+distinct source and ``:meth:`apply``` alone is referenced from 132 docstrings.
+Folding the node would force one answer on all of them; only the edge carries
+the namespace that decides. Each operator class's ``:meth:`apply``` now binds
+to its own method.
+
+Runs before `_canonicalize_phantoms` — namespace context is an answer,
+leaf-matching is a guess, and an answer must not lose to a guess that sorts
+first.
+
+Measured on ORPHEUS: **89.6%** of Python-to-Python references land on a real
+definition (10215/11407). The remainder is the honest bucket — builtins,
+third-party (`numpy.linalg.eig`, `mpmath.quad`), and relative names whose own
+namespace genuinely lacks them, none of which Sphinx would link either.
+
 ### Fixed — reference resolution stops inventing answers (#36)
 
 Four passes independently decide "which node did this name mean?" — Sphinx
