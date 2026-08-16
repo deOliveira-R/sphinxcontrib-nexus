@@ -343,7 +343,9 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         )
 
     if settings.infer_implements:
-        _infer_implements(graph.nxgraph)
+        # Pass the project root, or the inference reads the BASE ontology
+        # alone and a project's `.nexus/ontology.toml` extension is inert.
+        _infer_implements(graph.nxgraph, project_root=settings.project.root)
 
     logger.info(
         "After AST merge: %d nodes, %d edges",

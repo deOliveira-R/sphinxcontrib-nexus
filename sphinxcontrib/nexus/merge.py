@@ -14,6 +14,8 @@ from sphinxcontrib.nexus._mappings import (
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import networkx as nx
 
 logger = logging.getLogger(__name__)
@@ -185,7 +187,9 @@ def _tag_confidence(g: "nx.MultiDiGraph") -> None:
             data["confidence"] = 1.0
 
 
-def _infer_implements(g: "nx.MultiDiGraph") -> None:
+def _infer_implements(
+    g: "nx.MultiDiGraph", project_root: "Path | str | None" = None
+) -> None:
     """Infer IMPLEMENTS edges from doc structure (conservative).
 
     Strategy: for each theory page, find its equations and the code
@@ -216,7 +220,11 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
 
     from sphinxcontrib.nexus.ontology import Ontology
 
-    ontology = Ontology.load()
+    # With no root this reads the BASE ontology alone, so a project's
+    # `.nexus/ontology.toml` extension would be silently inert — the
+    # extension mechanism having no reachable consumer is the same defect
+    # as the module having none.
+    ontology = Ontology.load(project_root)
     spec = ontology.edges.get("implements")
     if spec is None:
         logger.warning(
