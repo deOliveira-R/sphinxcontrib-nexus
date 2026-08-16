@@ -322,3 +322,138 @@ def test_the_redefinition_error_now_names_the_way_forward(tmp_path):
     )
     with pytest.raises(ValueError, match=r"\[extend\.edge\.implements\]"):
         Ontology.load(root)
+
+
+# ---------------------------------------------------------------------------
+# The origin pin — a declared type must be producible by who it names
+# ---------------------------------------------------------------------------
+#
+# `origin` tells a reader (and an agent, and a doc author) WHICH producer
+# assigns a type. Nothing checked it, and [M] 2026-08-16 two of the
+# fourteen were false: `exception` and `type` both declared `origin =
+# "ast"` while `NodeType.EXCEPTION` / `NodeType.TYPE` appear in
+# `ast_analyzer.py` only inside lookup tables, never at an assignment
+# site. Both are reachable ONLY through `DOMAIN_TYPE_MAP`, i.e. only when
+# autodoc happened to document the symbol.
+#
+# The consequence is not cosmetic: on ORPHEUS exactly 2 classes were
+# typed `exception` while 24 more exception classes were typed `class`,
+# because the discriminator was "did someone write a docs page for it".
+#
+# These gates ask the question by RUNNING the producer, not by grepping
+# for the enum — grepping is what makes a lookup-table mention look like
+# an assignment.
+
+
+#: Every code construct nexus claims an `origin = "ast"` type for.
+_AST_KITCHEN_SINK = '''
+"""A module exercising every construct the AST analyzer types."""
+
+CONSTANT = 3                      # -> data
+TypeAlias = int                   # -> type?  (declared origin: ast)
+
+
+class Thing:                      # -> class
+    attr: int = 1                 # -> attribute
+
+    def method(self):             # -> method
+        pass
+
+    @property
+    def prop(self):               # -> ? (declared nowhere)
+        return 1
+
+
+class Boom(ValueError):           # -> exception?  (declared origin: ast)
+    pass
+
+
+def free(geometry):               # -> function
+    if geometry == "slab":        # -> tag (discriminates_on)
+        return 1
+    return 2
+'''
+
+
+def _types_the_ast_analyzer_emits(tmp_path) -> set[str]:
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text(_AST_KITCHEN_SINK)
+    kg = analyze_directory(tmp_path, exclude_patterns=[])
+    return {
+        a.get("type") for _n, a in kg.nxgraph.nodes(data=True) if a.get("type")
+    }
+
+
+def _types_the_sphinx_side_emits() -> set[str]:
+    """Types the doctree/domain walker can assign.
+
+    `DOMAIN_TYPE_MAP` is the whole vocabulary translation for
+    `domain.get_objects()`, plus the handful `extractors` constructs
+    directly for pages, sections, equations and citations.
+    """
+    from sphinxcontrib.nexus._mappings import DOMAIN_TYPE_MAP
+
+    direct = {
+        NodeType.FILE.value, NodeType.SECTION.value,
+        NodeType.EQUATION.value, NodeType.TERM.value,
+        NodeType.PROOF_OBJECT.value, NodeType.CITATION.value,
+        NodeType.EXTERNAL.value, NodeType.UNRESOLVED.value,
+    }
+    return {t.value for t in DOMAIN_TYPE_MAP.values()} | direct
+
+
+def test_every_declared_origin_names_a_producer_that_can_emit_it(tmp_path):
+    """`origin` is a claim about which producer assigns the type.
+
+    A type whose declared origin cannot produce it is worse than an
+    undocumented one: it tells a reader the graph will classify their
+    code, and it will not. [M] 2026-08-16 this gate was RED on
+    `exception` and `type`, both declaring `ast`.
+
+    ⚠ What it does NOT catch, said plainly so it is not credited with
+    more: a type BOTH producers can emit, declared to the wrong one.
+    `function` is assignable by the AST walker AND through
+    `DOMAIN_TYPE_MAP`, so flipping its origin passes here. The claim
+    gated is "the named producer CAN emit this" — not "the named
+    producer is the only, or the usual, one".
+    """
+    onto = Ontology.load()
+    emitters = {
+        "ast": _types_the_ast_analyzer_emits(tmp_path),
+        "sphinx": _types_the_sphinx_side_emits(),
+    }
+
+    unproducible = []
+    for name, spec in onto.nodes.items():
+        producible = emitters.get(spec.origin)
+        if producible is None:       # "derived" — post-processing, not gated here
+            continue
+        if name not in producible:
+            unproducible.append((name, spec.origin))
+
+    assert unproducible == [], (
+        "node types whose declared `origin` cannot actually emit them — "
+        "either the producer must learn to assign the type, or the "
+        "declared origin is wrong:\n  "
+        + "\n  ".join(f"[node.{n}] origin = {o!r}" for n, o in unproducible)
+    )
+
+
+def test_the_ast_analyzer_does_not_type_an_exception_class_as_one(tmp_path):
+    """Pins the fact that made `exception`'s origin false, so the day
+    the AST learns to assign it, this gate says so and the origin moves
+    back with it.
+
+    ⚠ This asserts a LIMITATION, deliberately. `exception` is slated for
+    retirement (an exception IS a class — one realization, no morphism,
+    so it fails the type-minting criterion), and whichever way that
+    lands, this gate has to be revisited rather than silently kept
+    green.
+    """
+    emitted = _types_the_ast_analyzer_emits(tmp_path)
+    assert NodeType.CLASS.value in emitted
+    assert NodeType.EXCEPTION.value not in emitted

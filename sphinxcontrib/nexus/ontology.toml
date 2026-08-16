@@ -104,11 +104,29 @@ origin = "ast"
 
 [node.exception]
 description = "An exception class."
-origin = "ast"
+# ⚠ `sphinx`, not `ast`, and the correction is the point. The AST analyzer
+# cannot assign this: it types every `class` statement `class`, so a class is
+# typed `exception` only when autodoc documented it as one. [M] 2026-08-16 on
+# ORPHEUS that is 2 classes, while 24 more exception classes are typed `class`
+# — the discriminator is "did someone write a docs page", which is not a fact
+# about the object.
+# ⛔ SLATED FOR RETIREMENT. An exception IS a class: one realization, no
+# non-identity morphism, so it fails the type-minting criterion. The end state
+# is no type at all — "is this an exception" is a QUERY over `inherits`, not a
+# stored kind. Recorded here so the correction below is not mistaken for
+# endorsement.
+origin = "sphinx"
 
 [node.type]
 description = "A type alias."
-origin = "ast"
+# ⚠ Also `sphinx`, for the same reason: the AST types `TypeAlias = int` as
+# `data`. Reachable through `DOMAIN_TYPE_MAP` via `.. py:type::` and the C/C++
+# typedef entries. [M] 0 nodes on ORPHEUS, which is honest rather than broken —
+# the project declares no `py:type` directives.
+# ✅ KEEPS its place: a type alias is used in annotations and never called or
+# read as a value, which IS a distinct morphism, and a declared-but-unused type
+# still tells an author that `.. py:type::` will be understood.
+origin = "sphinx"
 
 [node.tag]
 description = "A string or enum value a function branches on — the target of `discriminates_on`."
