@@ -762,3 +762,102 @@ def test_doc_domain_results_leave_positions_empty(sample_graph):
     equation = q.get_node("math:equation:diffusion")
     assert equation is not None
     assert equation.file_path == "" and equation.lineno == 0
+
+
+# ── citations are a bibliographic entity, not a dangling reference ──
+
+
+class _StubDomain:
+    """Just enough Python domain for `_get_project_modules`."""
+
+    def get_objects(self):
+        return []
+
+
+class _StubEnv:
+    """The three attributes `extract_references` actually touches."""
+
+    def __init__(self, doctree):
+        self.all_docs = {"page": None}
+        self.domains = {"py": _StubDomain()}
+        self._doctree = doctree
+
+    def get_doctree(self, docname):
+        return self._doctree
+
+
+def _page_citing(refdomain: str, reftype: str, key: str):
+    """A doctree fragment holding one citation cross-reference."""
+    from docutils import nodes as dn
+    from sphinx import addnodes
+
+    xref = addnodes.pending_xref(
+        "", dn.Text(key), refdomain=refdomain, reftype=reftype, reftarget=key,
+    )
+    return dn.container("", xref)
+
+
+def _citation_nodes(refdomain: str, reftype: str, key: str = "Bell1970"):
+    from sphinxcontrib.nexus.extractors import extract_references
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    kg = KnowledgeGraph()
+    extract_references(_StubEnv(_page_citing(refdomain, reftype, key)), kg)
+    return {
+        n: a for n, a in kg.nxgraph.nodes(data=True)
+        if a.get("type") == "citation" or "cite" in n or "citation" in n
+    }
+
+
+def test_a_bibtex_citation_is_a_citation_node_not_an_unresolved_one():
+    """The case that was silently wrong.
+
+    `sphinxcontrib-bibtex` emits ``refdomain="cite"`` with
+    ``reftype="p"``/``"t"``/…; only ``refdomain="citation"`` (docutils'
+    own) was matched, so every bibtex citation fell through to the
+    generic branch and minted ``cite:p:<key>`` typed ``unresolved``.
+
+    [M] 2026-08-16 on ORPHEUS: **72** such nodes, and **0** reaching the
+    citation branch — the special case had never fired on this corpus.
+    """
+    nodes = _citation_nodes("cite", "p")
+    assert "cite:citation:Bell1970" in nodes, nodes
+    assert nodes["cite:citation:Bell1970"]["type"] == "citation"
+    # the old spelling must not come back alongside it
+    assert "cite:p:Bell1970" not in nodes
+
+
+def test_a_docutils_citation_lands_on_the_same_node():
+    """Two producers, one bibliographic entity, one id."""
+    assert "cite:citation:Bell1970" in _citation_nodes("citation", "ref")
+
+
+def test_a_citation_does_not_inflate_the_unresolved_count():
+    """The consumer that measurably changes — and the one this gate can
+    actually falsify.
+
+    ⚠ It is deliberately NOT a ``dead_references`` gate. That was the
+    first thing written here, and a mutation battery showed it was
+    unfalsifiable: the scanner excludes a citation TWICE over — once by
+    node type, and again because a citation id starts with neither
+    ``py:`` nor ``math:equation:``, so it hits the trailing ``continue``
+    whatever its type. All three mutations (wrong refdomain,
+    ``unresolved`` type, old id spelling) left it green. For the same
+    reason the ``domain == "citation"`` special-case it was written to
+    protect had been **dead code** before it was removed.
+
+    The ``unresolved`` COUNT is what really moves: ``session_briefing``
+    reports it, it reads as "how much did nexus fail to resolve", and
+    `[M]` 72 deliberate bibliographic references were padding it on
+    ORPHEUS.
+    """
+    from sphinxcontrib.nexus.extractors import extract_references
+    from sphinxcontrib.nexus.graph import KnowledgeGraph
+
+    kg = KnowledgeGraph()
+    extract_references(_StubEnv(_page_citing("cite", "p", "Bell1970")), kg)
+    unresolved = [
+        n for n, a in kg.nxgraph.nodes(data=True)
+        if a.get("type") == "unresolved"
+    ]
+    assert unresolved == [], unresolved

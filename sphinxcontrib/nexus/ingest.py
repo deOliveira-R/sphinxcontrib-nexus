@@ -248,14 +248,18 @@ def _add_to_graph(
         key = cite.get("key", "")
         if not key:
             continue
-        cite_id = f"citation:{key}"
+        # Same id and type as the doctree walker's citations
+        # (extractors.py) — an ingested reference and a `:cite:` in a
+        # page are the same bibliographic entity, and two spellings for
+        # it is how the doctree side ended up with two of its own.
+        cite_id = f"cite:{NodeType.CITATION.value}:{key}"
         if not graph.has_node(cite_id):
             graph.add_node(GraphNode(
                 id=cite_id,
-                type=NodeType.UNRESOLVED,
+                type=NodeType.CITATION,
                 name=key,
                 display_name=cite.get("full_ref", key),
-                domain="citation",
+                domain="cite",
                 metadata={"source": "ingested"},
             ))
         graph.add_edge(GraphEdge(

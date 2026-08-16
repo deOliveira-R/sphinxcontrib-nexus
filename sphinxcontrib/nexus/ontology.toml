@@ -70,6 +70,10 @@ attributes = ["prf_type", "statement"]
 description = "A glossary term."
 origin = "sphinx"
 
+[node.citation]
+description = "A cited work — the bibliographic entity, not the reference to it."
+origin = "sphinx"
+
 # ---------------------------------------------------------------------------
 # Node types — from code
 # ---------------------------------------------------------------------------
@@ -123,12 +127,11 @@ placeholder = true
 description = "Referenced but never defined anywhere nexus scanned."
 origin = "derived"
 placeholder = true
-# ⚠ Also, today, where CITATION nodes land: `extractors.py` builds
-# `citation:<key>` with type=unresolved and domain="citation". A cited work is a
-# real bibliographic entity, not a dangling reference, so it inflates the
-# `unresolved` count and falls inside `dead_references`' phantom set. Modelling
-# it as its own node type is a candidate change, not a described one — this
-# comment records the divergence rather than encoding a type that does not exist.
+# ✅ REMEDIED 2026-08-16. Until then this is also where CITATION nodes landed —
+# typed `unresolved`, which inflated that count and dropped every citation into
+# `dead_references`' phantom set, so BOTH consumers carried a
+# `domain == "citation"` special-case to undo it. `[node.citation]` below now
+# carries the fact and both special-cases are retired. [M] 72 nodes on ORPHEUS.
 
 # ---------------------------------------------------------------------------
 # Edge types — structure
@@ -211,9 +214,8 @@ sources = ["sphinx"]
 [edge.cites]
 description = "Doc → citation."
 domain = ["file", "section"]
-# ⚠ `unresolved` is where citation nodes actually live today — see [node.unresolved].
-range = ["unresolved"]
-enforcement = "none"
+range = ["citation"]
+enforcement = "warn"
 sources = ["sphinx", "ingest"]
 
 # ---------------------------------------------------------------------------

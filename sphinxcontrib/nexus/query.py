@@ -2217,10 +2217,13 @@ class GraphQuery:
             tattrs = g.nodes.get(tgt)
             if tattrs is None:
                 continue
+            # Citations need no special case here: they carry
+            # `NodeType.CITATION`, which is not a phantom type, so the
+            # check above already excludes them. Until 2026-08-16 they
+            # were typed `unresolved` and a `domain == "citation"` test
+            # sat here to undo that — the type now carries the fact.
             if tattrs.get("type", "") not in self._PHANTOM_NODE_TYPES:
                 continue
-            if tattrs.get("domain") == "citation":
-                continue  # citation nodes are phantom by design
             reftype = str(data.get("reftype", ""))
             if tgt.startswith("math:equation:"):
                 if edge_type != "equation_ref" and reftype != "eq":

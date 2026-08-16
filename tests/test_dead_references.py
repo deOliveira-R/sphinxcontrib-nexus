@@ -410,9 +410,9 @@ def _build_query_fixture() -> KnowledgeGraph:
                           domain="math"))
     kg.add_node(GraphNode(id="math:equation:x_i", type=NodeType.UNRESOLVED,
                           name="x_i", display_name="x_i", domain="math"))
-    kg.add_node(GraphNode(id="citation:Bell1970", type=NodeType.UNRESOLVED,
+    kg.add_node(GraphNode(id="cite:citation:Bell1970", type=NodeType.CITATION,
                           name="Bell1970", display_name="Bell1970",
-                          domain="citation"))
+                          domain="cite"))
 
     def ref(target, edge_type=EdgeType.DOCUMENTS, **meta):
         kg.add_edge(GraphEdge(source="doc:page", target=target, type=edge_type,
@@ -425,7 +425,7 @@ def _build_query_fixture() -> KnowledgeGraph:
     ref("py:class:numpy.gone")                                 # skipped: external root
     ref("math:equation:gone-label", EdgeType.EQUATION_REF)     # dead equation
     ref("math:equation:x_i", EdgeType.REFERENCES, reftype="math")  # inline math, skipped
-    ref("citation:Bell1970", EdgeType.CITES)                   # citations skipped
+    ref("cite:citation:Bell1970", EdgeType.CITES)              # citations: not a phantom type
     return kg
 
 

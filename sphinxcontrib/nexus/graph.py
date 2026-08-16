@@ -31,6 +31,13 @@ class NodeType(str, Enum):
     #: (``prf:theorem:label``) and in ``metadata["prf_type"]``; fifteen
     #: near-identical NodeTypes would buy nothing a filter can't.
     PROOF_OBJECT = "proof_object"
+    #: A cited work. Its own type rather than ``unresolved``, because a
+    #: citation is a bibliographic ENTITY the corpus refers to on
+    #: purpose — not a name that failed to resolve. Typing it
+    #: ``unresolved`` inflated that count and dropped every citation
+    #: into ``dead_references``' phantom set, which is why two separate
+    #: consumers had to carry a citation special-case to stay correct.
+    CITATION = "citation"
 
 
 class EdgeType(str, Enum):

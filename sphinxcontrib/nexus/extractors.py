@@ -359,16 +359,22 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             if not reftarget:
                 continue
 
-            # Citations: refdomain="citation", reftype="ref"
-            if refdomain == "citation":
-                target_id = f"citation:{reftarget}"
+            # Citations. Docutils' own citation domain says
+            # refdomain="citation"; sphinxcontrib-bibtex says
+            # refdomain="cite" with reftype="p"/"t"/… — and only the
+            # first was matched, so every bibtex citation fell through
+            # to the generic branch below and minted `cite:p:<key>`
+            # typed `unresolved`. [M] 2026-08-16 on ORPHEUS: 72 such
+            # nodes, and ZERO reaching this branch.
+            if refdomain in ("citation", "cite"):
+                target_id = _node_id("cite", NodeType.CITATION.value, reftarget)
                 if not graph.has_node(target_id):
                     graph.add_node(GraphNode(
                         id=target_id,
-                        type=NodeType.UNRESOLVED,
+                        type=NodeType.CITATION,
                         name=reftarget,
                         display_name=reftarget,
-                        domain="citation",
+                        domain="cite",
                         docname=docname,
                     ))
                 cite_key = (source_id, target_id, "cites")
