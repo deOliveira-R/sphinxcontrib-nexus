@@ -11,6 +11,7 @@ description fails, and a description with no enum member fails.
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -388,22 +389,52 @@ def _types_the_ast_analyzer_emits(tmp_path) -> set[str]:
     }
 
 
-def _types_the_sphinx_side_emits() -> set[str]:
-    """Types the doctree/domain walker can assign.
+def _types_assigned_in(module_name: str) -> set[str]:
+    """Types a module assigns, by reading its source for ``type=``.
 
-    `DOMAIN_TYPE_MAP` is the whole vocabulary translation for
-    `domain.get_objects()`, plus the handful `extractors` constructs
-    directly for pages, sections, equations and citations.
+    ⚠ Deliberately NOT a hand-maintained list, and not a grep for
+    ``NodeType.X``. A hand list makes this gate self-fulfilling — you add
+    a type, you add it to the list, the gate agrees. A grep is worse: it
+    matches lookup-table membership, which is exactly how `exception`
+    looked producible for as long as it wasn't.
+
+    A `type=` keyword argument is the one position that actually
+    classifies a node, so that is what is matched.
+    """
+    import ast
+    import importlib
+
+    src = Path(importlib.import_module(module_name).__file__).read_text()
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.keyword) or node.arg != "type":
+            continue
+        value = node.value
+        if isinstance(value, ast.Attribute) and value.attr == "value":
+            value = value.value            # NodeType.X.value -> NodeType.X
+        if (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "NodeType"
+        ):
+            found.add(getattr(NodeType, value.attr).value)
+    return found
+
+
+def _types_the_sphinx_side_emits() -> set[str]:
+    """Types the doctree walker and the declaring directives can assign.
+
+    Two sources, both measured: `DOMAIN_TYPE_MAP` translates whatever
+    `domain.get_objects()` reports, and `extractors` / `directives`
+    construct the rest directly.
     """
     from sphinxcontrib.nexus._mappings import DOMAIN_TYPE_MAP
 
-    direct = {
-        NodeType.FILE.value, NodeType.SECTION.value,
-        NodeType.EQUATION.value, NodeType.TERM.value,
-        NodeType.PROOF_OBJECT.value, NodeType.CITATION.value,
-        NodeType.EXTERNAL.value, NodeType.UNRESOLVED.value,
-    }
-    return {t.value for t in DOMAIN_TYPE_MAP.values()} | direct
+    return (
+        {t.value for t in DOMAIN_TYPE_MAP.values()}
+        | _types_assigned_in("sphinxcontrib.nexus.extractors")
+        | _types_assigned_in("sphinxcontrib.nexus.directives")
+    )
 
 
 def test_every_declared_origin_names_a_producer_that_can_emit_it(tmp_path):

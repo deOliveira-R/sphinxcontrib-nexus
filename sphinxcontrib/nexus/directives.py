@@ -52,7 +52,7 @@ from sphinx.util.docutils import SphinxDirective
 
 from sphinxcontrib.nexus._mappings import resolve_proof_id
 from sphinxcontrib.nexus.extractors import _is_auto_proof_label
-from sphinxcontrib.nexus.graph import EdgeType
+from sphinxcontrib.nexus.graph import EdgeType, NodeType
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -322,6 +322,117 @@ class _VerificationDirectiveBase(SphinxDirective):
         return []
 
 
+class ErrorEntryDirective(SphinxDirective):
+    """Declare a catalogued failure mode, so a test can be linked to it.
+
+    Syntax::
+
+        .. error-entry:: ERR-051
+           :title: Galerkin idempotency asserted without the 4π convention
+
+           Prose describing the failure mode, how it was found, and what
+           prevents it now.
+
+    Creates a ``vv:error:<id>`` node. ``@pytest.mark.catches("ERR-051")``
+    then resolves to it (:func:`~sphinxcontrib.nexus.merge.write_catches_edges`),
+    which is what makes *"which tests catch ERR-051?"* a graph question
+    instead of a grep.
+
+    ⚠ **Not** named ``.. error::`` — that is docutils' own admonition,
+    and claiming it would silently change how every ``.. error::`` block
+    renders in every project that installs nexus.
+
+    This is nexus's only DECLARING directive; every other one asserts a
+    relation between things that already exist. It is a declaration for
+    the same reason ``.. math:: :label:`` is: a marker must never conjure
+    the thing it names, or a typo in ``catches`` would mint a catalogue
+    entry nobody wrote — and the miss would then look like coverage.
+    """
+
+    required_arguments = 1
+    has_content = True
+    option_spec = {
+        "title": rst_directives.unchanged,
+    }
+
+    def run(self) -> list[nodes.Node]:
+        entry_id = self.arguments[0].strip()
+        title = self.options.get("title", "").strip()
+
+        pending = _init_pending_queue(self.env, self.env.docname)
+        pending.append({
+            "kind": "error-entry",
+            "id": entry_id,
+            "title": title,
+            "docname": self.env.docname,
+            "lineno": self.lineno,
+        })
+
+        # Unlike the relation directives, this one renders: a catalogue
+        # whose entries are invisible is not a catalogue.
+        container = nodes.container()
+        container += nodes.rubric(
+            "", f"{entry_id} — {title}" if title else entry_id,
+        )
+        if self.content:
+            self.state.nested_parse(self.content, self.content_offset, container)
+        return [container]
+
+
+def apply_declared_nodes(
+    env: "BuildEnvironment",
+    graph: "nx.MultiDiGraph",
+) -> int:
+    """Create the nodes that declaring directives asked for.
+
+    Shares ``env.nexus_pending_edges`` with :func:`apply_pending_edges`
+    rather than keeping a second registry — one store means
+    ``env-purge-doc`` and ``env-merge-info`` keep working unchanged, and
+    the two cannot disagree about which docname contributed what.
+
+    MUST run before :func:`apply_pending_edges` and
+    ``merge.write_catches_edges``: both resolve a marker onto a node and
+    warn when it is missing, so a declaration that has not landed yet
+    reads exactly like a typo.
+
+    Returns the number of nodes created (idempotent — re-applying to the
+    same graph is a no-op).
+    """
+    registry: dict[str, list[dict[str, Any]]] | None = getattr(
+        env, "nexus_pending_edges", None
+    )
+    if not registry:
+        return 0
+
+    created = 0
+    for docname, entries in registry.items():
+        for entry in entries:
+            if entry.get("kind") != "error-entry":
+                continue
+            entry_id = entry["id"]
+            node_id = f"vv:{NodeType.ERROR.value}:{entry_id}"
+            if node_id in graph:
+                continue
+            graph.add_node(
+                node_id,
+                type=NodeType.ERROR.value,
+                name=entry_id,
+                display_name=entry.get("title") or entry_id,
+                domain="vv",
+                docname=docname,
+                title=entry.get("title", ""),
+            )
+            created += 1
+            page = f"doc:{docname}"
+            if page in graph:
+                graph.add_edge(
+                    page, node_id,
+                    type=EdgeType.CONTAINS.value,
+                    source="directive",
+                )
+    return created
+
+
 class VerifiesDirective(_VerificationDirectiveBase):
     """Declare that a Python object verifies (tests) a math equation.
 
@@ -537,6 +648,7 @@ def merge_env(
 
 def register(app: "Sphinx") -> None:
     """Register the nexus directives and their env handlers."""
+    app.add_directive("error-entry", ErrorEntryDirective)
     app.add_directive("verifies", VerifiesDirective)
     app.add_directive("implements", ImplementsDirective)
     app.add_directive("discretizes", DiscretizesDirective)

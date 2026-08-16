@@ -38,6 +38,14 @@ class NodeType(str, Enum):
     #: into ``dead_references``' phantom set, which is why two separate
     #: consumers had to carry a citation special-case to stay correct.
     CITATION = "citation"
+    #: A named failure mode from a project's error catalogue — the thing
+    #: a test is tagged as *catching*. The sibling of ``equation``: a
+    #: test declares what it VERIFIES (an equation) and what it CATCHES
+    #: (an error), and only the first of those had somewhere to land.
+    #: Before this existed, ``@pytest.mark.catches("ERR-051")`` was a
+    #: string in a node attribute pointing at nothing, so "which tests
+    #: catch ERR-051?" was unanswerable by the graph.
+    ERROR = "error"
 
 
 class EdgeType(str, Enum):
@@ -52,6 +60,12 @@ class EdgeType(str, Enum):
     INHERITS = "inherits"
     TYPE_USES = "type_uses"
     TESTS = "tests"
+    #: Test → error. The exact sibling of ``TESTS``: one says which
+    #: equation a test verifies, this says which catalogued failure mode
+    #: it catches. Written from ``@pytest.mark.catches(...)`` by
+    #: ``merge.write_catches_edges``, the mirror of
+    #: ``write_verifies_edges``.
+    CATCHES = "catches"
     #: Paper-level lineage written by ``ingest.py`` — distinct from the
     #: authored, equation-level ``DERIVES_FROM`` below.
     DERIVES = "derives"

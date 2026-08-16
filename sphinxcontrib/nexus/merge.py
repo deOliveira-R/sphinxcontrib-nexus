@@ -458,3 +458,86 @@ def write_verifies_edges(g: "nx.MultiDiGraph") -> int:
     if count:
         logger.info("Wrote %d TESTS edges from @pytest.mark.verifies", count)
     return count
+
+
+def write_catches_edges(g: "nx.MultiDiGraph") -> int:
+    """Write ``EdgeType.CATCHES`` edges from ``@pytest.mark.catches``.
+
+    The exact mirror of :func:`write_verifies_edges`: one marker says
+    which equation a test VERIFIES, this one which catalogued failure
+    mode it CATCHES. Only the first had anywhere to land until
+    ``NodeType.ERROR`` existed — `[M]` 2026-08-16 on ORPHEUS, 224 nodes
+    carried a ``catches`` marker naming 78 distinct entries, and not one
+    of the 78 was a node. The marker was a string pointing at nothing.
+
+    Entries are declared by ``.. error-entry::``. A missing one warns and
+    is skipped: we do not create phantom error nodes, for the same reason
+    the equation side does not — a typo in a marker must not be able to
+    invent the thing it claims to catch, or the miss reads as coverage.
+
+    Returns the number of edges written.
+    """
+    # Whether the project has ADOPTED the catalogue at all. Warning once
+    # per unresolved marker is right when a declaration is missing by
+    # mistake, and pure noise when the project simply has no catalogue —
+    # [M] on ORPHEUS that is 243 markers, on 224 nodes, naming 78 distinct
+    # entries, so 243 lines a build. An un-adopted project therefore gets
+    # ONE line that names what was looked for (an absence must still say
+    # where it looked), and an adopting one gets the per-marker warning a
+    # typo deserves. Same shape as the `enrich_proofs` pre-check in
+    # `extract_references`.
+    adopted = any(
+        a.get("type") == NodeType.ERROR.value for _n, a in g.nodes(data=True)
+    )
+    unresolved: set[str] = set()
+
+    count = 0
+    for node_id, attrs in list(g.nodes(data=True)):
+        entries = attrs.get("catches")
+        if not entries:
+            continue
+        for entry_id in entries:
+            err_id = f"vv:{NodeType.ERROR.value}:{entry_id}"
+            if err_id not in g:
+                unresolved.add(entry_id)
+                if adopted:
+                    logger.warning(
+                        "pytest.mark.catches(%r) on %s has no matching error "
+                        "node %s — declare it with `.. error-entry:: %s`",
+                        entry_id, node_id, err_id, entry_id,
+                    )
+                continue
+            existing = g.get_edge_data(node_id, err_id, default={})
+            if any(
+                d.get("type") == EdgeType.CATCHES.value
+                and d.get("source") not in (None, "inferred")
+                for d in existing.values()
+            ):
+                continue
+            g.add_edge(
+                node_id,
+                err_id,
+                type=EdgeType.CATCHES.value,
+                source="pytest.mark.catches",
+                confidence=1.0,
+            )
+            count += 1
+    if count:
+        logger.info("Wrote %d CATCHES edges from @pytest.mark.catches", count)
+    if unresolved and not adopted:
+        # WARNING, not info: a project carrying `catches` markers plainly
+        # intends to use them, so "none of them resolves" is a finding,
+        # not a note — and a stdlib `info` is invisible under Sphinx's
+        # default level, which would make this the silent-absence bug it
+        # exists to prevent.
+        logger.warning(
+            "%d @pytest.mark.catches marker(s) name %d catalogue entries "
+            "that no `.. error-entry::` declares, so none of them is a "
+            "graph node: %s%s. The catalogue is not in the corpus — until "
+            "it is, `catches` cannot be queried.",
+            sum(len(a.get("catches") or ()) for _n, a in g.nodes(data=True)),
+            len(unresolved),
+            ", ".join(sorted(unresolved)[:5]),
+            ", …" if len(unresolved) > 5 else "",
+        )
+    return count

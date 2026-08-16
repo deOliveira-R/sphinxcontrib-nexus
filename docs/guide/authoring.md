@@ -18,6 +18,8 @@ guesses.
 | `.. math:: :label: foo` | an `equation` node, referenceable anywhere |
 | `@pytest.mark.verifies("foo")` | `tests` edge, test → equation |
 | `.. verifies:: foo` | the same edge, declared from the doc side |
+| `.. error-entry:: ERR-051` | an `error` node — a catalogued failure mode |
+| `@pytest.mark.catches("ERR-051")` | `catches` edge, test → error |
 | `.. implements:: foo` | `implements` edge, code → equation |
 | `.. discretizes:: foo` | `discretizes` edge between two statements |
 | `#: prose with :class:`X`` above an attribute | edges from that attribute |
@@ -228,3 +230,41 @@ it:
 nexus_source_exclude_patterns = ["scratch/*", "student_resources/*"]
 ```
 :::
+
+## The error catalogue
+
+A test declares two things about itself: which equation it **verifies**,
+and which known failure mode it **catches**. Only the first had somewhere
+to point until `error` became a node type — `@pytest.mark.catches("ERR-051")`
+was a string in an attribute naming nothing, so *"which tests catch
+ERR-051?"* was a grep rather than a query.
+
+Declare each entry once, wherever your catalogue lives:
+
+```rst
+.. error-entry:: ERR-051
+   :title: Galerkin idempotency asserted without the 4π convention
+
+   The gate asserted ``Π R = I`` instead of ``Π R = 4π · I``. It survived
+   a full merge cycle because its only test fed it a deliberately
+   non-orthogonal ``Y``, so the wrong invariant still produced the
+   expected failure.
+```
+
+Then `@pytest.mark.catches("ERR-051")` on any test resolves to it, and
+`impact`, `callers` and the verification queries can all see the link.
+
+Two deliberate constraints:
+
+- **The directive is not called `.. error::`.** That name belongs to
+  docutils' admonition, and taking it would change how every existing
+  `.. error::` block renders.
+- **A marker cannot create an entry.** If `catches` names something no
+  `.. error-entry::` declares, nexus warns and writes nothing. A typo
+  must not be able to mint the thing it claims to catch — otherwise the
+  miss looks exactly like coverage, which is the one direction a V&V
+  graph must never fail in. This is the same rule `.. math:: :label:`
+  and `verifies` already follow.
+
+If your project has `catches` markers but no entries at all, you get a
+single line saying so — not one per marker.

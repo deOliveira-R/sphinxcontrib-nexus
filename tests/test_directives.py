@@ -319,3 +319,161 @@ def test_merge_env_copies_worker_entries_for_docnames():
     assert "theory/b" in main.nexus_pending_edges
     # theory/c wasn't in the requested docnames list — not merged.
     assert "theory/c" not in main.nexus_pending_edges
+
+
+# ---------------------------------------------------------------------------
+# `.. error-entry::` — the declaring directive, and the `catches` edge
+# ---------------------------------------------------------------------------
+#
+# The V&V triangle had two corners. A test declares what it VERIFIES (an
+# equation, which exists as a node) and what it CATCHES (a catalogued
+# failure mode, which did not) — so [M] 2026-08-16 on ORPHEUS, 224 nodes
+# carried a `catches` marker naming 78 distinct entries and none of the
+# 78 was a node. "Which tests catch ERR-051?" was a grep, not a query.
+
+
+def _env_with_error_entries(*entries, docname="catalogue"):
+    """An env whose pending queue holds `.. error-entry::` payloads."""
+    env = types.SimpleNamespace()
+    env.docname = docname
+    env.nexus_pending_edges = {
+        docname: [
+            {"kind": "error-entry", "id": eid, "title": title,
+             "docname": docname, "lineno": 1}
+            for eid, title in entries
+        ]
+    }
+    return env
+
+
+def test_an_error_entry_becomes_a_node():
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+
+    g = nx.MultiDiGraph()
+    created = apply_declared_nodes(
+        _env_with_error_entries(("ERR-051", "Galerkin idempotency")), g,
+    )
+    assert created == 1
+    node = g.nodes["vv:error:ERR-051"]
+    assert node["type"] == "error"
+    assert node["name"] == "ERR-051"
+    assert node["title"] == "Galerkin idempotency"
+
+
+def test_declaring_the_same_entry_twice_is_idempotent():
+    """The registry is replayed on every incremental build."""
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+
+    g = nx.MultiDiGraph()
+    env = _env_with_error_entries(("ERR-051", "x"))
+    assert apply_declared_nodes(env, g) == 1
+    assert apply_declared_nodes(env, g) == 0
+    assert g.number_of_nodes() == 1
+
+
+def test_an_error_entry_is_contained_by_its_page():
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+
+    g = nx.MultiDiGraph()
+    g.add_node("doc:catalogue", type="file", name="catalogue")
+    apply_declared_nodes(_env_with_error_entries(("ERR-051", "x")), g)
+    assert any(
+        d.get("type") == "contains"
+        for _s, _t, d in g.edges("doc:catalogue", data=True)
+    )
+
+
+def test_a_catches_marker_reaches_its_declared_entry():
+    """The mirror of `verifies` -> `tests`, end to end."""
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+    from sphinxcontrib.nexus.merge import write_catches_edges
+
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:tests.test_x.test_thing", type="function",
+               name="tests.test_x.test_thing", catches=("ERR-051",))
+    apply_declared_nodes(_env_with_error_entries(("ERR-051", "x")), g)
+
+    assert write_catches_edges(g) == 1
+    edge = list(g.get_edge_data(
+        "py:function:tests.test_x.test_thing", "vv:error:ERR-051",
+    ).values())[0]
+    assert edge["type"] == "catches"
+    assert edge["source"] == "pytest.mark.catches"
+
+
+def test_an_undeclared_entry_mints_nothing():
+    """A typo in a marker must NOT invent the thing it claims to catch.
+
+    The equation side refuses for the same reason: if `catches` could
+    conjure its target, a misspelled marker would create a catalogue
+    entry nobody wrote — and the miss would then read as coverage,
+    which is the one failure direction a V&V graph must not have.
+    """
+    from sphinxcontrib.nexus.merge import write_catches_edges
+
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:t.test_thing", type="function",
+               name="t.test_thing", catches=("ERR-999",))
+    assert write_catches_edges(g) == 0
+    assert "vv:error:ERR-999" not in g
+    assert g.number_of_nodes() == 1
+
+
+def test_a_typo_warns_once_the_project_HAS_a_catalogue(caplog):
+    """Per-marker warnings belong to a project that has ADOPTED the
+    catalogue — there, a marker with no entry is a typo worth naming."""
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+    from sphinxcontrib.nexus.merge import write_catches_edges
+
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:t.test_thing", type="function",
+               name="t.test_thing", catches=("ERR-999",))
+    apply_declared_nodes(_env_with_error_entries(("ERR-051", "x")), g)
+    with caplog.at_level("WARNING"):
+        assert write_catches_edges(g) == 0
+    assert "ERR-999" in caplog.text
+
+
+def test_a_project_with_no_catalogue_is_told_once_not_224_times(caplog):
+    """The lessons-L56 shape: an absence must still name what it looked
+    for, and must not say it once per marker.
+
+    [M] ORPHEUS carries 243 `catches` markers, on 224 nodes, naming 78
+    distinct entries, and has no `.. error-entry::` anywhere — its
+    catalogue lives outside the corpus. Per-marker warnings would be 243
+    lines on every build, which is how a real signal gets tuned out.
+    (Three different numbers; the gate below asserts ONE line, not which.)
+    """
+    from sphinxcontrib.nexus.merge import write_catches_edges
+
+    g = nx.MultiDiGraph()
+    for i in range(3):
+        g.add_node(f"py:function:t.test_{i}", type="function",
+                   name=f"t.test_{i}", catches=("ERR-001", "ERR-002"))
+    with caplog.at_level("INFO"):
+        assert write_catches_edges(g) == 0
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, warnings   # one line, not one per marker
+    assert "ERR-001" in caplog.text and "ERR-002" in caplog.text
+    assert "not in the corpus" in caplog.text
+
+
+def test_write_catches_edges_is_idempotent():
+    from sphinxcontrib.nexus.directives import apply_declared_nodes
+    from sphinxcontrib.nexus.merge import write_catches_edges
+
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:t.test_thing", type="function",
+               name="t.test_thing", catches=("ERR-051",))
+    apply_declared_nodes(_env_with_error_entries(("ERR-051", "x")), g)
+    assert write_catches_edges(g) == 1
+    assert write_catches_edges(g) == 0
+
+
+def test_purge_drops_error_entries_too():
+    """`error-entry` shares the pending registry with the relation
+    directives precisely so the purge and parallel-merge handlers keep
+    working without a second implementation."""
+    env = _env_with_error_entries(("ERR-051", "x"))
+    purge_doc(None, env, "catalogue")
+    assert env.nexus_pending_edges == {}

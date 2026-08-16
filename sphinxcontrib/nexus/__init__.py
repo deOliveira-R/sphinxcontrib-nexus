@@ -296,11 +296,15 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         _canonicalize_phantoms,
         _resolve_relative_references,
     )
-    from sphinxcontrib.nexus.directives import apply_pending_edges
+    from sphinxcontrib.nexus.directives import (
+        apply_declared_nodes,
+        apply_pending_edges,
+    )
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
         drop_inline_math_references,
         reconcile_unresolved,
+        write_catches_edges,
         write_verifies_edges,
     )
     from sphinxcontrib.nexus.registry import (
@@ -330,7 +334,12 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # exactly what can still turn an unresolved target into one.
     drop_inline_math_references(graph)
 
+    # Declarations FIRST: everything below resolves a marker onto a
+    # node and warns when it is missing, so a declaration that has
+    # not landed yet is indistinguishable from a typo.
+    apply_declared_nodes(app.env, graph.nxgraph)
     write_verifies_edges(graph.nxgraph)
+    write_catches_edges(graph.nxgraph)
     apply_pending_edges(app.env, graph.nxgraph)
 
     registry_paths = list(settings.verification_registry)

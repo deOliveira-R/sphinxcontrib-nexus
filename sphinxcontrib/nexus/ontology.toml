@@ -74,6 +74,15 @@ origin = "sphinx"
 description = "A cited work — the bibliographic entity, not the reference to it."
 origin = "sphinx"
 
+[node.error]
+description = "A catalogued failure mode — the thing a test `catches`."
+# Declared by `.. error-entry:: <id>`, exactly as an equation is declared by
+# `.. math:: :label:`. A marker only LINKS to one; neither `verifies` nor
+# `catches` may conjure the thing it names, or a typo in a marker would mint a
+# node and the catalogue would silently grow entries nobody wrote.
+origin = "sphinx"
+attributes = ["title"]
+
 # ---------------------------------------------------------------------------
 # Node types — from code
 # ---------------------------------------------------------------------------
@@ -259,6 +268,14 @@ range = ["equation", "proof_object"]
 default_confidence = 1.0
 enforcement = "warn"
 sources = ["pytest.mark.verifies", "directive", "registry"]
+
+[edge.catches]
+description = "This test CATCHES this catalogued failure mode."
+domain = ["function", "method"]
+range = ["error"]
+default_confidence = 1.0
+enforcement = "warn"
+sources = ["pytest.mark.catches", "directive"]
 
 [edge.derives]
 description = "Paper-level lineage written by `ingest` — distinct from the authored `derives_from`."

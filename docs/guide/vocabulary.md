@@ -101,6 +101,7 @@ reference out of a symbol that exists.
 |---|---|---|
 | `implements` | This code *is* this equation | Directive, or inferred at `confidence=0.7` |
 | `tests` | This test *verifies* this equation | `@pytest.mark.verifies`, `.. verifies::` |
+| `catches` | This test *catches* this catalogued failure mode | `@pytest.mark.catches` |
 | `derives` | Paper-level lineage written by `ingest` | Ingest |
 
 **Statement relations** — always specific → general
