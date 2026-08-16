@@ -52,6 +52,12 @@ from sphinxcontrib.nexus.workspace import (
     stamp_provenance,
 )
 
+#: Deliberately NOT the shipped convention (``.nexus/graph.db`` since
+#: Track 0.6) — it is the pre-0.6 location, kept because ``db_relpath``
+#: and ``sibling`` are layout-AGNOSTIC and a constant equal to the
+#: convention could not show that. Read it as "some root-relative
+#: layout", never as where a graph lives; ``for_root`` below is what
+#: pins the real one.
 DB_RELPATH = Path("docs/_build/html/_nexus/graph.db")
 
 
@@ -253,6 +259,20 @@ def test_sibling_requires_relative_layout(repo, worktree, tmp_path):
         ws.sibling(worktree)
 
 
+def test_for_root_derives_the_store_from_the_checkout(tmp_path):
+    """A checkout determines its whole workspace.
+
+    The value is written out here rather than imported from
+    ``project``: this is the external pin for the convention, so it must
+    fail if the store ever moves, and reading it from the code that
+    defines it would make it agree by construction.
+    """
+    ws = Workspace.for_root(tmp_path)
+    assert ws.root == tmp_path.resolve()
+    assert ws.db_path == (tmp_path / ".nexus" / "graph.db").resolve()
+    assert ws.db_relpath == Path(".nexus/graph.db")
+
+
 # ---------------------------------------------------------------------------
 # list_worktrees / discover
 # ---------------------------------------------------------------------------
@@ -437,11 +457,10 @@ def server_on_main(repo, monkeypatch):
     MAIN checkout's graph."""
     db = _write_graph(repo, "main_node")
     monkeypatch.setattr(
-        server_mod, "_workspace", Workspace(db_path=db, root=repo),
+        server_mod, "_query",
+        GraphQuery(load_sqlite(db), workspace=Workspace(db_path=db, root=repo)),
     )
-    monkeypatch.setattr(server_mod, "_query", GraphQuery(load_sqlite(db)))
     monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
-    monkeypatch.setattr(server_mod, "_changed_cache", None)
     return repo
 
 
@@ -475,7 +494,7 @@ def test_use_workspace_without_graph_fails_with_hint(server_on_main, worktree):
     assert "error" in result
     assert "hint" in result
     # The graph and workspace are untouched by the failed switch.
-    q, ws = server_mod._query, server_mod._workspace
+    q, ws = server_mod._query, server_mod._active_workspace()
     assert q is not None and ws is not None
     assert q.get_node("py:function:main_node") is not None
     assert ws.root == server_on_main
@@ -592,7 +611,6 @@ def test_position_warning_quiet_for_unchanged_file(server_on_main):
 
 def test_position_warning_fires_for_changed_file(server_on_main):
     (server_on_main / "tracked.txt").write_text("edited\n")
-    server_mod._changed_cache = None  # the edit happened after the fixture
     warning = server_mod._position_staleness_warning("tracked.txt")
     assert warning is not None
     prov = git_provenance(server_on_main)  # stamp == HEAD here
@@ -604,22 +622,30 @@ def test_node_at_payload_carries_the_warning(server_on_main):
     """The warning rides along even when no node matches — a stale
     graph is exactly when the no-match answer is least trustworthy."""
     (server_on_main / "tracked.txt").write_text("edited\n")
-    server_mod._changed_cache = None
     payload = json.loads(server_mod.node_at("tracked.txt", 1))
     assert "error" in payload  # the one-node graph has no file_path
     assert "warning" in payload
 
 
-def test_changed_set_is_cached_per_build(server_on_main, monkeypatch):
-    """One git subprocess per (root, db_mtime, commit) — not per call."""
+def test_changed_set_is_cached_per_query(server_on_main, monkeypatch):
+    """One git subprocess per loaded graph — not per call.
+
+    The cache needs no invalidation key because the query object IS
+    the key: a reload or a workspace switch builds a new one. This
+    replaced a module-global cache whose hand-built
+    ``(root, db_mtime, commit)`` key existed only to notice that.
+    """
+    from sphinxcontrib.nexus import query as query_mod
+
     calls = []
-    real = server_mod.changed_files
+    real = query_mod.changed_files
     monkeypatch.setattr(
-        server_mod, "changed_files",
+        query_mod, "changed_files",
         lambda *a: calls.append(a) or real(*a),
     )
-    server_mod._files_changed_since_build()
-    server_mod._files_changed_since_build()
+    q = server_mod._query
+    assert q is not None
+    assert q.files_changed_since_build == q.files_changed_since_build
     assert len(calls) == 1
 
 
@@ -660,7 +686,7 @@ def test_auto_align_switches_to_session_worktree(server_on_main, worktree):
     _write_graph(worktree, "feature_node")
     info = _auto_align(_RootsClient([worktree.as_uri()]))
     assert info is not None and info["switched"] is True
-    ws = server_mod._workspace
+    ws = server_mod._active_workspace()
     assert ws is not None and ws.root == worktree.resolve()
 
 
@@ -670,7 +696,7 @@ def test_auto_align_reports_missing_graph_without_switching(
     info = _auto_align(_RootsClient([worktree.as_uri()]))
     assert info is not None and info["switched"] is False
     assert "hint" in info
-    ws = server_mod._workspace
+    ws = server_mod._active_workspace()
     assert ws is not None and ws.root == server_on_main  # untouched
 
 

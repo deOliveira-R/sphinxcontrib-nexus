@@ -66,6 +66,12 @@ class WorkspaceResolutionError(ValueError):
     exactly one checkout of the project."""
 
 
+class NoWorkspaceError(ValueError):
+    """A verb that needs a working tree was asked of a graph opened
+    without one (no :class:`Workspace`, or a workspace with no
+    ``root``)."""
+
+
 def _git(root: Path, *args: str) -> str | None:
     """Run a git command at ``root``; ``None`` on any failure."""
     try:
@@ -327,6 +333,21 @@ class Workspace:
 
     db_path: Path
     root: Path | None = None
+
+    @classmethod
+    def for_root(cls, root: Path | str) -> Workspace:
+        """The workspace of a checkout, graph at the conventional place.
+
+        Since the store became *derived* rather than declared, a
+        checkout determines its whole workspace, so a caller that knows
+        only the tree does not have to invent a database path — and one
+        invented per call site is one that can disagree with the root it
+        is paired with.
+        """
+        from sphinxcontrib.nexus.project import graph_db_in
+
+        root = Path(root).resolve()
+        return cls(db_path=graph_db_in(root), root=root)
 
     @property
     def db_relpath(self) -> PurePath | None:

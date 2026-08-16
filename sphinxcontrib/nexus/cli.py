@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sphinxcontrib.nexus import __version__
-from sphinxcontrib.nexus.project import resolve_db
+from sphinxcontrib.nexus.project import find_project_root, resolve_db
 from sphinxcontrib.nexus.install import MANIFEST_NAME, Payload
+from sphinxcontrib.nexus.workspace import Workspace
 
 if TYPE_CHECKING:
     from sphinxcontrib.nexus.query import GraphQuery
@@ -1059,10 +1060,28 @@ def _run_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_query(db_path: Path) -> GraphQuery:
+def _workspace_for(args: argparse.Namespace) -> Workspace:
+    """The checkout this invocation is about, paired with its graph.
+
+    One home for a resolution that had been written out six times as
+    ``args.project_root or Path.cwd()`` and omitted everywhere else —
+    so most query subcommands could not answer a git-aware question at
+    all, and the six that could were wrong when run from a
+    subdirectory: ``git diff`` reports repository-relative paths, which
+    then fail to match nodes made relative to ``docs/`` and produce a
+    confident "nothing changed". Falling back to the discovered project
+    root rather than the cwd is what makes the two halves agree.
+    """
+    declared = getattr(args, "project_root", None)
+    root = declared or find_project_root(Path.cwd()) or Path.cwd()
+    return Workspace(db_path=args.db.resolve(), root=Path(root).resolve())
+
+
+def _load_query(args: argparse.Namespace) -> GraphQuery:
     from sphinxcontrib.nexus.export import load_sqlite
     from sphinxcontrib.nexus.query import GraphQuery
 
+    db_path = args.db
     if not db_path.exists():
         # Say WHICH of the two causes this is. Most query subcommands take
         # no --project-root, so they resolve from the cwd — and running one
@@ -1070,7 +1089,7 @@ def _load_query(db_path: Path) -> GraphQuery:
         # first", which reads as "the graph was never built" when the truth
         # is "you are in the wrong directory". A wrong remediation is worse
         # than none: it sends the reader off to rebuild a graph they have.
-        from sphinxcontrib.nexus.project import CONFIG_DIR, find_project_root
+        from sphinxcontrib.nexus.project import CONFIG_DIR
 
         print(f"Error: {db_path} does not exist", file=sys.stderr)
         if find_project_root(Path.cwd()) is None:
@@ -1088,7 +1107,7 @@ def _load_query(db_path: Path) -> GraphQuery:
                 file=sys.stderr,
             )
         sys.exit(1)
-    return GraphQuery(load_sqlite(db_path))
+    return GraphQuery(load_sqlite(db_path), workspace=_workspace_for(args))
 
 
 def _setup_targets(
@@ -1411,19 +1430,14 @@ def _run_serve(args: argparse.Namespace) -> int:
         print("Run 'nexus analyze' or 'sphinx-build' first.", file=sys.stderr)
         return 1
 
-    project_root = (args.project_root or Path.cwd()).resolve()
-    serve(db_path=db_path, project_root=project_root)
+    serve(db_path=db_path, project_root=_workspace_for(args).root)
     return 0
 
 
 def _run_workspaces(args: argparse.Namespace) -> int:
-    from sphinxcontrib.nexus.workspace import GitProvenance, Workspace, discover
+    from sphinxcontrib.nexus.workspace import GitProvenance, discover
 
-    active = Workspace(
-        db_path=args.db.resolve(),
-        root=(args.project_root or Path.cwd()).resolve(),
-    )
-    for status in discover(active):
+    for status in discover(_workspace_for(args)):
         entry = status.to_payload()
         marker = "*" if entry["is_active"] else " "
         graph = (
@@ -1444,8 +1458,9 @@ def _run_file_brief(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"No graph database at {args.db}", file=sys.stderr)
         return 1
-    root = (args.project_root or Path.cwd()).resolve()
-    brief = file_brief(args.db, args.file, project_root=root)
+    brief = file_brief(
+        args.db, args.file, project_root=_workspace_for(args).root,
+    )
     if brief is None:
         print(
             f"{args.file} is not in the graph (new file, excluded "
@@ -1461,7 +1476,7 @@ def _run_file_brief(args: argparse.Namespace) -> int:
 
 
 def _run_status(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     s = q.stats()
     print(f"Graph: {s.node_count} nodes, {s.edge_count} edges")
     print(f"Density: {s.density:.6f}")
@@ -1478,7 +1493,7 @@ def _run_status(args: argparse.Namespace) -> int:
 
 
 def _run_query(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     types = [t.strip() for t in args.node_types.split(",") if t.strip()] or None
     results = q.query(args.text, node_types=types, limit=args.limit)
     if not results:
@@ -1492,7 +1507,7 @@ def _run_query(args: argparse.Namespace) -> int:
 def _run_impact(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_impact
 
-    q = _load_query(args.db)
+    q = _load_query(args)
     result = assemble_impact(
         q,
         args.target,
@@ -1519,7 +1534,7 @@ def _run_impact(args: argparse.Namespace) -> int:
 
 
 def _run_provenance(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     result = q.provenance_chain(args.target)
     if not result.chain:
         print(f"No provenance chain found for {args.target}")
@@ -1533,7 +1548,7 @@ def _run_provenance(args: argparse.Namespace) -> int:
 
 
 def _run_coverage(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     filt = args.status if args.status else None
     result = q.verification_coverage(status_filter=filt)
     print("Summary:")
@@ -1555,9 +1570,8 @@ def _run_coverage(args: argparse.Namespace) -> int:
 
 
 def _run_staleness(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
-    result = q.staleness(project_root)
+    q = _load_query(args)
+    result = q.staleness()
     if not result.stale_docs:
         print(f"No stale docs found ({result.total_checked} checked).")
         return 0
@@ -1573,7 +1587,7 @@ def _run_staleness(args: argparse.Namespace) -> int:
 
 
 def _run_migration(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     result = q.migration_plan(args.from_dep, args.to_dep)
     if not result.phases:
         print(f"No functions found using {args.from_dep}")
@@ -1651,14 +1665,13 @@ def _json_out(data) -> int:
 
 def _run_briefing(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
-    return _json_out(to_dict(q.session_briefing(project_root)))
+    q = _load_query(args)
+    return _json_out(to_dict(q.session_briefing()))
 
 
 def _run_native_place(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.native_place_candidates(
         min_callers=args.min_callers, exclude=toks, limit=args.limit,
@@ -1668,7 +1681,7 @@ def _run_native_place(args: argparse.Namespace) -> int:
 
 def _run_twin_paths(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.twin_paths(
         min_similarity=args.min_similarity, min_tokens=args.min_tokens,
@@ -1679,7 +1692,7 @@ def _run_twin_paths(args: argparse.Namespace) -> int:
 
 def _run_discriminations(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.discriminations(
         min_sites=args.min_sites, exclude=toks, limit=args.limit,
@@ -1690,7 +1703,7 @@ def _run_discriminations(args: argparse.Namespace) -> int:
 def _run_dead_references(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
 
-    q = _load_query(args.db)
+    q = _load_query(args)
     result = q.dead_references()
     dead = result.dead if args.limit <= 0 else result.dead[: args.limit]
 
@@ -1738,7 +1751,7 @@ def _run_dead_references(args: argparse.Namespace) -> int:
 
 def _run_dead_functions(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.dead_functions(exclude=toks, limit=args.limit)
     return _json_out(to_dict(results))
@@ -1746,7 +1759,7 @@ def _run_dead_functions(args: argparse.Namespace) -> int:
 
 def _run_protocol_conformers(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     toks = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
     results = q.protocol_conformers(
         min_methods=args.min_methods, exclude=toks, limit=args.limit,
@@ -1797,7 +1810,7 @@ def _run_runtime_ingest(args: argparse.Namespace) -> int:
         print(f"Error: {args.artifact} does not exist", file=sys.stderr)
         return 1
     ingest, count = backends[args.kind]
-    q = _load_query(args.db)
+    q = _load_query(args)
     root = args.root or ProjectConfig.load(Path.cwd()).root
     meta = {"command": args.note} if args.note else {}
     run = ingest(args.artifact, q.knowledge_graph, args.run,
@@ -1837,7 +1850,7 @@ def _run_runtime_runs(args: argparse.Namespace) -> int:
 
 def _run_runtime_hotspots(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     run = _runtime_load_many(args.db, args.run)
     results = q.runtime_hotspots(run, by=args.by, limit=args.limit)
     return _json_out(to_dict(results))
@@ -1845,7 +1858,7 @@ def _run_runtime_hotspots(args: argparse.Namespace) -> int:
 
 def _run_runtime_edges(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     run = _runtime_load_many(args.db, args.run)
     results = q.runtime_edges(
         run, mode=args.mode, node=args.node,
@@ -1855,7 +1868,7 @@ def _run_runtime_edges(args: argparse.Namespace) -> int:
 
 def _run_runtime_branches(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     run = _runtime_load_many(args.db, args.run)
     results = q.runtime_branches(
         run, node=args.node, partial_only=not args.all, limit=args.limit)
@@ -1864,7 +1877,7 @@ def _run_runtime_branches(args: argparse.Namespace) -> int:
 
 def _run_runtime_timeline(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     run = _runtime_load(args.db, args.run)
     results = q.runtime_timeline(run, max_depth=args.max_depth, limit=args.limit)
     return _json_out(to_dict(results))
@@ -1872,7 +1885,7 @@ def _run_runtime_timeline(args: argparse.Namespace) -> int:
 
 def _run_context(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_context
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(assemble_context(
         q,
         args.node_id,
@@ -1882,52 +1895,50 @@ def _run_context(args: argparse.Namespace) -> int:
 
 def _run_neighbors(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_neighbors
-    q = _load_query(args.db)
+    q = _load_query(args)
     types = [t.strip() for t in args.edge_types.split(",") if t.strip()] or None
     return _json_out(assemble_neighbors(q, args.node_id, direction=args.direction, edge_types=types))
 
 
 def _run_trace(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.trace_error(args.test_node_id)))
 
 
 def _run_retest(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
-    return _json_out(to_dict(q.retest(project_root, scope=args.scope)))
+    q = _load_query(args)
+    return _json_out(to_dict(q.retest(scope=args.scope)))
 
 
 def _run_changes(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
-    return _json_out(to_dict(q.detect_changes(project_root, scope=args.scope)))
+    q = _load_query(args)
+    return _json_out(to_dict(q.detect_changes(scope=args.scope)))
 
 
 def _run_communities(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_communities
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(assemble_communities(q, min_size=args.min_size))
 
 
 def _run_bridges(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.bridges(top_n=args.top_n)))
 
 
 def _run_god_nodes(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.god_nodes(top_n=args.top_n)))
 
 
 def _run_processes(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_processes
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(
         assemble_processes(
             q,
@@ -1940,29 +1951,27 @@ def _run_processes(args: argparse.Namespace) -> int:
 
 def _run_shortest_path(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import assemble_shortest_path
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(assemble_shortest_path(q, args.source, args.target, max_hops=args.max_hops))
 
 
 def _run_graph_query(args: argparse.Namespace) -> int:
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(q.graph_query(args.pattern, limit=args.limit))
 
 
 def _run_rename(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
+    q = _load_query(args)
     return _json_out(to_dict(q.rename(
         args.old_name, args.new_name,
-        project_root=project_root,
         dry_run=not args.apply_rename,
     )))
 
 
 def _run_callers(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.callers(
         args.node_id, transitive=args.transitive, max_depth=args.max_depth,
     )))
@@ -1970,7 +1979,7 @@ def _run_callers(args: argparse.Namespace) -> int:
 
 def _run_callees(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.callees(
         args.node_id, transitive=args.transitive, max_depth=args.max_depth,
     )))
@@ -1978,10 +1987,8 @@ def _run_callees(args: argparse.Namespace) -> int:
 
 def _run_audit(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
-    project_root = args.project_root or Path.cwd()
+    q = _load_query(args)
     return _json_out(to_dict(q.verification_audit(
-        project_root,
         group_by=args.group_by,
         include_tests=args.include_tests,
     )))
@@ -1989,7 +1996,7 @@ def _run_audit(args: argparse.Namespace) -> int:
 
 def _run_gaps(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
-    q = _load_query(args.db)
+    q = _load_query(args)
     return _json_out(to_dict(q.verification_gaps(
         module=args.module,
         level=args.level,

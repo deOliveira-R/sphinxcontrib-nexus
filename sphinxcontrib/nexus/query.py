@@ -9,6 +9,7 @@ import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -16,7 +17,14 @@ import networkx as nx
 
 from sphinxcontrib.nexus.fingerprint import jaccard
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
-from sphinxcontrib.nexus.workspace import default_branch
+from sphinxcontrib.nexus.workspace import (
+    PROVENANCE_KEY,
+    GitProvenance,
+    NoWorkspaceError,
+    Workspace,
+    changed_files,
+    default_branch,
+)
 
 if TYPE_CHECKING:
     from sphinxcontrib.nexus.runtime import RuntimeRun
@@ -706,13 +714,28 @@ class GraphQuery:
     """Query interface over a KnowledgeGraph or raw nx.MultiDiGraph.
 
     Designed to be usable standalone (no Sphinx dependency).
+
+    A query answers about ONE checkout — the tree the graph was built
+    from — so it carries the :class:`~sphinxcontrib.nexus.workspace.Workspace`
+    it was loaded from rather than being told the working tree again on
+    each call.  Every git-aware verb (``detect_changes``, ``retest``,
+    ``staleness``, ``rename``, ``node_at``, …) then reads one root that
+    cannot disagree with the graph it is paired with.  ``workspace`` is
+    optional because a graph is queryable without a tree: the CLI reads
+    a bare ``--db``, and most callers ask purely structural questions
+    that no working tree could inform.
     """
 
-    def __init__(self, graph: KnowledgeGraph | nx.MultiDiGraph) -> None:
+    def __init__(
+        self,
+        graph: KnowledgeGraph | nx.MultiDiGraph,
+        workspace: Workspace | None = None,
+    ) -> None:
         self._kg = (
             graph if isinstance(graph, KnowledgeGraph) else KnowledgeGraph(graph)
         )
         self._g = self._kg.nxgraph
+        self._workspace = workspace
 
     @property
     def knowledge_graph(self) -> KnowledgeGraph:
@@ -721,6 +744,72 @@ class GraphQuery:
         consumers (ingest) operate on this object rather than
         reconstructing a wrapper around the bare NetworkX graph."""
         return self._kg
+
+    @property
+    def workspace(self) -> Workspace | None:
+        """The checkout-and-database pair this query answers about, or
+        ``None`` when the graph was opened without one."""
+        return self._workspace
+
+    @property
+    def project_root(self) -> Path | None:
+        """Working tree this query answers about; ``None`` when
+        unknown.  Verbs that merely *degrade* without a tree (staleness'
+        timestamp signal, ``rename``'s regex sweep) read this and skip
+        that half; verbs that are meaningless without one
+        (``detect_changes``, ``retest`` — both are git diffs) call
+        :meth:`_require_root` instead."""
+        return self._workspace.root if self._workspace is not None else None
+
+    def _require_root(self, verb: str) -> Path:
+        """The working tree, or a refusal that names what is missing.
+
+        A git diff against no tree has no meaningful answer, and the
+        older signature made that state expressible by taking the root
+        per call — so the failure surfaced as an obscure subprocess
+        error at the bottom of the stack, or as an empty diff that read
+        like "nothing changed".
+        """
+        root = self.project_root
+        if root is None:
+            raise NoWorkspaceError(
+                f"{verb} diffs a working tree against git, and this graph "
+                f"was opened without one — a server started with a bare "
+                f"--db, or a query built with no Workspace root. Point "
+                f"nexus at the checkout the graph was built from."
+            )
+        return root
+
+    @cached_property
+    def build_commit(self) -> str | None:
+        """Commit the graph's provenance stamp records; ``None`` when
+        the graph is unstamped (built by nexus < 0.12) or was built
+        from a non-git tree."""
+        prov = GitProvenance.from_stamp(self._kg.metadata.get(PROVENANCE_KEY))
+        return prov.commit if prov is not None else None
+
+    @cached_property
+    def files_changed_since_build(self) -> frozenset[Path] | None:
+        """Working-tree files that differ from :attr:`build_commit`.
+
+        ``None`` means UNKNOWN — no tree, no stamp, or git failed —
+        and must not be collapsed into ``frozenset()`` ("verified
+        unchanged"): a graph built at a commit this clone no longer has
+        is *more* suspect, not less.
+
+        Cached for the lifetime of the query, which needs no
+        invalidation key because the object IS the key: the graph is
+        immutable once loaded, and every reload or workspace switch
+        builds a new :class:`GraphQuery`.  The server previously kept
+        this beside the graph as a module global with a hand-built
+        ``(root, mtime, commit)`` cache key — three values whose only
+        job was to detect that the query had been replaced.
+        """
+        root = self.project_root
+        commit = self.build_commit
+        if root is None or commit is None:
+            return None
+        return changed_files(root, commit)
 
     def _node_result(self, node_id: str) -> NodeResult:
         """Build a NodeResult from a node ID."""
@@ -758,7 +847,6 @@ class GraphQuery:
         self,
         file_path: Path | str,
         line: int,
-        project_root: Path | str | None = None,
     ) -> NodeResult | None:
         """The graph node enclosing a file position.
 
@@ -770,14 +858,16 @@ class GraphQuery:
         defs) maps to the module node.  ``None`` when the file is not
         in the graph at all.
 
+        Relative paths — the caller's and any stored in the graph —
+        resolve against the workspace root, which is the only tree the
+        stored positions can mean.
+
         Args:
             file_path: File of interest; relative paths resolve
-                against ``project_root``.
+                against the workspace root.
             line: 1-based line number, as editors and LSP report it.
-            project_root: Base for resolving relative paths (both the
-                query's and any relative paths stored in the graph).
         """
-        root = Path(project_root) if project_root is not None else None
+        root = self.project_root
 
         # Path-equality contract: resolve relative spellings against
         # the project root, then compare realpaths. Realized a second
@@ -1113,19 +1203,24 @@ class GraphQuery:
 
     def detect_changes(
         self,
-        project_root: Path | str,
         scope: str = "staged",
     ) -> DetectChangesResult:
         """Detect which symbols changed in git and their impact.
 
+        Diffs the workspace's own checkout — the tree the graph was
+        built from — so the changed files and the node positions they
+        are matched against always speak about the same tree.
+
         Args:
-            project_root: Root of the git repository.
             scope: "staged" (git diff --cached), "unstaged" (git diff),
                    "all" (both), or "branch" (diff against the
                    merge-base with the repository's default branch).
         """
-        project_root = Path(project_root)
-        changed_files = self._git_changed_files(project_root, scope)
+        project_root = self._require_root("detect_changes")
+        # Not ``changed_files`` — that name belongs to the module-level
+        # git helper this file imports, and shadowing it here would
+        # leave the two spellings one edit apart.
+        change_type_by_path = self._git_changed_files(project_root, scope)
 
         # Find graph nodes that live in changed files
         changed_symbols: list[ChangeEntry] = []
@@ -1137,10 +1232,10 @@ class GraphQuery:
                 rel = str(Path(file_path).relative_to(project_root))
             except (ValueError, TypeError):
                 rel = file_path
-            if rel in changed_files:
+            if rel in change_type_by_path:
                 changed_symbols.append(ChangeEntry(
                     node=self._node_result(node_id),
-                    change_type=changed_files[rel],
+                    change_type=change_type_by_path[rel],
                     file_path=rel,
                 ))
 
@@ -1212,20 +1307,21 @@ class GraphQuery:
         self,
         old_name: str,
         new_name: str,
-        project_root: Path | str | None = None,
         dry_run: bool = True,
     ) -> RenameResult:
         """Analyze or execute a safe rename across the codebase.
 
         Finds all references via the graph (high confidence) and
-        via regex search in source files (medium confidence).
+        via regex search in source files (medium confidence).  The
+        regex sweep and the edit application both run over the
+        workspace's checkout; without one, only the graph half runs.
 
         Args:
             old_name: Current symbol name (e.g., "solve_sn" or "SNSolver").
             new_name: New name to rename to.
-            project_root: Root for file searches. If None, only graph analysis.
             dry_run: If True, return edits without applying. If False, apply.
         """
+        project_root = self.project_root
         edits: list[RenameEdit] = []
 
         # 1. Graph-based: find all nodes and edges referencing old_name
@@ -1248,7 +1344,6 @@ class GraphQuery:
 
         # 2. Regex-based: search source files for the name
         if project_root is not None:
-            project_root = Path(project_root)
             pattern = re.compile(r'\b' + re.escape(old_name) + r'\b')
             for py_file in project_root.rglob("*.py"):
                 if ".venv" in py_file.parts or "__pycache__" in py_file.parts:
@@ -1274,7 +1369,7 @@ class GraphQuery:
                             ))
 
         if not dry_run and project_root is not None:
-            self._apply_renames(edits, Path(project_root))
+            self._apply_renames(edits, project_root)
 
         return RenameResult(
             old_name=old_name,
@@ -1670,7 +1765,6 @@ class GraphQuery:
 
     def verification_audit(
         self,
-        project_root: Path | str | None = None,
         *,
         group_by: str | None = None,
         include_tests: bool = False,
@@ -1682,7 +1776,6 @@ class GraphQuery:
         (``implemented`` first, then ``documented``).
 
         Args:
-            project_root: Passed through to ``staleness``.
             group_by: Optional grouping dimension. ``"level"`` buckets
                 gaps by the ``vv_level`` of their nearest test (or
                 ``"unassigned"`` when no level is known). ``"module"``
@@ -1697,7 +1790,7 @@ class GraphQuery:
                 verification claim is load-bearing declarative evidence.
         """
         coverage = self.verification_coverage()
-        stale = self.staleness(project_root)
+        stale = self.staleness()
 
         # Build stale page set for cross-referencing
         stale_docnames = {e.doc_node.docname for e in stale.stale_docs}
@@ -1927,15 +2020,13 @@ class GraphQuery:
     # Feature 3: Staleness Detector
     # ------------------------------------------------------------------
 
-    def staleness(
-        self, project_root: Path | str | None = None,
-    ) -> StalenessResult:
+    def staleness(self) -> StalenessResult:
         """Detect documentation pages that drifted from code.
 
         Two independent drift signals:
 
         * timestamp drift — git says the code a page references was
-          modified after the page (needs ``project_root`` + git);
+          modified after the page (needs a workspace root + git);
         * dead references — prose still references symbols/equations
           that no longer exist (see :meth:`dead_references`; works on
           the graph alone). The harder failure of the two: Sphinx
@@ -1946,6 +2037,7 @@ class GraphQuery:
         stale: list[StalenessEntry] = []
         checked = 0
 
+        project_root = self.project_root
         if project_root is None:
             return StalenessResult(
                 stale_docs=[], total_stale=0, total_checked=0,
@@ -1953,7 +2045,6 @@ class GraphQuery:
                 total_dead_references=dead.total_dead,
             )
 
-        project_root = Path(project_root)
         timestamps = self._git_file_timestamps(project_root)
 
         for doc_id, attrs in self._g.nodes(data=True):
@@ -2312,15 +2403,13 @@ class GraphQuery:
     # Feature 4: Session Briefing
     # ------------------------------------------------------------------
 
-    def session_briefing(
-        self, project_root: Path | str | None = None,
-    ) -> BriefingResult:
+    def session_briefing(self) -> BriefingResult:
         """Generate a structured briefing for an AI agent starting a session."""
         stats_result = self.stats()
         top_nodes = self.god_nodes(top_n=5)
 
         # Staleness
-        stale_result = self.staleness(project_root)
+        stale_result = self.staleness()
 
         # Coverage gaps (equations with code but no tests)
         coverage = self.verification_coverage(status_filter="implemented")
@@ -2331,8 +2420,8 @@ class GraphQuery:
             changed_symbols=[], affected_symbols=[],
             total_changed=0, total_affected=0,
         )
-        if project_root:
-            changes_result = self.detect_changes(project_root, scope="branch")
+        if self.project_root is not None:
+            changes_result = self.detect_changes(scope="branch")
 
         # Counts
         unresolved = sum(
@@ -2481,12 +2570,9 @@ class GraphQuery:
     # Feature 5: Minimum Retest Set
     # ------------------------------------------------------------------
 
-    def retest(
-        self, project_root: Path | str,
-        scope: str = "all",
-    ) -> RetestResult:
+    def retest(self, scope: str = "all") -> RetestResult:
         """Compute the minimum set of tests to re-run after changes."""
-        changes = self.detect_changes(project_root, scope=scope)
+        changes = self.detect_changes(scope=scope)
         changed_ids = {e.node.id for e in changes.changed_symbols}
 
         # Find all test functions

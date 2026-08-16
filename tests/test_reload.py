@@ -62,12 +62,15 @@ def server_state(tmp_path, monkeypatch):
     db = tmp_path / "graph.db"
     write_sqlite(_make_small_graph("initial"), db)
 
-    monkeypatch.setattr(server_mod, "_workspace", Workspace(db_path=db))
     monkeypatch.setattr(
         server_mod, "_query",
-        GraphQuery(_make_small_graph("initial")),
+        GraphQuery(
+            _make_small_graph("initial"), workspace=Workspace(db_path=db),
+        ),
     )
     monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
+    # The once-per-path warning ledger is module state like the rest.
+    monkeypatch.setattr(server_mod, "_unreadable_dbs", set())
     yield db
 
 
@@ -113,6 +116,38 @@ def test_reload_survives_missing_db(server_state, caplog):
         server_mod._reload_if_stale()
     # Previous snapshot is still serving.
     assert server_mod._query is prior
+
+
+def test_a_vanished_database_is_announced_not_swallowed(server_state, caplog):
+    """Surviving the loss must not mean hiding it.
+
+    Observed live: a server kept answering from a snapshot for a whole
+    session while its database had moved. Every reload's ``stat`` failed
+    and said so at DEBUG — which nothing reads — so the graph could
+    never refresh and no answer looked any different from a healthy
+    one. Continuing to serve is right; being quiet about it is not.
+    """
+    server_state.unlink()
+    with caplog.at_level("WARNING", logger="sphinxcontrib.nexus.server"):
+        server_mod._reload_if_stale()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, caplog.text
+    assert "restart" in warnings[0].getMessage()
+
+
+def test_the_vanished_database_warning_does_not_repeat_per_call(
+    server_state, caplog,
+):
+    """The control for the test above, and the reason the log sat at
+    DEBUG to begin with: every tool call runs a reload check, so an
+    unconditional WARNING would be one line per call. It fires on the
+    transition, not on the state.
+    """
+    server_state.unlink()
+    with caplog.at_level("WARNING", logger="sphinxcontrib.nexus.server"):
+        for _ in range(5):
+            server_mod._reload_if_stale()
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
 
 
 def test_reload_survives_corrupt_db(server_state, caplog):

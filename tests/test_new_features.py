@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 
 import networkx as nx
 import pytest
 
 from sphinxcontrib.nexus.query import GraphQuery
+from sphinxcontrib.nexus.workspace import NoWorkspaceError, Workspace
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +107,8 @@ def test_rename_finds_regex_matches(rich_graph, tmp_path):
     src = tmp_path / "test_file.py"
     src.write_text("from alpha import solve\nresult = solve(data)\n")
 
-    q = GraphQuery(rich_graph)
-    result = q.rename("solve", "solve_system", project_root=tmp_path)
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(tmp_path))
+    result = q.rename("solve", "solve_system")
     # Should find regex matches in the test file
     regex_edits = [e for e in result.edits if e.confidence == "medium"]
     assert len(regex_edits) > 0
@@ -118,8 +118,8 @@ def test_rename_apply(rich_graph, tmp_path):
     src = tmp_path / "code.py"
     src.write_text("def solve():\n    pass\n\nresult = solve()\n")
 
-    q = GraphQuery(rich_graph)
-    q.rename("solve", "solve_system", project_root=tmp_path, dry_run=False)
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(tmp_path))
+    q.rename("solve", "solve_system", dry_run=False)
 
     content = src.read_text()
     assert "solve_system" in content
@@ -156,16 +156,107 @@ def test_detect_changes_on_git_repo(rich_graph, tmp_path):
     # Update graph nodes to point to tmp_path files
     rich_graph.nodes["py:function:alpha.solve"]["file_path"] = str(py_file)
 
-    q = GraphQuery(rich_graph)
-    result = q.detect_changes(tmp_path, scope="unstaged")
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(tmp_path))
+    result = q.detect_changes(scope="unstaged")
     assert result.total_changed > 0
 
 
 def test_detect_changes_empty_repo(rich_graph, tmp_path):
     """No git repo → no changes detected."""
-    q = GraphQuery(rich_graph)
-    result = q.detect_changes(tmp_path, scope="all")
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(tmp_path))
+    result = q.detect_changes(scope="all")
     assert result.total_changed == 0
+
+
+def _repo_with_an_edit(root, rich_graph):
+    """A committed ``alpha.py`` with an uncommitted edit, and every
+    ``alpha`` node pointing at it by ABSOLUTE path.
+
+    The absolute spelling is not decoration — it is what a real graph
+    holds (`[M]` 2026-08-16: 16527 of 16527 ``file_path`` values in
+    ORPHEUS's graph are absolute, 0 relative), and the pair below is
+    blind without it. ``rich_graph`` writes relative literals
+    (``"alpha.py"``), which happen to equal git's repository-relative
+    output, so those nodes match whatever root they are asked about and
+    the control cannot fail. Measured the hard way: the control passed
+    against the intended-wrong configuration until the fixture was
+    fixed.
+    """
+    subprocess.run(["git", "init"], cwd=root, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=root,
+                   capture_output=True)
+    py_file = root / "alpha.py"
+    py_file.write_text("def solve(): pass\n")
+    subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=root, capture_output=True)
+    py_file.write_text("def solve(): return 42\n")
+    for _, attrs in rich_graph.nodes(data=True):
+        if attrs.get("file_path") == "alpha.py":
+            attrs["file_path"] = str(py_file)
+    return root
+
+
+def test_a_git_verb_answers_about_the_repository_root(rich_graph, tmp_path):
+    """The positive leg of the pair below: rooted at the checkout, the
+    edit is found."""
+    root = _repo_with_an_edit(tmp_path, rich_graph)
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(root))
+    assert q.detect_changes(scope="unstaged").total_changed > 0
+
+
+def test_a_git_verb_rooted_at_a_SUBDIRECTORY_reports_nothing_changed(
+    rich_graph, tmp_path,
+):
+    """The control, and the defect it licenses the repair for.
+
+    ``git -C <subdir> diff --name-status`` succeeds and reports paths
+    relative to the REPOSITORY root (`[M]` git 2.50.1: ``diff.relative``
+    is off by default, so the cwd does not change the output), while
+    the node paths are made relative to the root we were handed —
+    ``relative_to`` raises, the absolute spelling is kept, and nothing
+    matches. The verb answers a confident ``total_changed == 0``:
+    empty and broken, indistinguishable, in the reassuring direction.
+
+    This is why :func:`cli._workspace_for` falls back to the discovered
+    project root rather than to ``Path.cwd()``: a CLI run from ``docs/``
+    used to land in exactly this state. The wrong answer is asserted
+    here on purpose — it is a property of asking about the wrong tree,
+    not a bug to be fixed inside the verb.
+    """
+    root = _repo_with_an_edit(tmp_path, rich_graph)
+    subdir = root / "docs"
+    subdir.mkdir()
+
+    q = GraphQuery(rich_graph, workspace=Workspace.for_root(subdir))
+    assert q.detect_changes(scope="unstaged").total_changed == 0
+
+
+def test_a_git_verb_refuses_a_query_that_has_no_tree(rich_graph):
+    """Two arms, mutated separately: each verb that DIFFS must refuse,
+    and must name itself while doing so.
+
+    The retired signature made "no tree" expressible per call, so this
+    surfaced as an empty diff or an obscure subprocess error rather than
+    a refusal.
+    """
+    q = GraphQuery(rich_graph)
+    assert q.workspace is None and q.project_root is None
+
+    with pytest.raises(NoWorkspaceError, match="detect_changes"):
+        q.detect_changes(scope="all")
+    with pytest.raises(NoWorkspaceError, match="detect_changes"):
+        q.retest(scope="all")
+
+
+def test_a_treeless_query_still_answers_what_it_can(rich_graph):
+    """The complement: verbs that merely DEGRADE without a tree must not
+    refuse. ``staleness`` keeps its dead-reference signal, ``rename``
+    keeps its graph half — refusing here would be the opposite defect."""
+    q = GraphQuery(rich_graph)
+    assert q.staleness().total_checked == 0
+    assert q.rename("alpha.solve", "alpha.solve_system").total_edits > 0
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +565,8 @@ def test_briefing_hot_nodes_with_changes(tmp_path):
 
     _init_git_branch(tmp_path, "pkg/changed.py", "def changed_hub(): return 1\n")
 
-    q = GraphQuery(g)
-    briefing = q.session_briefing(project_root=tmp_path)
+    q = GraphQuery(g, workspace=Workspace.for_root(tmp_path))
+    briefing = q.session_briefing()
     hot_ids = {n.id for n in briefing.hot_nodes.nodes}
     assert "py:function:pkg.changed_hub" in hot_ids
     target = next(
@@ -502,8 +593,8 @@ def test_briefing_hot_nodes_excludes_god_top(tmp_path):
 
     _init_git_branch(tmp_path, "pkg/hub.py", "def hub(): return 1\n")
 
-    q = GraphQuery(g)
-    briefing = q.session_briefing(project_root=tmp_path)
+    q = GraphQuery(g, workspace=Workspace.for_root(tmp_path))
+    briefing = q.session_briefing()
     god_top = {n.id for n in briefing.god_nodes[:5]}
     hot_ids = {n.id for n in briefing.hot_nodes.nodes}
     assert "py:function:pkg.hub" in god_top
@@ -562,8 +653,8 @@ def test_retest_with_git(dream_graph, tmp_path):
 
     dream_graph.nodes["py:function:sweep.sweep_spherical"]["file_path"] = str(f)
 
-    q = GraphQuery(dream_graph)
-    result = q.retest(tmp_path, scope="unstaged")
+    q = GraphQuery(dream_graph, workspace=Workspace.for_root(tmp_path))
+    result = q.retest(scope="unstaged")
     # Should find the test that calls sweep_spherical
     must_ids = {t.id for t in result.must_retest}
     assert "py:function:test_sweep.test_spherical" in must_ids

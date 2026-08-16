@@ -25,10 +25,12 @@ from sphinxcontrib.nexus.workspace import Workspace  # noqa: E402
 def journal(tmp_path, monkeypatch) -> Path:
     path = tmp_path / "usage.jsonl"
     monkeypatch.setenv(server_mod.USAGE_JOURNAL_ENV, str(path))
-    monkeypatch.setattr(server_mod, "_query", GraphQuery(KnowledgeGraph()))
     monkeypatch.setattr(
-        server_mod, "_workspace",
-        Workspace(db_path=tmp_path / "graph.db", root=tmp_path),
+        server_mod, "_query",
+        GraphQuery(
+            KnowledgeGraph(),
+            workspace=Workspace(db_path=tmp_path / "graph.db", root=tmp_path),
+        ),
     )
     monkeypatch.setattr(server_mod, "_db_mtime", 0.0)
     return path

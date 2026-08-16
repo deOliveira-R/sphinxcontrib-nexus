@@ -38,12 +38,10 @@ from sphinxcontrib.nexus._serialize import (
 from sphinxcontrib.nexus.export import load_sqlite
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.workspace import (
-    PROVENANCE_KEY,
     GitProvenance,
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
-    changed_files,
     checkout_containing,
     discover,
     resolve_checkout_root,
@@ -60,8 +58,16 @@ _mcp = MCPServer("nexus", instructions=(
 # Module-level state set by serve(). One server process serves one
 # agent session, so the active workspace is process-local state:
 # switching it (``use_workspace``) cannot leak across sessions.
+#
+# ONE global, not two. The active graph and the checkout it answers
+# about were separate module globals until 2026-08-16, and they had
+# already disagreed in production: the server kept serving a loaded
+# snapshot while ``_workspace.db_path`` named a file that had moved, so
+# every reload's ``stat`` failed and the pair was permanently
+# inconsistent. ``GraphQuery`` now carries its own ``Workspace``, which
+# makes that state unrepresentable — there is nothing left to fall out
+# of step with.
 _query: GraphQuery | None = None
-_workspace: Workspace | None = None
 _db_mtime: float = 0.0
 
 # Reload coordination: the MCP server may dispatch tool calls
@@ -71,6 +77,45 @@ _db_mtime: float = 0.0
 # reload path so a second concurrent caller sees the finalized
 # swap, not a torn read.
 _reload_lock = threading.Lock()
+
+#: Databases already reported unreadable, so :func:`_report_unreadable_db`
+#: fires once per path rather than once per tool call. Discarded on the
+#: first successful stat, so a database that vanishes again is reported
+#: again. This is a log ledger, not graph state — it says what has been
+#: SAID, which is why it does not belong on the query.
+_unreadable_dbs: set[Path] = set()
+
+
+def _active_workspace() -> Workspace | None:
+    """The checkout-and-database pair the server answers from.
+
+    Derived from the active query rather than stored beside it: one
+    object, one home. ``None`` before :func:`serve`, and for a query
+    constructed without a workspace."""
+    return _query.workspace if _query is not None else None
+
+
+def _report_unreadable_db(db_path: Path, error: OSError) -> None:
+    """Announce, once, that the active graph can no longer be refreshed.
+
+    A vanished database is a hard and actionable condition — the store
+    moved, the checkout was cleaned, the file was replaced by a
+    directory — and the server goes on answering from the snapshot it
+    loaded at startup with every answer looking exactly as authoritative
+    as before. This was logged at DEBUG (to avoid a message per tool
+    call), which is how a server spent a session serving a graph whose
+    file no longer existed.
+    """
+    if db_path in _unreadable_dbs:
+        logger.debug("Stat still failing for %s: %s", db_path, error)
+        return
+    _unreadable_dbs.add(db_path)
+    logger.warning(
+        "Cannot read the graph database at %s (%s) — still answering from "
+        "the snapshot loaded earlier, which can no longer be refreshed. "
+        "Check `nexus config db`; if the store moved, restart the server.",
+        db_path, error,
+    )
 
 
 def _reload_if_stale() -> None:
@@ -89,17 +134,18 @@ def _reload_if_stale() -> None:
     MCP tool dispatches can't observe a half-updated state.
     """
     global _query, _db_mtime
-    if _workspace is None:
+    ws = _active_workspace()
+    if ws is None:
         return
-    db_path = _workspace.db_path
+    db_path = ws.db_path
     try:
         current_mtime = db_path.stat().st_mtime
     except OSError as e:
-        # DB file missing or inaccessible — keep serving the
-        # previous snapshot. No reload means no change; no warning
-        # on every tool call, just on the reload we couldn't do.
-        logger.debug("Stat failed for %s: %s — skipping reload", db_path, e)
+        # DB file missing or inaccessible — keep serving the previous
+        # snapshot, and say so once (see _report_unreadable_db).
+        _report_unreadable_db(db_path, e)
         return
+    _unreadable_dbs.discard(db_path)
     if current_mtime <= _db_mtime:
         return
 
@@ -109,13 +155,14 @@ def _reload_if_stale() -> None:
         # workspace entirely (use_workspace) — in which case this
         # reload's pre-lock stat refers to the WRONG database and
         # must not clobber the switched-in graph.
-        if _workspace is None or _workspace.db_path != db_path:
+        current = _active_workspace()
+        if current is None or current.db_path != db_path:
             return
         if current_mtime <= _db_mtime:
             return
         try:
             kg = load_sqlite(db_path)
-            new_query = GraphQuery(kg)
+            new_query = GraphQuery(kg, workspace=ws)
         except Exception as e:
             logger.warning(
                 "Nexus reload failed, keeping previous snapshot "
@@ -145,9 +192,10 @@ def _get_runtime_store():
     graph by node-ID at query time."""
     from sphinxcontrib.nexus.runtime import RuntimeStore
 
-    if _workspace is None:
+    ws = _active_workspace()
+    if ws is None:
         raise RuntimeError("No active workspace. Call serve() first.")
-    return RuntimeStore.beside(_workspace.db_path)
+    return RuntimeStore.beside(ws.db_path)
 
 
 def _load_run(name: str):
@@ -175,51 +223,25 @@ def _load_runs(names: str):
 def _active_root() -> Path | None:
     """Project root of the active workspace (``None`` when serving a
     bare database with no known root)."""
-    return _workspace.root if _workspace is not None else None
-
-
-# Files changed since the active graph's build commit, cached per
-# (root, db_mtime, commit): the set can only change when the graph is
-# rebuilt, the active workspace switches, or the checkout moves to a
-# different stamped commit — one git subprocess per reload, not per
-# tool call. ``None`` set value means the diff itself failed
-# (unknown ≠ unchanged).
-_changed_cache: tuple[tuple[Path, float, str], frozenset[Path] | None] | None = None
-
-
-def _build_commit() -> str | None:
-    """Commit the active graph's provenance stamp records, ``None``
-    when the graph is unloaded, unstamped, or built from a non-git
-    tree."""
-    if _query is None:
-        return None
-    prov = GitProvenance.from_stamp(
-        _query.knowledge_graph.metadata.get(PROVENANCE_KEY)
-    )
-    return prov.commit if prov is not None else None
-
-
-def _files_changed_since_build() -> frozenset[Path] | None:
-    """Working-tree files that differ from the active graph's stamped
-    commit. ``None`` when unknowable: no root, no provenance stamp,
-    or git failure."""
-    global _changed_cache
-    root = _active_root()
-    commit = _build_commit()
-    if root is None or commit is None:
-        return None
-    key = (root, _db_mtime, commit)
-    if _changed_cache is None or _changed_cache[0] != key:
-        _changed_cache = (key, changed_files(root, commit))
-    return _changed_cache[1]
+    return _query.project_root if _query is not None else None
 
 
 def _position_staleness_warning(file: str) -> str | None:
     """Warning text when ``file`` has changed since the graph was
     built — positions in a build-time snapshot drift with edits, and
-    the (file, line) → node mapping fails SILENTLY otherwise."""
-    root = _active_root()
-    changed = _files_changed_since_build()
+    the (file, line) → node mapping fails SILENTLY otherwise.
+
+    The two states it compares — what the graph was built from, and
+    what the tree holds now — are both read off the active query, which
+    carries the workspace it was loaded from. The server kept its own
+    copy of both, plus a hand-built ``(root, mtime, commit)`` cache key
+    whose only job was to notice that the query had been replaced; a
+    new query now IS the invalidation.
+    """
+    if _query is None:
+        return None
+    root = _query.project_root
+    changed = _query.files_changed_since_build
     if root is None or not changed:
         return None
     queried = Path(file)
@@ -229,7 +251,7 @@ def _position_staleness_warning(file: str) -> str | None:
         return None
     return (
         f"{file} changed since the graph was built "
-        f"(commit {_build_commit()}) — positions may map to the wrong "
+        f"(commit {_query.build_commit}) — positions may map to the wrong "
         f"symbol; rebuild the graph (sphinx-build / nexus analyze) "
         f"for faithful answers"
     )
@@ -246,8 +268,10 @@ def _workspace_payload() -> dict[str, Any]:
     the session's worktree — is otherwise invisible because every
     query still returns plausible answers.
     """
-    assert _workspace is not None
-    statuses = discover(_workspace)
+    ws = _active_workspace()
+    if ws is None:
+        raise RuntimeError("Graph not loaded. Call serve() first.")
+    statuses = discover(ws)
     active = next(s for s in statuses if s.is_active)
     others = [s.to_payload() for s in statuses if not s.is_active]
     payload: dict[str, Any] = {
@@ -330,7 +354,7 @@ def _journal_usage(
             "kwargs": repr(kwargs)[:200] if kwargs else "",
             "ms": round(ms, 1),
             "outcome": outcome,
-            "workspace": str(_active_root()) if _workspace is not None else None,
+            "workspace": str(root) if (root := _active_root()) else None,
             "pid": os.getpid(),
         }
         with path.open("a", encoding="utf-8") as f:
@@ -424,7 +448,7 @@ def node_at(file: str, line: int) -> str:
         line: 1-based line number, as editors and LSP report it.
     """
     q = _get_query()
-    result = q.node_at(file, line, project_root=_active_root())
+    result = q.node_at(file, line)
     warning = _position_staleness_warning(file)
     if result is None:
         payload: dict[str, Any] = {
@@ -940,10 +964,7 @@ def detect_changes(scope: str = "all") -> str:
             merge-base with the repository's default branch).
     """
     q = _get_query()
-    root = _active_root()
-    if root is None:
-        return to_json({"error": "project_root not set"})
-    result = q.detect_changes(root, scope=scope)
+    result = q.detect_changes(scope=scope)
     return to_json(to_dict(result))
 
 
@@ -960,11 +981,7 @@ def rename(old_name: str, new_name: str, dry_run: bool = True) -> str:
         dry_run: If True, preview changes. If False, apply them.
     """
     q = _get_query()
-    result = q.rename(
-        old_name, new_name,
-        project_root=_active_root(),
-        dry_run=dry_run,
-    )
+    result = q.rename(old_name, new_name, dry_run=dry_run)
     return to_json(to_dict(result))
 
 
@@ -1030,7 +1047,7 @@ def staleness() -> str:
     the full list lives in the dead_references tool).
     """
     q = _get_query()
-    result = q.staleness(_active_root())
+    result = q.staleness()
     return to_json(to_dict(result))
 
 
@@ -1064,9 +1081,9 @@ def _briefing_payload() -> dict[str, Any]:
     """Briefing body shared by the tool and the ``nexus://briefing``
     resource."""
     q = _get_query()
-    result = q.session_briefing(_active_root())
+    result = q.session_briefing()
     payload = to_dict(result)
-    if _workspace is not None:
+    if _active_workspace() is not None:
         payload["workspace"] = _workspace_payload()
     return payload
 
@@ -1094,7 +1111,8 @@ async def _auto_align_workspace(ctx: Context) -> dict[str, Any] | None:
     mid-session worktree entry are undocumented, so the manual
     ``use_workspace`` tool remains the fallback.
     """
-    if _workspace is None or _workspace.root is None:
+    ws = _active_workspace()
+    if ws is None or ws.root is None:
         return None
     try:
         roots = (await ctx.session.list_roots()).roots
@@ -1104,10 +1122,10 @@ async def _auto_align_workspace(ctx: Context) -> dict[str, Any] | None:
         session_path = _path_from_file_uri(str(root.uri))
         if session_path is None:
             continue
-        checkout = checkout_containing(_workspace, session_path)
+        checkout = checkout_containing(ws, session_path)
         if checkout is None:
             continue
-        if checkout == _workspace.root.resolve():
+        if checkout == ws.root.resolve():
             return None  # session works in the active checkout
         outcome = _switch_workspace(checkout)
         info: dict[str, Any] = {
@@ -1164,9 +1182,10 @@ def workspaces() -> str:
     inside .claude/worktrees/<name>), switch with ``use_workspace``
     before trusting structural queries.
     """
-    if _workspace is None:
+    ws = _active_workspace()
+    if ws is None:
         return to_json({"error": "Graph not loaded. Call serve() first."})
-    return to_json({"workspaces": [s.to_payload() for s in discover(_workspace)]})
+    return to_json({"workspaces": [s.to_payload() for s in discover(ws)]})
 
 
 @nexus_tool
@@ -1190,10 +1209,11 @@ def use_workspace(root: str) -> str:
             location as the active database
             (``.nexus/graph.db``).
     """
-    if _workspace is None:
+    ws = _active_workspace()
+    if ws is None:
         return to_json({"error": "Graph not loaded. Call serve() first."})
     try:
-        target_root = resolve_checkout_root(_workspace, root)
+        target_root = resolve_checkout_root(ws, root)
     except WorkspaceResolutionError as e:
         return to_json({"error": str(e)})
     return to_json(_switch_workspace(target_root))
@@ -1207,13 +1227,14 @@ def _switch_workspace(target_root: Path) -> dict[str, Any]:
     payload BEFORE any state is assigned, so the active graph is
     untouched by a failed switch.
     """
-    global _query, _workspace, _db_mtime
-    if _workspace is None:
+    global _query, _db_mtime
+    active = _active_workspace()
+    if active is None:
         return {"error": "Graph not loaded. Call serve() first."}
     if not target_root.is_dir():
         return {"error": f"Not a directory: {target_root}"}
     try:
-        target = _workspace.sibling(target_root)
+        target = active.sibling(target_root)
     except WorkspaceLayoutError as e:
         return {"error": str(e)}
     if not target.db_path.is_file():
@@ -1231,8 +1252,7 @@ def _switch_workspace(target_root: Path) -> dict[str, Any]:
             kg = load_sqlite(target.db_path)
         except Exception as e:
             return {"error": f"Failed to load {target.db_path}: {e}"}
-        _query = GraphQuery(kg)
-        _workspace = target
+        _query = GraphQuery(kg, workspace=target)
         _db_mtime = target.db_path.stat().st_mtime
     logger.info(
         "Switched workspace to %s (%d nodes, %d edges)",
@@ -1257,10 +1277,7 @@ def retest(scope: str = "all") -> str:
         scope: "staged", "unstaged", "all", or "branch".
     """
     q = _get_query()
-    root = _active_root()
-    if root is None:
-        return to_json({"error": "project_root not set"})
-    result = q.retest(root, scope=scope)
+    result = q.retest(scope=scope)
     return to_json(to_dict(result))
 
 
@@ -1456,7 +1473,6 @@ def verification_audit(
     """
     q = _get_query()
     result = q.verification_audit(
-        _active_root(),
         group_by=group_by or None,
         include_tests=include_tests,
     )
@@ -1547,15 +1563,15 @@ def serve(
     project_root: Path | None = None,
 ) -> None:
     """Load the graph and start the MCP server."""
-    global _query, _workspace, _db_mtime
+    global _query, _db_mtime
 
-    _workspace = Workspace(
+    workspace = Workspace(
         db_path=db_path.resolve(),
         root=project_root.resolve() if project_root is not None else None,
     )
 
     kg = load_sqlite(db_path)
-    _query = GraphQuery(kg)
+    _query = GraphQuery(kg, workspace=workspace)
     _db_mtime = db_path.stat().st_mtime
 
     logger.info(

@@ -153,7 +153,10 @@ def test_symlinked_root_resolves_in_both_norm_realizations(analyzed_db):
     brief = file_brief(db, aliased_lib, project_root=alias)
     assert brief is not None and len(brief.nodes) >= 2
 
-    node = GraphQuery(load_sqlite(db)).node_at(aliased_lib, 1, project_root=alias)
+    from sphinxcontrib.nexus.workspace import Workspace
+
+    q = GraphQuery(load_sqlite(db), workspace=Workspace(db_path=db, root=alias))
+    node = q.node_at(aliased_lib, 1)
     assert node is not None
     assert node.id in {n.id for n in brief.nodes}
 

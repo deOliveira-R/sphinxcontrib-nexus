@@ -100,6 +100,18 @@ def resolve(*candidates: Any, default: T) -> T:
     return default
 
 
+def graph_db_in(root: Path | str) -> Path:
+    """Where the project rooted at ``root`` keeps its graph database.
+
+    The convention in one expression. Every other spelling of it —
+    :meth:`ProjectConfig.resolved_db`, :meth:`Workspace.for_root` — reads
+    it here, so the layout that Track 0.6 made *derivable* does not get
+    re-declared in as many places as the retired ``[graph].db`` key used
+    to be.
+    """
+    return (Path(root) / CONFIG_DIR / GRAPH_DB_NAME).resolve()
+
+
 def resolve_db(
     explicit: Path | str | None = None,
     start: Path | str | None = None,
@@ -282,7 +294,7 @@ class ProjectConfig:
 
     def resolved_db(self) -> Path:
         """Absolute path of this project's graph database."""
-        return (self.graph_dir / GRAPH_DB_NAME).resolve()
+        return graph_db_in(self.root)
 
     @property
     def extra_source_dirs(self) -> list[str] | None:

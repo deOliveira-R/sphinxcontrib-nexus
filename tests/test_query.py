@@ -727,8 +727,15 @@ def test_node_at_module_scope_falls_back_to_module(positioned_graph):
 
 
 def test_node_at_relative_path_with_root(positioned_graph, tmp_path):
+    """A relative spelling resolves against the workspace's checkout —
+    the only tree the stored positions can mean."""
+    from sphinxcontrib.nexus.workspace import Workspace
+
     q, file = positioned_graph
-    node = q.node_at("pkg/mod.py", 5, project_root=tmp_path)
+    rooted = GraphQuery(
+        q.knowledge_graph, workspace=Workspace.for_root(tmp_path),
+    )
+    node = rooted.node_at("pkg/mod.py", 5)
     assert node is not None and node.name.endswith("outer")
 
 

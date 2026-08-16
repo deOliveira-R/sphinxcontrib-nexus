@@ -150,6 +150,56 @@ def test_cli_opens_the_graph_the_build_wrote_with_nothing_declared(tmp_path):
     assert "nodes" in result.stdout, result.stdout
 
 
+def test_a_cli_verb_is_anchored_at_the_project_not_the_cwd(tmp_path, monkeypatch):
+    """Which tree does a CLI invocation answer about?
+
+    Every git-aware verb used to resolve ``args.project_root or
+    Path.cwd()`` — six independent copies — so running one from
+    ``docs/`` handed the query a subdirectory as its "project root".
+    ``git diff`` still reports repository-relative paths from there, so
+    the node paths (absolute in every real graph) fail to match and the
+    verb reports a confident "nothing changed". See the query-level pair
+    in ``test_new_features.py`` for that mechanism measured directly.
+
+    The control is the cwd itself: this asserts the answer is NOT the
+    directory the command ran in, which is the only thing that
+    distinguishes the repair from what it replaced.
+    """
+    import argparse
+
+    from sphinxcontrib.nexus.cli import _workspace_for
+
+    root = tmp_path / "proj"
+    _project(root, "")  # an empty config still anchors the project
+    workdir = root / "docs"
+    monkeypatch.chdir(workdir)
+
+    ws = _workspace_for(argparse.Namespace(db=root / ".nexus" / "graph.db"))
+
+    assert ws.root == root.resolve()
+    assert ws.root != workdir.resolve(), "the verb answered about the cwd"
+
+
+def test_an_explicit_project_root_still_wins(tmp_path, monkeypatch):
+    """Discovery is the FALLBACK, not an override — otherwise
+    ``--project-root`` would be silently ignored inside any project."""
+    import argparse
+
+    from sphinxcontrib.nexus.cli import _workspace_for
+
+    root = tmp_path / "proj"
+    _project(root, "")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(root)
+
+    ws = _workspace_for(argparse.Namespace(
+        db=root / ".nexus" / "graph.db", project_root=elsewhere,
+    ))
+
+    assert ws.root == elsewhere.resolve()
+
+
 def test_no_subparser_carries_a_hardcoded_db_default():
     """Every ``--db`` must default to None so post-parse resolution runs.
 
