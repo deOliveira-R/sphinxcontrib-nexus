@@ -233,7 +233,7 @@ def rich_db(tmp_path: Path) -> tuple[Path, Path]:
         name="balance", domain="math", docname="theory/balance",
     ))
     kg.add_node(GraphNode(
-        id="doc:theory/balance", type=NodeType.FILE,
+        id="std:file:theory/balance", type=NodeType.FILE,
         name="theory/balance", domain="doc",
     ))
     for i in (1, 2):
@@ -250,7 +250,7 @@ def rich_db(tmp_path: Path) -> tuple[Path, Path]:
         target="math:equation:balance", type=EdgeType.IMPLEMENTS,
     ))
     kg.add_edge(GraphEdge(
-        source="doc:theory/balance",
+        source="std:file:theory/balance",
         target="py:function:solver.solve", type=EdgeType.DOCUMENTS,
     ))
     db = root / "graph.db"

@@ -50,7 +50,7 @@ from docutils import nodes
 from docutils.parsers.rst import directives as rst_directives
 from sphinx.util.docutils import SphinxDirective
 
-from sphinxcontrib.nexus._mappings import resolve_proof_id
+from sphinxcontrib.nexus._mappings import doc_node_id, resolve_proof_id
 from sphinxcontrib.nexus.extractors import _is_auto_proof_label
 from sphinxcontrib.nexus.graph import EdgeType, NodeType
 
@@ -423,7 +423,7 @@ def apply_declared_nodes(
                 title=entry.get("title", ""),
             )
             created += 1
-            page = f"doc:{docname}"
+            page = doc_node_id(docname)
             if page in graph:
                 graph.add_edge(
                     page, node_id,

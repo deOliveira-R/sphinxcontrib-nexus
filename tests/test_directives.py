@@ -375,11 +375,11 @@ def test_an_error_entry_is_contained_by_its_page():
     from sphinxcontrib.nexus.directives import apply_declared_nodes
 
     g = nx.MultiDiGraph()
-    g.add_node("doc:catalogue", type="file", name="catalogue")
+    g.add_node("std:file:catalogue", type="file", name="catalogue")
     apply_declared_nodes(_env_with_error_entries(("ERR-051", "x")), g)
     assert any(
         d.get("type") == "contains"
-        for _s, _t, d in g.edges("doc:catalogue", data=True)
+        for _s, _t, d in g.edges("std:file:catalogue", data=True)
     )
 
 

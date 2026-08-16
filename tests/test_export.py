@@ -24,7 +24,7 @@ def _make_graph() -> KnowledgeGraph:
     kg = KnowledgeGraph()
     kg.metadata = {"project": "test", "version": "1.0"}
     kg.add_node(GraphNode(
-        id="doc:index", type=NodeType.FILE, name="index",
+        id="std:file:index", type=NodeType.FILE, name="index",
         display_name="Index", domain="std", docname="index",
     ))
     kg.add_node(GraphNode(
@@ -37,11 +37,11 @@ def _make_graph() -> KnowledgeGraph:
         metadata={"eqno": 1},
     ))
     kg.add_edge(GraphEdge(
-        source="doc:index", target="py:function:foo",
+        source="std:file:index", target="py:function:foo",
         type=EdgeType.CONTAINS,
     ))
     kg.add_edge(GraphEdge(
-        source="doc:index", target="math:equation:euler",
+        source="std:file:index", target="math:equation:euler",
         type=EdgeType.EQUATION_REF,
         metadata={"reftype": "eq", "resolved": True},
     ))
@@ -91,7 +91,7 @@ def test_round_trip_via_json(tmp_path):
     kg2 = load_json(path)
     assert kg2.nxgraph.number_of_nodes() == 3
     assert kg2.nxgraph.number_of_edges() == 2
-    assert kg2.nxgraph.nodes["doc:index"]["type"] == "file"
+    assert kg2.nxgraph.nodes["std:file:index"]["type"] == "file"
 
 
 def test_round_trip_queryable(tmp_path):
@@ -211,7 +211,7 @@ def test_sqlite_indexed_neighbors(tmp_path):
     conn = sqlite3.connect(str(path))
     rows = conn.execute(
         "SELECT target, type FROM edges WHERE source = ?",
-        ("doc:index",),
+        ("std:file:index",),
     ).fetchall()
     conn.close()
     targets = {r[0] for r in rows}

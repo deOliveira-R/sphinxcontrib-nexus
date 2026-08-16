@@ -21,9 +21,9 @@ def sample_graph():
     """
     g = nx.MultiDiGraph()
     nodes = {
-        "doc:index": {"type": "file", "name": "index", "display_name": "Index", "domain": "std", "docname": "index"},
-        "doc:theory": {"type": "file", "name": "theory", "display_name": "Theory", "domain": "std", "docname": "theory"},
-        "doc:api": {"type": "file", "name": "api", "display_name": "API Reference", "domain": "std", "docname": "api"},
+        "std:file:index": {"type": "file", "name": "index", "display_name": "Index", "domain": "std", "docname": "index"},
+        "std:file:theory": {"type": "file", "name": "theory", "display_name": "Theory", "domain": "std", "docname": "theory"},
+        "std:file:api": {"type": "file", "name": "api", "display_name": "API Reference", "domain": "std", "docname": "api"},
         "math:equation:diffusion": {"type": "equation", "name": "diffusion", "display_name": "(1)", "domain": "math", "docname": "theory"},
         "py:function:solve": {"type": "function", "name": "solve", "display_name": "solve()", "domain": "py", "docname": "api"},
         "py:class:Solver": {"type": "class", "name": "Solver", "display_name": "Solver", "domain": "py", "docname": "api"},
@@ -32,14 +32,14 @@ def sample_graph():
         g.add_node(nid, **attrs)
 
     edges = [
-        ("doc:index", "doc:theory", {"type": "contains"}),
-        ("doc:index", "doc:api", {"type": "contains"}),
-        ("doc:theory", "math:equation:diffusion", {"type": "contains"}),
-        ("doc:theory", "doc:api", {"type": "references"}),
-        ("doc:api", "py:function:solve", {"type": "contains"}),
-        ("doc:api", "py:class:Solver", {"type": "contains"}),
+        ("std:file:index", "std:file:theory", {"type": "contains"}),
+        ("std:file:index", "std:file:api", {"type": "contains"}),
+        ("std:file:theory", "math:equation:diffusion", {"type": "contains"}),
+        ("std:file:theory", "std:file:api", {"type": "references"}),
+        ("std:file:api", "py:function:solve", {"type": "contains"}),
+        ("std:file:api", "py:class:Solver", {"type": "contains"}),
         ("py:class:Solver", "py:function:solve", {"type": "documents"}),
-        ("doc:index", "py:function:solve", {"type": "references"}),
+        ("std:file:index", "py:function:solve", {"type": "references"}),
     ]
     for src, tgt, data in edges:
         g.add_edge(src, tgt, **data)
@@ -63,10 +63,10 @@ def test_get_node_missing(sample_graph):
 
 def test_neighbors_out(sample_graph):
     q = GraphQuery(sample_graph)
-    results = q.neighbors("doc:index", direction="out")
+    results = q.neighbors("std:file:index", direction="out")
     targets = {r[0].id for r in results}
-    assert "doc:theory" in targets
-    assert "doc:api" in targets
+    assert "std:file:theory" in targets
+    assert "std:file:api" in targets
     assert "py:function:solve" in targets
 
 
@@ -74,28 +74,28 @@ def test_neighbors_in(sample_graph):
     q = GraphQuery(sample_graph)
     results = q.neighbors("py:function:solve", direction="in")
     sources = {r[0].id for r in results}
-    assert "doc:api" in sources
+    assert "std:file:api" in sources
     assert "py:class:Solver" in sources
-    assert "doc:index" in sources
+    assert "std:file:index" in sources
 
 
 def test_neighbors_both(sample_graph):
     q = GraphQuery(sample_graph)
-    results = q.neighbors("doc:api", direction="both")
+    results = q.neighbors("std:file:api", direction="both")
     connected = {r[0].id for r in results}
     # out: py:function:solve, py:class:Solver
     # in: doc:index, doc:theory
     assert "py:function:solve" in connected
-    assert "doc:index" in connected
-    assert "doc:theory" in connected
+    assert "std:file:index" in connected
+    assert "std:file:theory" in connected
 
 
 def test_neighbors_filtered_by_edge_type(sample_graph):
     q = GraphQuery(sample_graph)
-    results = q.neighbors("doc:index", direction="out", edge_types=["contains"])
+    results = q.neighbors("std:file:index", direction="out", edge_types=["contains"])
     targets = {r[0].id for r in results}
-    assert "doc:theory" in targets
-    assert "doc:api" in targets
+    assert "std:file:theory" in targets
+    assert "std:file:api" in targets
     # The references edge to py:function:solve should be filtered out
     assert "py:function:solve" not in targets
 
@@ -112,22 +112,22 @@ def test_impact_upstream(sample_graph):
     assert result.total_affected > 0
     # Depth 1: direct parents (doc:api, py:class:Solver, doc:index)
     depth1_ids = {n.id for n in result.by_depth.get(1, [])}
-    assert "doc:api" in depth1_ids
+    assert "std:file:api" in depth1_ids
     assert "py:class:Solver" in depth1_ids
 
 
 def test_impact_downstream(sample_graph):
     q = GraphQuery(sample_graph)
-    result = q.impact("doc:index", direction="downstream", max_depth=2)
+    result = q.impact("std:file:index", direction="downstream", max_depth=2)
     assert result.total_affected > 0
     depth1_ids = {n.id for n in result.by_depth.get(1, [])}
-    assert "doc:theory" in depth1_ids
-    assert "doc:api" in depth1_ids
+    assert "std:file:theory" in depth1_ids
+    assert "std:file:api" in depth1_ids
 
 
 def test_impact_max_depth(sample_graph):
     q = GraphQuery(sample_graph)
-    result = q.impact("doc:index", direction="downstream", max_depth=1)
+    result = q.impact("std:file:index", direction="downstream", max_depth=1)
     assert 1 in result.by_depth
     assert 2 not in result.by_depth
 
@@ -167,7 +167,7 @@ def test_shortest_path_max_hops(sample_graph):
 
 def test_shortest_path_missing_node(sample_graph):
     q = GraphQuery(sample_graph)
-    assert q.shortest_path("nonexistent", "doc:index") is None
+    assert q.shortest_path("nonexistent", "std:file:index") is None
 
 
 def test_query_substring(sample_graph):
@@ -188,7 +188,7 @@ def test_query_display_name(sample_graph):
     q = GraphQuery(sample_graph)
     results = q.query("API Reference")
     ids = {r.id for r in results}
-    assert "doc:api" in ids
+    assert "std:file:api" in ids
 
 
 def test_query_type_filter(sample_graph):
@@ -201,8 +201,13 @@ def test_query_type_filter(sample_graph):
 
 def test_query_limit(sample_graph):
     q = GraphQuery(sample_graph)
-    results = q.query("doc", limit=2)  # "doc" matches doc:index, doc:theory, doc:api
+    # `query` tokenizes the id on ":", so the TYPE segment is searchable.
+    # This used to search "doc" and match the old `doc:` prefix; under the
+    # strict grammar the same three pages are `std:file:…`, and "file"
+    # names what they ARE rather than which producer spelled them.
+    results = q.query("file", limit=2)   # 3 pages exist; limit caps at 2
     assert len(results) == 2
+    assert len(q.query("file")) == 3
 
 
 def test_god_nodes(sample_graph):

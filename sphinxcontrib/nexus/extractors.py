@@ -12,7 +12,10 @@ from sphinxcontrib.nexus._mappings import (
     _normalize_wrapped_target,
     DOMAIN_TYPE_MAP,
     REFTYPE_EDGE_MAP,
+    REFTYPE_NODETYPE_MAP,
     REFTYPE_OBJTYPE_MAP,
+    doc_node_id,
+    node_id,
     resolve_target_id,
 )
 from sphinxcontrib.nexus.graph import (
@@ -29,21 +32,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _node_id(domain: str, obj_type: str, name: str) -> str:
-    return f"{domain}:{obj_type}:{name}"
-
-
-def _doc_node_id(docname: str) -> str:
-    return f"doc:{docname}"
+# ``_node_id`` / ``_doc_node_id`` were private spellings here until
+# 2026-08-16. Both are now `_mappings.node_id` / `_mappings.doc_node_id`,
+# so the doctree side, the directives and the reference resolver cannot
+# disagree about how an id is spelled — which is exactly how they came
+# to spell one page two ways.
 
 
 def extract_documents(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
     """Create a FILE node for every document and CONTAINS edges from toctree."""
     for docname in env.all_docs:
-        node_id = _doc_node_id(docname)
+        nid = doc_node_id(docname)
         title = str(env.titles.get(docname, docname))
         graph.add_node(GraphNode(
-            id=node_id,
+            id=nid,
             type=NodeType.FILE,
             name=docname,
             display_name=title,
@@ -53,9 +55,9 @@ def extract_documents(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
 
     toctree_includes = getattr(env, "toctree_includes", {})
     for parent, children in toctree_includes.items():
-        parent_id = _doc_node_id(parent)
+        parent_id = doc_node_id(parent)
         for child in children:
-            child_id = _doc_node_id(child)
+            child_id = doc_node_id(child)
             if graph.has_node(parent_id) and graph.has_node(child_id):
                 graph.add_edge(GraphEdge(
                     source=parent_id,
@@ -72,9 +74,13 @@ def extract_domain_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None
             node_type = DOMAIN_TYPE_MAP.get(
                 (domain_name, obj_type), obj_type
             )
-            node_id = _node_id(domain_name, obj_type, name)
+            # The id takes the MAPPED type, never the producer's raw
+            # objtype. Taking the raw one is what put `property`,
+            # `label` and `doc` — none of them node types — into the
+            # identity space, and split one page across two nodes.
+            nid = node_id(domain_name, node_type, name)
             graph.add_node(GraphNode(
-                id=node_id,
+                id=nid,
                 type=node_type,
                 name=name,
                 display_name=dispname,
@@ -83,11 +89,20 @@ def extract_domain_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None
                 anchor=anchor,
             ))
 
-            doc_id = _doc_node_id(docname)
-            if graph.has_node(doc_id):
+            doc_id = doc_node_id(docname)
+            # `doc_id == nid` for the std domain's own `doc` objects: it
+            # reports each document as an object OF that document, so the
+            # page would contain itself. Harmless-looking, and it makes
+            # every containment query report a page as its own child.
+            #
+            # ⚠ This only became reachable when `doc:X` and `std:doc:X`
+            # stopped being two nodes — the edge used to run between the
+            # twins, which is what made the duplication survive: it did
+            # not look like a self-loop, it looked like structure.
+            if doc_id != nid and graph.has_node(doc_id):
                 graph.add_edge(GraphEdge(
                     source=doc_id,
-                    target=node_id,
+                    target=nid,
                     type=EdgeType.CONTAINS,
                 ))
 
@@ -96,9 +111,9 @@ def extract_domain_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None
     if math_domain is not None:
         equations = getattr(math_domain, "data", {}).get("objects", {})
         for label, (docname, eqno) in equations.items():
-            node_id = _node_id("math", "equation", label)
+            nid = node_id("math", "equation", label)
             graph.add_node(GraphNode(
-                id=node_id,
+                id=nid,
                 type=NodeType.EQUATION,
                 name=label,
                 display_name=f"({eqno})",
@@ -106,11 +121,11 @@ def extract_domain_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None
                 docname=docname,
                 metadata={"eqno": eqno},
             ))
-            doc_id = _doc_node_id(docname)
+            doc_id = doc_node_id(docname)
             if graph.has_node(doc_id):
                 graph.add_edge(GraphEdge(
                     source=doc_id,
-                    target=node_id,
+                    target=nid,
                     type=EdgeType.CONTAINS,
                 ))
 
@@ -181,9 +196,9 @@ def extract_proof_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
         if not realtype or _is_auto_proof_label(label, realtype):
             continue
 
-        node_id = _node_id("prf", realtype, label)
+        nid = node_id("prf", NodeType.PROOF_OBJECT, label)
         graph.add_node(GraphNode(
-            id=node_id,
+            id=nid,
             type=NodeType.PROOF_OBJECT,
             name=label,
             display_name=label,
@@ -196,11 +211,11 @@ def extract_proof_objects(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             },
         ))
 
-        doc_id = _doc_node_id(docname)
+        doc_id = doc_node_id(docname)
         if graph.has_node(doc_id):
             graph.add_edge(GraphEdge(
                 source=doc_id,
-                target=node_id,
+                target=nid,
                 type=EdgeType.CONTAINS,
             ))
 
@@ -217,7 +232,7 @@ def _enrich_proof_nodes(doctree: docutils_nodes.document, graph: KnowledgeGraph)
         label = node.get("label")
         if not realtype or not label:
             continue
-        attrs = graph.nxgraph.nodes.get(_node_id("prf", realtype, label))
+        attrs = graph.nxgraph.nodes.get(node_id("prf", NodeType.PROOF_OBJECT, label))
         if attrs is None:
             continue
         title = _proof_title(node.get("title") or "")
@@ -348,7 +363,7 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
         if enrich_proofs:
             _enrich_proof_nodes(doctree, graph)
 
-        source_id = _doc_node_id(docname)
+        source_id = doc_node_id(docname)
         seen_edges: set[tuple[str, str, str]] = set()  # (source, target, edge_type)
 
         for ref_node in doctree.findall(addnodes.pending_xref):
@@ -367,7 +382,7 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             # typed `unresolved`. [M] 2026-08-16 on ORPHEUS: 72 such
             # nodes, and ZERO reaching this branch.
             if refdomain in ("citation", "cite"):
-                target_id = _node_id("cite", NodeType.CITATION.value, reftarget)
+                target_id = node_id("cite", NodeType.CITATION.value, reftarget)
                 if not graph.has_node(target_id):
                     graph.add_node(GraphNode(
                         id=target_id,
@@ -412,19 +427,25 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                     # Noise: napoleon artifact, not a real identifier
                     continue
                 if reftype == "doc":
-                    target_id = _doc_node_id(reftarget)
+                    target_id = doc_node_id(reftarget)
                 elif reftype == "eq":
-                    target_id = _node_id("math", "equation", reftarget)
+                    target_id = node_id("math", "equation", reftarget)
                 else:
                     domain = refdomain or "std"
-                    objtype = reftype or "any"
+                    role = reftype or "any"
                     if domain == "py":
-                        # An id is spelled with the OBJTYPE, so a raw role
+                        # An id is spelled with the TYPE, so a raw role
                         # here mints `py:func:X` beside the docstring
-                        # scanner's `py:function:X` — one symbol, two nodes,
-                        # its edges split between them.
-                        objtype = REFTYPE_OBJTYPE_MAP.get(objtype, objtype)
-                    target_id = _node_id(domain, objtype, reftarget)
+                        # scanner's `py:function:X` — one symbol, two
+                        # nodes, its edges split between them.
+                        objtype = REFTYPE_OBJTYPE_MAP.get(
+                            role, NodeType.UNRESOLVED.value,
+                        )
+                    else:
+                        objtype = REFTYPE_NODETYPE_MAP.get(
+                            role, NodeType.UNRESOLVED,
+                        )
+                    target_id = node_id(domain, objtype, reftarget)
                 if not graph.has_node(target_id):
                     graph.add_node(GraphNode(
                         id=target_id,

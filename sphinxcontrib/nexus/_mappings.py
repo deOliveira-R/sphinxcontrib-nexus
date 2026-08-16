@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,69 @@ from sphinxcontrib.nexus.graph import EdgeType, NodeType
 
 if TYPE_CHECKING:
     import networkx as nx
+
+logger = logging.getLogger(__name__)
+
+#: Node types the ontology declares. An id's type segment must be one of
+#: these — see :func:`node_id`.
+_DECLARED_TYPES: frozenset[str] = frozenset(t.value for t in NodeType)
+
+#: (domain, type) pairs already reported as undeclared, so the warning
+#: fires once per spelling rather than once per node.
+_WARNED_UNDECLARED: set[tuple[str, str]] = set()
+
+
+def node_id(domain: str, node_type: "NodeType | str", name: str) -> str:
+    """Spell a node id: ``<domain>:<type>:<name>``.
+
+    **The type segment IS the node's type.** That is the grammar
+    ``server.py`` has always advertised to MCP clients
+    (``"node_id_format": "<domain>:<type>:<qualified_name>"``) — and
+    before this function it was advertised rather than enforced: ids
+    were built at 27 inline sites plus three producer-private helpers
+    that never imported one another, each free to put something else
+    there.
+
+    `[M]` 2026-08-16, ORPHEUS: **936** nodes broke the published
+    grammar — 680 ``std:label:`` typed ``section``, 94 ``std:doc:`` and
+    94 two-segment ``doc:`` typed ``file``, 68 ``py:property:`` typed
+    ``attribute``. Every one is a *producer's* vocabulary leaking into
+    the identity space: Sphinx says ``label``, nexus's type is
+    ``section``, and the id took the first while the node took the
+    second. It is also how one page came to have two nodes.
+
+    An undeclared type WARNS (once per spelling) rather than raising: an
+    unmapped objtype should be visible to whoever authors the docs —
+    that is what a declared vocabulary is for — but it must not break
+    their build over a node nexus can still record.
+    """
+    value = node_type.value if isinstance(node_type, NodeType) else str(node_type)
+    if value not in _DECLARED_TYPES:
+        key = (domain, value)
+        if key not in _WARNED_UNDECLARED:
+            _WARNED_UNDECLARED.add(key)
+            logger.warning(
+                "node id %r uses type %r, which the ontology does not "
+                "declare — the node is recorded, but no query that "
+                "filters by type will find it. Declare it in "
+                "ontology.toml, or map (%r, %r) in DOMAIN_TYPE_MAP.",
+                f"{domain}:{value}:{name}", value, domain, value,
+            )
+    return f"{domain}:{value}:{name}"
+
+
+def doc_node_id(docname: str) -> str:
+    """The id of a documentation page.
+
+    ``std:file:<docname>`` — ``std`` is the domain Sphinx itself reports
+    a document under, and ``file`` is nexus's type for one. Two helpers
+    used to disagree: one spelled it ``doc:<docname>`` with no type
+    segment at all, the domain walk spelled it ``std:doc:<docname>``, so
+    `[M]` all 94 pages in ORPHEUS existed TWICE — the ``doc:`` node
+    carrying every ``documents`` and ``contains`` edge, and the
+    ``std:doc:`` twin carrying nothing at all.
+    """
+    return node_id("std", NodeType.FILE, docname)
 
 # Map (domain_name, obj_type) from Domain.get_objects() to our NodeType.
 DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
@@ -55,6 +119,24 @@ DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
     ("std", "doc"): NodeType.FILE,
 }
 
+# What a NON-Python reftype denotes, for a reference that did not resolve.
+#
+# An unresolved node's id records what the NAME DENOTES while its ``type``
+# records that nothing was found — the id/type pair the grammar explicitly
+# allows for placeholders, and what lets a later pass upgrade
+# ``std:section:foo`` in place once the label appears. Before this, the raw
+# reftype went into the id (``std:ref:foo``, ``std:any:foo``), so the segment
+# named a ROLE, which is a thing no node is ever typed as.
+#
+# Anything unlisted denotes something nexus has no type for, and says so.
+REFTYPE_NODETYPE_MAP: dict[str, NodeType] = {
+    "ref": NodeType.SECTION,
+    "numref": NodeType.SECTION,
+    "keyword": NodeType.SECTION,
+    "term": NodeType.TERM,
+    "doc": NodeType.FILE,
+}
+
 # ``sphinx-proof`` environment names. The upstream ``prf`` domain exposes
 # neither ``object_types`` nor ``get_objects()`` — everything lives in
 # ``env.proof_list`` — so the list can't be derived from the domain and is
@@ -65,6 +147,9 @@ DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
 # prf nodes while the local environment has no sphinx-proof installed, so
 # the list has to stand on its own. ``resolve_target_id`` falls back to a
 # prefix scan for any type added upstream after this was written.
+# ⚠ RETIRED as a resolution mechanism 2026-08-16 — `resolve_proof_id`
+# is one lookup now. Kept only as the documented vocabulary of
+# environments a `prf_type` may hold; nothing branches on it.
 PRF_OBJECT_TYPES: tuple[str, ...] = (
     "algorithm",
     "assumption",
@@ -277,25 +362,19 @@ def candidates_are_ambiguous(ranked: list[tuple[Any, ...]]) -> bool:
 def resolve_proof_id(nxgraph: nx.MultiDiGraph, label: str) -> str | None:
     """Resolve a bare ``sphinx-proof`` label to its node id.
 
-    ``:prf:ref:`sn-sweep``` names the label but not the environment, so
-    the id has to be reconstructed by trying each known environment.
-    Returns ``None`` when no proof object carries the label.
+    One lookup, because the id is ``prf:proof_object:<label>``.
+
+    Until 2026-08-16 the id carried the ENVIRONMENT — ``prf:theorem:X``,
+    ``prf:lemma:X`` — which is a *kind*, not a node type, and was already
+    recorded in ``metadata["prf_type"]``. Storing it twice cost exactly
+    what a duplicated source of truth always costs: a bare
+    ``:prf:ref:`sn-sweep``` names the label and NOT the environment, so
+    resolution had to try all fifteen known environments in turn and then
+    scan every node in the graph for anything sphinx-proof had grown
+    since. That whole cascade was the id refusing to say what the node is.
     """
-    for objtype in PRF_OBJECT_TYPES:
-        nid = f"prf:{objtype}:{label}"
-        if nid in nxgraph:
-            return nid
-    # An environment sphinx-proof grew after PRF_OBJECT_TYPES was
-    # written. Scan rather than report a live reference as dead.
-    tail = f":{label}"
-    for node_id in nxgraph:
-        if (
-            isinstance(node_id, str)
-            and node_id.startswith("prf:")
-            and node_id.endswith(tail)
-        ):
-            return node_id
-    return None
+    nid = node_id("prf", NodeType.PROOF_OBJECT, label)
+    return nid if nid in nxgraph else None
 
 
 def resolve_target_id(
@@ -316,7 +395,7 @@ def resolve_target_id(
     """
     # Special cases: :doc: and :eq: have their own ID schemes
     if reftype == "doc":
-        nid = f"doc:{reftarget}"
+        nid = doc_node_id(reftarget)
         return nid if nid in nxgraph else None
     if reftype == "eq":
         nid = f"math:equation:{reftarget}"
@@ -337,7 +416,7 @@ def resolve_target_id(
         # to that name would bind to. Exact key, no fuzzy matching, so
         # there is no ambiguity to get wrong: the reference either names
         # a label that exists or it does not.
-        nid = f"std:label:{reftarget}"
+        nid = node_id("std", NodeType.SECTION, reftarget)
         if nid in nxgraph:
             return nid
     if refdomain == "prf":
@@ -384,14 +463,19 @@ def resolve_target_id(
     best: tuple[int, int, int, int, int, str] | None = None
     for objtype_rank, objtype in enumerate(candidate_objtypes):
         prefix = f"{refdomain}:{objtype}:"
-        for node_id in nxgraph:
-            if not isinstance(node_id, str) or not node_id.startswith(prefix):
+        # NOT `node_id` — that is the module-level id BUILDER, and
+        # binding it here would make it local to this whole function,
+        # so the call in the numref branch above raises
+        # UnboundLocalError. (It did; pyright said so and was believed
+        # to be cross-tree noise.)
+        for candidate in nxgraph:
+            if not isinstance(candidate, str) or not candidate.startswith(prefix):
                 continue
-            name = node_id[len(prefix):]
+            name = candidate[len(prefix):]
             if not (name.endswith(suffix) or name == reftarget):
                 continue
             key = candidate_rank(
-                node_id, name, nxgraph.nodes[node_id], objtype_rank,
+                candidate, name, nxgraph.nodes[candidate], objtype_rank,
             )
             if best is None or key < best:
                 best = key

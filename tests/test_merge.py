@@ -28,7 +28,7 @@ def _make_sphinx_graph() -> KnowledgeGraph:
         docname="api/solver",
     ))
     kg.add_node(GraphNode(
-        id="doc:api/solver",
+        id="std:file:api/solver",
         type=NodeType.FILE,
         name="api/solver",
         domain="std",
@@ -43,13 +43,13 @@ def _make_sphinx_graph() -> KnowledgeGraph:
     ))
     # Edge: doc contains function
     kg.add_edge(GraphEdge(
-        source="doc:api/solver",
+        source="std:file:api/solver",
         target="py:function:solver.solve",
         type=EdgeType.CONTAINS,
     ))
     # Edge: doc references unresolved CPMesh
     kg.add_edge(GraphEdge(
-        source="doc:api/solver",
+        source="std:file:api/solver",
         target="py:class:solver:CPMesh",
         type=EdgeType.DOCUMENTS,
     ))
@@ -132,7 +132,7 @@ def test_merge_preserves_sphinx_edges():
         (s, t) for s, t, d in merged.nxgraph.edges(data=True)
         if d.get("type") == "contains"
     ]
-    assert ("doc:api/solver", "py:function:solver.solve") in contains
+    assert ("std:file:api/solver", "py:function:solver.solve") in contains
 
 
 def test_merge_adds_ast_edges():
@@ -223,7 +223,7 @@ def test_infer_implements_skips_explicit_tests_edge():
     inferred IMPLEMENTS edge for the same (code, equation) pair."""
     kg = KnowledgeGraph()
     kg.add_node(GraphNode(
-        id="doc:theory/transport",
+        id="std:file:theory/transport",
         type=NodeType.FILE,
         name="theory/transport",
         domain="std",
@@ -247,12 +247,12 @@ def test_infer_implements_skips_explicit_tests_edge():
     # Doc contains the equation and documents the function — this is
     # what would otherwise trigger the inferred implements edge.
     kg.add_edge(GraphEdge(
-        source="doc:theory/transport",
+        source="std:file:theory/transport",
         target="math:equation:transport-cartesian",
         type=EdgeType.CONTAINS,
     ))
     kg.add_edge(GraphEdge(
-        source="doc:theory/transport",
+        source="std:file:theory/transport",
         target="py:function:solver.solve_transport_cartesian",
         type=EdgeType.DOCUMENTS,
     ))
@@ -357,7 +357,7 @@ def test_infer_implements_still_fires_without_explicit_edge():
     """Sanity check: the guard must not break the normal flow."""
     kg = KnowledgeGraph()
     kg.add_node(GraphNode(
-        id="doc:theory/transport",
+        id="std:file:theory/transport",
         type=NodeType.FILE,
         name="theory/transport",
         domain="std",
@@ -379,12 +379,12 @@ def test_infer_implements_still_fires_without_explicit_edge():
         domain="py",
     ))
     kg.add_edge(GraphEdge(
-        source="doc:theory/transport",
+        source="std:file:theory/transport",
         target="math:equation:transport-cartesian",
         type=EdgeType.CONTAINS,
     ))
     kg.add_edge(GraphEdge(
-        source="doc:theory/transport",
+        source="std:file:theory/transport",
         target="py:function:solver.solve_transport_cartesian",
         type=EdgeType.DOCUMENTS,
     ))
@@ -420,13 +420,13 @@ def test_infer_implements_still_fires_without_explicit_edge():
 
 def _ambiguous_pair() -> tuple[KnowledgeGraph, KnowledgeGraph]:
     sphinx = KnowledgeGraph()
-    sphinx.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    sphinx.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                               display_name="page", domain="std"))
     sphinx.add_node(GraphNode(
         id="py:module:derivations", type=NodeType.UNRESOLVED,
         name="derivations", display_name="derivations", domain="py",
     ))
-    sphinx.add_edge(GraphEdge(source="doc:page", target="py:module:derivations",
+    sphinx.add_edge(GraphEdge(source="std:file:page", target="py:module:derivations",
                               type=EdgeType.REFERENCES))
 
     ast_g = KnowledgeGraph()
@@ -507,13 +507,13 @@ def test_ambiguity_is_judged_after_every_merge_not_during_one():
     pass 1 is already wrong by the time it exists.
     """
     sphinx = KnowledgeGraph()
-    sphinx.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    sphinx.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                               display_name="page", domain="std"))
     sphinx.add_node(GraphNode(
         id="py:module:derivations", type=NodeType.UNRESOLVED,
         name="derivations", display_name="derivations", domain="py",
     ))
-    sphinx.add_edge(GraphEdge(source="doc:page", target="py:module:derivations",
+    sphinx.add_edge(GraphEdge(source="std:file:page", target="py:module:derivations",
                               type=EdgeType.REFERENCES))
 
     def slice_with(*fulls):
@@ -569,13 +569,13 @@ def test_merge_graphs_no_longer_reconciles_on_its_own():
 
 def _implements_fixture(mark_test: bool = True) -> KnowledgeGraph:
     kg = KnowledgeGraph()
-    kg.add_node(GraphNode(id="doc:theory/slab", type=NodeType.FILE,
+    kg.add_node(GraphNode(id="std:file:theory/slab", type=NodeType.FILE,
                           name="theory/slab", display_name="slab",
                           domain="std", docname="theory/slab"))
     kg.add_node(GraphNode(id="math:equation:peierls-slab-polar",
                           type=NodeType.EQUATION, name="peierls-slab-polar",
                           display_name="peierls-slab-polar", domain="math"))
-    kg.add_edge(GraphEdge(source="doc:theory/slab",
+    kg.add_edge(GraphEdge(source="std:file:theory/slab",
                           target="math:equation:peierls-slab-polar",
                           type=EdgeType.CONTAINS))
 
@@ -587,7 +587,7 @@ def _implements_fixture(mark_test: bool = True) -> KnowledgeGraph:
         name="tests.test_slab.TestSlabPolar", display_name="TestSlabPolar",
         domain="py", metadata=test_meta,
     ))
-    kg.add_edge(GraphEdge(source="doc:theory/slab",
+    kg.add_edge(GraphEdge(source="std:file:theory/slab",
                           target="py:class:tests.test_slab.TestSlabPolar",
                           type=EdgeType.DOCUMENTS))
 
@@ -597,7 +597,7 @@ def _implements_fixture(mark_test: bool = True) -> KnowledgeGraph:
         name="proj.slab.solve_slab_polar", display_name="solve_slab_polar",
         domain="py", metadata={"file_path": "/proj/slab.py"},
     ))
-    kg.add_edge(GraphEdge(source="doc:theory/slab",
+    kg.add_edge(GraphEdge(source="std:file:theory/slab",
                           target="py:function:proj.slab.solve_slab_polar",
                           type=EdgeType.DOCUMENTS))
     return kg

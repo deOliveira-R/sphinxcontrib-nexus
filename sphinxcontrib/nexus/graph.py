@@ -26,10 +26,16 @@ class NodeType(str, Enum):
     UNRESOLVED = "unresolved"
     TAG = "tag"
     #: A ``sphinx-proof`` environment — definition, theorem, lemma,
-    #: algorithm, and the dozen other ``prf:`` types. One node type for
-    #: all of them, with the specific environment kept in the node id
-    #: (``prf:theorem:label``) and in ``metadata["prf_type"]``; fifteen
-    #: near-identical NodeTypes would buy nothing a filter can't.
+    #: algorithm, and the dozen others. One node type for all of them;
+    #: fifteen near-identical NodeTypes would buy nothing a filter can't.
+    #:
+    #: The specific environment lives in ``metadata["prf_type"]`` and
+    #: ONLY there. It was also in the id (``prf:theorem:label``) until
+    #: 2026-08-16, which is a kind masquerading as a type — and it cost
+    #: what a second source of truth always costs: a bare ``:prf:ref:``
+    #: names the label but not the environment, so resolution had to try
+    #: all fifteen prefixes and then scan the whole graph. The id is now
+    #: ``prf:proof_object:label`` and resolution is one lookup.
     PROOF_OBJECT = "proof_object"
     #: A cited work. Its own type rather than ``unresolved``, because a
     #: citation is a bibliographic ENTITY the corpus refers to on

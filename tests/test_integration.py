@@ -61,8 +61,8 @@ def test_graph_sqlite_created(content):
 def test_document_nodes(content):
     data = _load_graph_json(content)
     node_ids = {n["id"] for n in data["nodes"]}
-    assert "doc:index" in node_ids
-    assert "doc:module" in node_ids
+    assert "std:file:index" in node_ids
+    assert "std:file:module" in node_ids
 
 
 def test_python_domain_nodes(content):
@@ -81,8 +81,8 @@ def test_contains_edges(content):
         for e in data["edges"]
         if e["type"] == "contains"
     ]
-    assert ("doc:index", "doc:module") in contains
-    assert ("doc:module", "py:function:mymodule.compute") in contains
+    assert ("std:file:index", "std:file:module") in contains
+    assert ("std:file:module", "py:function:mymodule.compute") in contains
 
 
 def test_reference_edges(content):
@@ -176,7 +176,7 @@ def test_sqlite_neighbor_query(content):
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT target, type FROM edges WHERE source = ?",
-        ("doc:module",),
+        ("std:file:module",),
     ).fetchall()
     conn.close()
     targets = {r["target"] for r in rows}
@@ -192,7 +192,7 @@ def test_query_from_build(content):
     graph = content.env.nexus_graph
     q = GraphQuery(graph)
 
-    results = q.neighbors("doc:module", direction="out", edge_types=["contains"])
+    results = q.neighbors("std:file:module", direction="out", edge_types=["contains"])
     target_ids = {r[0].id for r in results}
     assert "py:function:mymodule.compute" in target_ids
 

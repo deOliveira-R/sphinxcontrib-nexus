@@ -351,7 +351,7 @@ def dream_graph():
     g = nx.MultiDiGraph()
 
     # Doc page
-    g.add_node("doc:theory/transport", type="file", name="theory/transport",
+    g.add_node("std:file:theory/transport", type="file", name="theory/transport",
                display_name="Transport Theory", domain="std", docname="theory/transport")
     # Equation
     g.add_node("math:equation:alpha-recursion", type="equation", name="alpha-recursion",
@@ -374,9 +374,9 @@ def dream_graph():
                display_name="Bailey2009", domain="std")
 
     # Edges
-    g.add_edge("doc:theory/transport", "math:equation:alpha-recursion", type="contains")
-    g.add_edge("doc:theory/transport", "py:function:sweep.sweep_spherical", type="documents")
-    g.add_edge("doc:theory/transport", "std:citation:Bailey2009", type="cites")
+    g.add_edge("std:file:theory/transport", "math:equation:alpha-recursion", type="contains")
+    g.add_edge("std:file:theory/transport", "py:function:sweep.sweep_spherical", type="documents")
+    g.add_edge("std:file:theory/transport", "std:citation:Bailey2009", type="cites")
     g.add_edge("py:function:sweep.sweep_spherical", "math:equation:alpha-recursion",
                type="implements", source="inferred")
     g.add_edge("py:function:sweep.sweep_spherical", "py:function:sweep.helper", type="calls")

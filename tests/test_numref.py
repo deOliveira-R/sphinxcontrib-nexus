@@ -53,7 +53,7 @@ def built(tmp_path_factory):
     return load_sqlite(db).nxgraph
 
 
-def _refs(graph, source="doc:index"):
+def _refs(graph, source="std:file:index"):
     return {
         t for _, t, d in graph.out_edges(source, data=True)
         if d.get("type") in ("references", "equation_ref")
@@ -61,11 +61,11 @@ def _refs(graph, source="doc:index"):
 
 
 def test_figure_numref_binds_to_its_label(built):
-    assert "std:label:fig-mesh" in _refs(built)
+    assert "std:section:fig-mesh" in _refs(built)
 
 
 def test_table_numref_binds_to_its_label(built):
-    assert "std:label:tab-quadrature" in _refs(built)
+    assert "std:section:tab-quadrature" in _refs(built)
 
 
 def test_equation_numref_binds_to_the_equation(built):
@@ -89,7 +89,7 @@ def test_no_numref_placeholders_survive(built):
 def test_the_labels_are_real_nodes_not_phantoms(built):
     """Binding to a placeholder would satisfy the assertions above while
     still being wrong — check what was bound TO."""
-    for nid in ("std:label:fig-mesh", "std:label:tab-quadrature"):
+    for nid in ("std:section:fig-mesh", "std:section:tab-quadrature"):
         assert built.nodes[nid].get("type") not in ("unresolved", "external")
 
 

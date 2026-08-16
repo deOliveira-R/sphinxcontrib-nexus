@@ -488,3 +488,120 @@ def test_the_ast_analyzer_does_not_type_an_exception_class_as_one(tmp_path):
     emitted = _types_the_ast_analyzer_emits(tmp_path)
     assert NodeType.CLASS.value in emitted
     assert NodeType.EXCEPTION.value not in emitted
+
+
+# ---------------------------------------------------------------------------
+# The grammar — an id's type segment IS the node's type
+# ---------------------------------------------------------------------------
+
+
+def _grammar_violations(graph) -> list[tuple[str, str, str]]:
+    """(id, segment, type) for every node breaking the published grammar.
+
+    `server.py` advertises `"<domain>:<type>:<qualified_name>"` to every
+    MCP client. A PLACEHOLDER is the one exemption and it is principled:
+    `unresolved` / `external` are resolution STATES, not kinds, so
+    `py:function:foo` typed `unresolved` correctly records what the name
+    denotes alongside the fact that nothing was found. The ontology marks
+    exactly those with `placeholder = true`.
+    """
+    onto = Ontology.load()
+    placeholders = {n for n, s in onto.nodes.items() if s.placeholder}
+    out = []
+    for nid, attrs in graph.nodes(data=True):
+        if not isinstance(nid, str):
+            continue
+        parts = nid.split(":")
+        seg = parts[1] if len(parts) >= 3 else "<no type segment>"
+        typ = attrs.get("type", "")
+        if seg != typ and typ not in placeholders:
+            out.append((nid, seg, typ))
+    return out
+
+
+def test_the_fixture_graph_obeys_the_published_id_grammar():
+    """[M] 2026-08-16, before this landed: 936 nodes on ORPHEUS broke it
+    — 680 `std:label:` typed `section`, 94 `std:doc:` and 94 two-segment
+    `doc:` typed `file`, 68 `py:property:` typed `attribute`."""
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+    from pathlib import Path as _P
+
+    kg = analyze_directory(
+        _P(__file__).parent / "fixtures" / "minimal_project",
+        exclude_patterns=[],
+    )
+    violations = _grammar_violations(kg.nxgraph)
+    assert violations == [], violations[:10]
+
+
+def test_every_id_segment_is_a_declared_type():
+    """The other half: a segment may be a placeholder's, but it must
+    still be a type the ontology knows. `property`, `label`, `doc` and
+    `p` were none of them."""
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+    from pathlib import Path as _P
+
+    onto = Ontology.load()
+    kg = analyze_directory(
+        _P(__file__).parent / "fixtures" / "minimal_project",
+        exclude_patterns=[],
+    )
+    bad = sorted({
+        nid.split(":")[1] for nid in kg.nxgraph
+        if isinstance(nid, str) and len(nid.split(":")) >= 3
+        and nid.split(":")[1] not in onto.nodes
+    })
+    assert bad == [], bad
+
+
+def test_an_undeclared_type_warns_rather_than_raising(caplog):
+    """The build-time signal a doc author needs.
+
+    An unmapped objtype must be VISIBLE — that is what a declared
+    vocabulary is for — without breaking a build over a node nexus can
+    still record. Once per spelling, not once per node.
+    """
+    from sphinxcontrib.nexus import _mappings
+
+    _mappings._WARNED_UNDECLARED.clear()
+    with caplog.at_level("WARNING"):
+        first = _mappings.node_id("py", "gizmo", "pkg.a")
+        second = _mappings.node_id("py", "gizmo", "pkg.b")
+    assert first == "py:gizmo:pkg.a" and second == "py:gizmo:pkg.b"
+    hits = [r for r in caplog.records if "does not declare" in r.getMessage()]
+    assert len(hits) == 1, [r.getMessage() for r in hits]
+    assert "gizmo" in hits[0].getMessage()
+
+
+def test_a_declared_type_is_silent(caplog):
+    from sphinxcontrib.nexus import _mappings
+
+    _mappings._WARNED_UNDECLARED.clear()
+    with caplog.at_level("WARNING"):
+        assert _mappings.node_id("py", NodeType.FUNCTION, "pkg.f") == (
+            "py:function:pkg.f"
+        )
+    assert [r for r in caplog.records if "does not declare" in r.getMessage()] == []
+
+
+def test_a_page_does_not_contain_itself():
+    """The std domain reports each document as an object OF that
+    document, so the page→object containment edge would loop.
+
+    ⚠ Only reachable since the strict grammar merged `doc:X` and
+    `std:doc:X` into one node. Before, the edge ran between the two
+    twins — so it did not look like a self-loop, it looked like
+    structure, which is part of why the duplication survived. [M] 94 of
+    them appeared on ORPHEUS the first time the merged graph was built.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+    from pathlib import Path as _P
+
+    kg = analyze_directory(
+        _P(__file__).parent / "fixtures" / "minimal_project",
+        exclude_patterns=[],
+    )
+    loops = [
+        (s, d.get("type")) for s, t, d in kg.nxgraph.edges(data=True) if s == t
+    ]
+    assert [x for x in loops if x[1] == "contains"] == [], loops

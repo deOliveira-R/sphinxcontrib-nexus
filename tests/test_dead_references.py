@@ -395,7 +395,7 @@ def _build_query_fixture() -> KnowledgeGraph:
     kg.metadata["reexports"] = {"pkg.Alias": "pkg.mod.Thing"}
 
     # The doc page holding the references.
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std", docname="page"))
 
     # Phantom targets.
@@ -415,7 +415,7 @@ def _build_query_fixture() -> KnowledgeGraph:
                           domain="cite"))
 
     def ref(target, edge_type=EdgeType.DOCUMENTS, **meta):
-        kg.add_edge(GraphEdge(source="doc:page", target=target, type=edge_type,
+        kg.add_edge(GraphEdge(source="std:file:page", target=target, type=edge_type,
                               metadata=meta))
 
     ref("py:class:pkg.Gone")                                   # dead
@@ -446,11 +446,11 @@ def test_inherited_member_via_public_reexport_path_is_live():
                           target="py:class:pkg.impl.BaseField",
                           type=EdgeType.INHERITS))
     kg.metadata["reexports"] = {"pkg.Sink": "pkg.impl.Sink"}
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std", docname="page"))
     _node(kg, "py:method:pkg.Sink.zeros_on", NodeType.UNRESOLVED,
           "pkg.Sink.zeros_on")
-    kg.add_edge(GraphEdge(source="doc:page", target="py:method:pkg.Sink.zeros_on",
+    kg.add_edge(GraphEdge(source="std:file:page", target="py:method:pkg.Sink.zeros_on",
                           type=EdgeType.DOCUMENTS))
 
     result = GraphQuery(kg).dead_references()
@@ -473,7 +473,7 @@ def test_dead_references_verdicts():
     by_name = {d.target_name: d for d in result.dead}
     assert by_name["pkg.Gone"].kind == "python"
     assert by_name["gone-label"].kind == "equation"
-    assert by_name["pkg.Gone"].sites[0].source.id == "doc:page"
+    assert by_name["pkg.Gone"].sites[0].source.id == "std:file:page"
 
 
 def test_staleness_carries_dead_references():
@@ -950,10 +950,10 @@ def test_phantom_survives_while_any_referrer_still_needs_it():
 
     kg = _ns_graph()
     # One referrer can resolve it; one has no namespace at all.
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std"))
     _phantom_ref(kg, "py:method:pkg.alpha.Solver.apply", "py:function:apply", "apply")
-    _phantom_ref(kg, "doc:page", "py:function:apply", "apply")
+    _phantom_ref(kg, "std:file:page", "py:function:apply", "apply")
 
     assert _resolve_relative_references(kg) == 1
     g = kg.nxgraph
@@ -961,7 +961,7 @@ def test_phantom_survives_while_any_referrer_still_needs_it():
         "an .rst page with no currentmodule has no namespace to resolve "
         "against; its reference must survive, not vanish"
     )
-    assert {t for _, t, d in g.out_edges("doc:page", data=True)} == {"py:function:apply"}
+    assert {t for _, t, d in g.out_edges("std:file:page", data=True)} == {"py:function:apply"}
 
 
 def test_no_namespace_means_no_guess():
@@ -969,9 +969,9 @@ def test_no_namespace_means_no_guess():
     from sphinxcontrib.nexus.ast_analyzer import _resolve_relative_references
 
     kg = _ns_graph()
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std"))
-    _phantom_ref(kg, "doc:page", "py:function:apply", "apply")
+    _phantom_ref(kg, "std:file:page", "py:function:apply", "apply")
     assert _resolve_relative_references(kg) == 0
 
 
@@ -1006,7 +1006,7 @@ def test_namespace_walk_ignores_documenting_doc_pages():
     kg.add_node(GraphNode(id="py:module:pkg.alpha", type=NodeType.MODULE,
                           name="pkg.alpha", display_name="alpha", domain="py",
                           metadata={"file_path": "/a.py"}))
-    kg.add_node(GraphNode(id="doc:api/alpha", type=NodeType.FILE,
+    kg.add_node(GraphNode(id="std:file:api/alpha", type=NodeType.FILE,
                           name="api/alpha", display_name="alpha", domain="std"))
     kg.add_node(GraphNode(id="py:class:pkg.alpha.Solver", type=NodeType.CLASS,
                           name="pkg.alpha.Solver", display_name="Solver",
@@ -1016,10 +1016,10 @@ def test_namespace_walk_ignores_documenting_doc_pages():
                           display_name="apply", domain="py",
                           metadata={"file_path": "/a.py"}))
     # Doc-page parents first — the Sphinx-then-AST insertion order.
-    kg.add_edge(GraphEdge(source="doc:api/alpha",
+    kg.add_edge(GraphEdge(source="std:file:api/alpha",
                           target="py:class:pkg.alpha.Solver",
                           type=EdgeType.CONTAINS))
-    kg.add_edge(GraphEdge(source="doc:api/alpha",
+    kg.add_edge(GraphEdge(source="std:file:api/alpha",
                           target="py:method:pkg.alpha.Solver.apply",
                           type=EdgeType.CONTAINS))
     kg.add_edge(GraphEdge(source="py:module:pkg.alpha",
@@ -1242,7 +1242,7 @@ def test_numref_does_not_hijack_non_equation_targets():
     from sphinxcontrib.nexus._mappings import resolve_target_id
 
     kg = KnowledgeGraph()
-    kg.add_node(GraphNode(id="std:label:fig-mesh", type=NodeType.SECTION,
+    kg.add_node(GraphNode(id="std:section:fig-mesh", type=NodeType.SECTION,
                           name="fig-mesh", display_name="fig-mesh", domain="std"))
     resolved = resolve_target_id(kg.nxgraph, None, "std", "numref", "fig-mesh")
     assert resolved != "math:equation:fig-mesh"
@@ -1265,7 +1265,7 @@ def test_numref_does_not_hijack_non_equation_targets():
 
 def _minting_fixture() -> KnowledgeGraph:
     kg = KnowledgeGraph()
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std", docname="page"))
     # A prototype module that still imports something retired. Its
     # file_path is what makes ``proj`` a project-owned top level, so the
@@ -1278,7 +1278,7 @@ def _minting_fixture() -> KnowledgeGraph:
                           target="py:function:proj.retired.compute",
                           type=EdgeType.IMPORTS))
     # A theory page references it too — this is the reported site.
-    kg.add_edge(GraphEdge(source="doc:page",
+    kg.add_edge(GraphEdge(source="std:file:page",
                           target="py:function:proj.retired.compute",
                           type=EdgeType.DOCUMENTS, metadata={"reftype": "func"}))
     return kg
@@ -1294,12 +1294,12 @@ def test_dead_reference_names_the_code_that_minted_it():
 def test_ordinary_drift_has_no_minting_files():
     """A symbol nothing names is simply absent — that is normal drift."""
     kg = KnowledgeGraph()
-    kg.add_node(GraphNode(id="doc:page", type=NodeType.FILE, name="page",
+    kg.add_node(GraphNode(id="std:file:page", type=NodeType.FILE, name="page",
                           display_name="page", domain="std", docname="page"))
     _node(kg, "py:module:proj.live", NodeType.MODULE, "proj.live",
           file_path="/proj/live.py")
     _node(kg, "py:class:proj.Gone", NodeType.UNRESOLVED, "proj.Gone")
-    kg.add_edge(GraphEdge(source="doc:page", target="py:class:proj.Gone",
+    kg.add_edge(GraphEdge(source="std:file:page", target="py:class:proj.Gone",
                           type=EdgeType.DOCUMENTS, metadata={"reftype": "class"}))
     entry = next(d for d in GraphQuery(kg).dead_references().dead
                  if d.target_name == "proj.Gone")
@@ -1314,7 +1314,7 @@ def test_prose_references_do_not_count_as_minting():
     finding look self-inflicted.
     """
     kg = _minting_fixture()
-    kg.add_edge(GraphEdge(source="doc:page",
+    kg.add_edge(GraphEdge(source="std:file:page",
                           target="py:function:proj.retired.compute",
                           type=EdgeType.REFERENCES))
     entry = next(d for d in GraphQuery(kg).dead_references().dead

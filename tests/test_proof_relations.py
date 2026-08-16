@@ -134,9 +134,9 @@ def test_relations_carry_directive_provenance(graph):
 def test_relation_between_proof_environments(graph):
     """Both ends may be proof objects — same syntax, no new directive."""
     assert (
-        "prf:theorem:thm-balance",
+        "prf:proof_object:thm-balance",
         "derives_from",
-        "prf:definition:def-angular-flux",
+        "prf:proof_object:def-angular-flux",
     ) in _relation_edges(graph)
 
 
@@ -156,9 +156,9 @@ def test_equations_are_no_longer_leaves(graph):
 
 def test_labelled_environments_become_nodes(graph):
     for node_id in (
-        "prf:definition:def-angular-flux",
-        "prf:theorem:thm-balance",
-        "prf:algorithm:alg-sweep",
+        "prf:proof_object:def-angular-flux",
+        "prf:proof_object:thm-balance",
+        "prf:proof_object:alg-sweep",
     ):
         assert node_id in graph.nodes, node_id
         assert graph.nodes[node_id]["type"] == "proof_object"
@@ -177,22 +177,37 @@ def test_environment_kind_is_queryable(graph):
 
 def test_unlabelled_environment_is_not_a_node(graph):
     """sphinx-proof gives it a serial-numbered synthetic label that
-    renumbers on every edit above it, and nothing can reference it."""
+    renumbers on every edit above it, and nothing can reference it.
+
+    ⚠ Re-expressed 2026-08-16. This used to filter on `prf:remark:`,
+    which only identified the fixture's unlabelled environment because
+    the id carried the ENVIRONMENT KIND. Ids are now
+    `prf:proof_object:<label>`, so the claim is stated where it always
+    belonged — against the synthetic LABEL, via the one helper that
+    decides what synthetic means.
+    """
+    from sphinxcontrib.nexus.extractors import _is_auto_proof_label
+
+    prf = [
+        (n, a) for n, a in graph.nodes(data=True)
+        if isinstance(n, str) and n.startswith("prf:")
+    ]
+    assert prf, "fixture has no proof objects — the gate would be vacuous"
     synthetic = [
-        n for n in graph.nodes
-        if isinstance(n, str) and n.startswith("prf:remark:")
+        n for n, a in prf
+        if _is_auto_proof_label(a.get("name", ""), a.get("prf_type", ""))
     ]
     assert synthetic == []
 
 
 def test_environments_are_contained_by_their_page(graph):
-    assert graph.has_edge("doc:index", "prf:theorem:thm-balance")
+    assert graph.has_edge("std:file:index", "prf:proof_object:thm-balance")
 
 
 def test_title_and_statement_come_from_the_doctree(graph):
     """``env.proof_list`` records where a theorem lives, not what it
     says; the prose only exists in the doctree."""
-    attrs = graph.nodes["prf:definition:def-angular-flux"]
+    attrs = graph.nodes["prf:proof_object:def-angular-flux"]
     assert attrs["display_name"] == "Angular flux"
     assert "number of particles" in attrs["statement"]
 
@@ -201,7 +216,7 @@ def test_prf_ref_resolves_instead_of_going_dead(graph):
     """A ``:prf:ref:`` names a label but not an environment. If that
     doesn't resolve, every cross-reference in a sphinx-proof project
     becomes a false dead reference."""
-    assert graph.has_edge("doc:index", "prf:definition:def-angular-flux")
+    assert graph.has_edge("std:file:index", "prf:proof_object:def-angular-flux")
     unresolved = [
         n for n, a in graph.nodes(data=True)
         if a.get("type") in ("unresolved", "external")
@@ -247,10 +262,10 @@ def test_each_relation_is_reported_once(query):
 
 
 def test_provenance_accepts_a_proof_object(query):
-    result = query.provenance_chain("prf:theorem:thm-balance")
-    assert result.chain[0].node.id == "prf:theorem:thm-balance"
+    result = query.provenance_chain("prf:proof_object:thm-balance")
+    assert result.chain[0].node.id == "prf:proof_object:thm-balance"
     assert any(
-        r.target.id == "prf:definition:def-angular-flux" for r in result.relations
+        r.target.id == "prf:proof_object:def-angular-flux" for r in result.relations
     )
 
 
@@ -260,14 +275,14 @@ def test_graph_query_reaches_the_new_types(query):
     hits = query.graph_query("equation -discretizes-> equation")
     assert [h["source"]["id"] for h in hits] == ["math:equation:dd-closure"]
     prf = query.graph_query("proof_object -derives_from-> proof_object")
-    assert [h["target"]["id"] for h in prf] == ["prf:definition:def-angular-flux"]
+    assert [h["target"]["id"] for h in prf] == ["prf:proof_object:def-angular-flux"]
 
 
 def test_keyword_search_finds_an_environment_by_title(query):
     """The title is the human handle — ``def-angular-flux`` is not what
     anyone types."""
     assert [n.id for n in query.query("angular flux")] == [
-        "prf:definition:def-angular-flux"
+        "prf:proof_object:def-angular-flux"
     ]
 
 
@@ -301,33 +316,44 @@ def test_proof_title_unwraps_the_render_format():
 
 def test_resolve_proof_id_tries_every_environment():
     g = nx.MultiDiGraph()
-    g.add_node("prf:algorithm:sweep")
-    assert resolve_proof_id(g, "sweep") == "prf:algorithm:sweep"
+    g.add_node("prf:proof_object:sweep")
+    assert resolve_proof_id(g, "sweep") == "prf:proof_object:sweep"
     assert resolve_proof_id(g, "nope") is None
 
 
-def test_resolve_proof_id_falls_back_to_a_scan():
-    """An environment sphinx-proof adds after PRF_OBJECT_TYPES was
-    written must still resolve, or its references read as dead."""
+def test_an_environment_nexus_has_never_heard_of_still_resolves():
+    """An environment sphinx-proof adds after nexus shipped must still
+    resolve, or its references read as dead.
+
+    ⚠ Re-expressed 2026-08-16, and the mechanism it used to pin is
+    GONE. The id carried the environment (`prf:brandnewtype:thing`), so
+    resolving a bare `:prf:ref:` meant trying all fifteen known
+    environments and then scanning every node in the graph for a
+    sixteenth. The id now carries the TYPE, which is `proof_object` for
+    every environment there will ever be — so the property this test
+    protects holds by construction and resolution is one lookup. The
+    unknown kind rides in metadata, where it is not part of identity.
+    """
     g = nx.MultiDiGraph()
-    g.add_node("prf:brandnewtype:thing")
-    assert resolve_proof_id(g, "thing") == "prf:brandnewtype:thing"
+    g.add_node("prf:proof_object:thing", prf_type="brandnewtype")
+    assert resolve_proof_id(g, "thing") == "prf:proof_object:thing"
+    assert resolve_proof_id(g, "absent") is None
 
 
 def test_prf_xrefs_route_through_the_proof_resolver():
     g = nx.MultiDiGraph()
-    g.add_node("prf:theorem:balance")
+    g.add_node("prf:proof_object:balance")
     assert resolve_target_id(g, None, "prf", "ref", "balance") == (
-        "prf:theorem:balance"
+        "prf:proof_object:balance"
     )
 
 
 def test_statement_id_prefers_an_equation():
     g = nx.MultiDiGraph()
     g.add_node("math:equation:x")
-    g.add_node("prf:theorem:y")
+    g.add_node("prf:proof_object:y")
     assert _resolve_statement_id("x", g) == "math:equation:x"
-    assert _resolve_statement_id("y", g) == "prf:theorem:y"
+    assert _resolve_statement_id("y", g) == "prf:proof_object:y"
     assert _resolve_statement_id("z", g) is None
 
 
