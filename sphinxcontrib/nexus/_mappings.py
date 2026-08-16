@@ -85,7 +85,22 @@ DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
     ("py", "module"): NodeType.MODULE,
     ("py", "data"): NodeType.DATA,
     ("py", "exception"): NodeType.EXCEPTION,
-    ("py", "property"): NodeType.ATTRIBUTE,
+    # A property is a METHOD, not an attribute — and this line is the
+    # arbiter between the two producers. The AST sees `def ng(self)`
+    # inside a class and types it `method`; autodoc reports objtype
+    # `property`. While that mapped to `attribute` the two disagreed
+    # about what one symbol IS, so [M] 68 properties on ORPHEUS existed
+    # as two nodes: the AST's holding `calls` and `type_uses`, the
+    # Sphinx one holding `documents`. Neither view was complete and
+    # which you got depended on the spelling you asked with.
+    #
+    # `method` wins because a property has a body, a file position and
+    # callers, and `attribute` nodes have none of those — and because
+    # `staticmethod` and `classmethod`, which are the same shape (a
+    # decorated def in a class), already map here. That it is ACCESSED
+    # like an attribute is a fact about call sites, not about what the
+    # definition is.
+    ("py", "property"): NodeType.METHOD,
     ("py", "staticmethod"): NodeType.METHOD,
     ("py", "classmethod"): NodeType.METHOD,
     ("py", "type"): NodeType.TYPE,

@@ -765,3 +765,90 @@ def test_a_false_value_OVERRIDES_a_truthy_one():
     ))
     merge_graphs(sphinx_kg, ast_kg)
     assert sphinx_kg.nxgraph.nodes["py:method:pkg.C.m"]["is_test"] is False
+
+
+# ---------------------------------------------------------------------------
+# The arbiter — two producers, one symbol, one type
+# ---------------------------------------------------------------------------
+
+
+def test_a_property_is_a_method_not_an_attribute():
+    """The arbitration itself, as one assertion.
+
+    The AST sees `def ng(self)` inside a class and types it `method`;
+    autodoc reports objtype `property`. While that mapped to `attribute`
+    the two disagreed about what ONE symbol IS, and [M] 68 properties on
+    ORPHEUS existed as two nodes — the AST's holding `calls`/`type_uses`,
+    the Sphinx one holding the doc containment.
+
+    `method` wins because a property has a body, a file position and
+    callers, and `attribute` nodes have none; and because `staticmethod`
+    and `classmethod` — the same shape, a decorated def in a class —
+    already mapped here. Being ACCESSED like an attribute is a fact
+    about call sites, not about what the definition is.
+    """
+    from sphinxcontrib.nexus._mappings import DOMAIN_TYPE_MAP
+
+    assert DOMAIN_TYPE_MAP[("py", "property")] is NodeType.METHOD
+    assert DOMAIN_TYPE_MAP[("py", "staticmethod")] is NodeType.METHOD
+    assert DOMAIN_TYPE_MAP[("py", "classmethod")] is NodeType.METHOD
+
+
+def test_a_documented_property_is_ONE_node_carrying_both_views():
+    """The consequence: the call graph and the doc graph meet.
+
+    Before, asking about a property gave you half an answer and which
+    half depended on the spelling you used — `impact` saw the AST node,
+    `documents` coverage saw the Sphinx one, and neither could reach
+    the other.
+    """
+    from sphinxcontrib.nexus._mappings import DOMAIN_TYPE_MAP, node_id
+
+    # ⚠ The two sides are built INDEPENDENTLY, as the producers are.
+    # The Sphinx side goes through DOMAIN_TYPE_MAP because that is what
+    # `extract_domain_objects` does; the AST side is hand-written
+    # `py:method:` because that is what `ast_analyzer` emits for a def
+    # in a class. Deriving BOTH from the map made this gate compare a
+    # value with itself — [M] flipping the map back to `attribute` left
+    # it green while the split it exists to catch reappeared.
+    sphinx_type = DOMAIN_TYPE_MAP[("py", "property")]
+    nid = "py:method:pkg.C.ng"          # what the AST mints, independently
+
+    sphinx_kg = KnowledgeGraph()
+    sphinx_kg.add_node(GraphNode(
+        id=node_id("py", sphinx_type, "pkg.C.ng"), type=sphinx_type,
+        name="pkg.C.ng", display_name="ng", domain="py", docname="api/pkg",
+    ))
+    sphinx_kg.add_node(GraphNode(
+        id="std:file:api/pkg", type=NodeType.FILE, name="api/pkg", domain="std",
+    ))
+    sphinx_kg.add_edge(GraphEdge(
+        source="std:file:api/pkg",
+        target=node_id("py", sphinx_type, "pkg.C.ng"),
+        type=EdgeType.CONTAINS,
+    ))
+
+    ast_kg = KnowledgeGraph()
+    ast_kg.add_node(GraphNode(
+        id=nid, type=NodeType.METHOD, name="pkg.C.ng", domain="py",
+        metadata={"file_path": "/p/pkg.py", "lineno": 10,
+                  "decorators": ("property",)},
+    ))
+    ast_kg.add_node(GraphNode(
+        id="py:function:caller", type=NodeType.FUNCTION, name="caller",
+        domain="py",
+    ))
+    ast_kg.add_edge(GraphEdge(
+        source="py:function:caller", target=nid, type=EdgeType.CALLS,
+    ))
+
+    merge_graphs(sphinx_kg, ast_kg)
+    g = sphinx_kg.nxgraph
+    assert g.number_of_nodes() == 3, list(g.nodes)   # not four: no twin
+    attrs = g.nodes[nid]
+    assert attrs["source"] == "both"
+    assert attrs["docname"] == "api/pkg"          # the Sphinx view
+    assert attrs["file_path"] == "/p/pkg.py"      # the AST view
+    assert attrs["decorators"] == ("property",)   # it is still a property
+    kinds = {d.get("type") for _s, _t, d in g.in_edges(nid, data=True)}
+    assert kinds == {"contains", "calls"}         # both graphs, one node
