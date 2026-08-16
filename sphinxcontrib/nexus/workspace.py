@@ -321,6 +321,39 @@ def resolve_checkout_root(active: Workspace, ref: str) -> Path:
     )
 
 
+def canonical_path(path: Path | str, root: Path | None = None) -> Path:
+    """The comparable form of a path spelling within one checkout.
+
+    Two spellings name the same file exactly when this function maps
+    them to the same value — that is the whole contract, and this is
+    the only place it is written.  A relative spelling resolves
+    against ``root`` (there is no other tree a stored position could
+    mean); every spelling then goes through
+    :meth:`~pathlib.Path.resolve`, so symlinked roots, ``..`` segments
+    and mixed separators compare equal.
+
+    ``root`` is optional because a server launched with a bare
+    ``--db`` has a graph but no tree; a relative spelling then
+    resolves against the process's working directory, which is the
+    most a rootless workspace can mean.
+
+    Three call sites used to spell this out privately: two named
+    ``_norm`` — whose own comments instructed the reader to "keep the
+    two in lockstep" — and ``NodeBinder._abs``.  They agreed only
+    because someone kept checking.
+    """
+    path = Path(path)
+    # The ``is_absolute`` test is deliberately redundant: ``root / path``
+    # already discards ``root`` when ``path`` is absolute, so removing it
+    # is a measured no-op (2026-08-16 mutation battery, 798 passed either
+    # way). It stays because it STATES the rule — the function has two
+    # behavioural arms, and this line is what tells the reader which of
+    # them a given spelling takes.
+    if not path.is_absolute() and root is not None:
+        path = root / path
+    return path.resolve()
+
+
 @dataclass(frozen=True)
 class Workspace:
     """One checkout paired with its graph database.
@@ -333,6 +366,10 @@ class Workspace:
 
     db_path: Path
     root: Path | None = None
+
+    def canonical_path(self, path: Path | str) -> Path:
+        """:func:`canonical_path`, against this checkout's root."""
+        return canonical_path(path, self.root)
 
     @classmethod
     def for_root(cls, root: Path | str) -> Workspace:

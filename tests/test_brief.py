@@ -137,11 +137,24 @@ def test_brief_positions_come_from_the_analyzer(analyzed_db):
 # ---------------------------------------------------------------------------
 
 
-def test_symlinked_root_resolves_in_both_norm_realizations(analyzed_db):
-    """The path-equality contract lives twice — graph-space
-    (GraphQuery.node_at) and SQL-space (brief._in_file_node_ids).
-    A query through a symlinked alias of the root must land on the
-    same nodes through BOTH, or the realizations have drifted."""
+def test_symlinked_root_resolves_through_both_lookup_strategies(analyzed_db):
+    """A symlinked alias of the root must reach the same nodes through
+    the SQL two-tier lookup and through a full graph scan.
+
+    ⚠ Re-scoped 2026-08-16. This gate used to be described as catching
+    DRIFT between two realizations of the path-equality contract; there
+    is now one (``workspace.canonical_path``), so no input can make the
+    two normalizations disagree and that claim is unfalsifiable. What
+    survives is a real comparison: the *lookup strategies* are still
+    independent — ``_in_file_node_ids`` matches pre-computed spellings
+    in SQL and falls back to a basename-prefiltered scan, while
+    ``node_at`` normalizes every stored path. This can still fail when
+    the SQL tier anticipates the wrong spellings.
+
+    The contract itself is pinned directly by
+    ``test_workspace.py::TestCanonicalPath``, which asserts its laws
+    against hand-written expectations rather than against a second
+    implementation."""
     from sphinxcontrib.nexus.export import load_sqlite
     from sphinxcontrib.nexus.query import GraphQuery
 

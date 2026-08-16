@@ -42,6 +42,7 @@ from sphinxcontrib.nexus.workspace import (
     Workspace,
     WorkspaceLayoutError,
     WorkspaceResolutionError,
+    canonical_path,
     changed_files,
     checkout_containing,
     default_branch,
@@ -888,3 +889,81 @@ def test_analyze_skips_nested_worktrees_and_clones(tmp_path):
     assert "real_module" in modules
     assert not any("worktree_copy" in m for m in modules), modules
     assert not any("vendored" in m for m in modules), modules
+
+
+# ── the path-equality contract ──────────────────────────────────────
+
+
+class TestCanonicalPath:
+    """The one law: two spellings name the same file exactly when
+    ``canonical_path`` maps them to the same value.
+
+    This is the pin the 2026-08-16 single-sourcing owed. Three private
+    realizations (``node_at._norm``, ``_in_file_node_ids._norm``,
+    ``NodeBinder._abs``) collapsed into one function, which demoted
+    every gate that had been comparing the copies to each other — so
+    the contract needs a gate that asserts its LAWS against
+    hand-written expectations instead of against a second
+    implementation.
+    """
+
+    def test_a_relative_spelling_resolves_against_the_root(self, tmp_path):
+        root = tmp_path.resolve()
+        assert canonical_path("pkg/mod.py", root) == root / "pkg" / "mod.py"
+
+    def test_an_absolute_spelling_ignores_the_root(self, tmp_path):
+        elsewhere = (tmp_path / "elsewhere").resolve()
+        elsewhere.mkdir()
+        target = elsewhere / "mod.py"
+        assert canonical_path(target, tmp_path / "project") == target
+
+    def test_the_two_spellings_of_one_file_agree(self, tmp_path):
+        """The contract's whole purpose, stated directly."""
+        root = tmp_path.resolve()
+        (root / "pkg").mkdir()
+        (root / "pkg" / "mod.py").write_text("x = 1\n")
+        assert (
+            canonical_path("pkg/mod.py", root)
+            == canonical_path(root / "pkg" / "mod.py", root)
+        )
+
+    def test_a_symlinked_root_collapses_to_the_real_tree(self, tmp_path):
+        """Why ``.resolve()`` is part of the contract and not an
+        incidental tidy-up: a checkout reached through an alias must
+        compare equal to the same file reached directly, or every
+        stored position misses."""
+        real = (tmp_path / "real").resolve()
+        real.mkdir()
+        (real / "mod.py").write_text("x = 1\n")
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+        assert canonical_path("mod.py", alias) == real / "mod.py"
+
+    def test_dot_segments_collapse(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "pkg").mkdir()
+        assert canonical_path("pkg/../mod.py", root) == root / "mod.py"
+
+    def test_it_is_idempotent(self, tmp_path):
+        """A key that is re-keyed must not move — the index stores
+        canonical paths and looks them up with canonical paths."""
+        root = tmp_path.resolve()
+        once = canonical_path("pkg/mod.py", root)
+        assert canonical_path(once, root) == once
+
+    def test_a_rootless_workspace_falls_back_to_the_cwd(self, tmp_path):
+        """A server launched with a bare ``--db`` has a graph but no
+        tree; a relative spelling can then only mean the process's own
+        directory. Absolute spellings are unaffected, which is why a
+        rootless workspace still works on a real (absolute) graph."""
+        assert canonical_path("mod.py", None) == Path.cwd().resolve() / "mod.py"
+        assert canonical_path(tmp_path / "mod.py", None) == (
+            tmp_path / "mod.py"
+        ).resolve()
+
+    def test_the_workspace_method_is_the_bound_form(self, tmp_path):
+        root = tmp_path.resolve()
+        ws = Workspace(db_path=root / ".nexus" / "graph.db", root=root)
+        assert ws.canonical_path("pkg/mod.py") == canonical_path(
+            "pkg/mod.py", root
+        )

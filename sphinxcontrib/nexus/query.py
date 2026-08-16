@@ -22,6 +22,7 @@ from sphinxcontrib.nexus.workspace import (
     GitProvenance,
     NoWorkspaceError,
     Workspace,
+    canonical_path,
     changed_files,
     default_branch,
 )
@@ -858,6 +859,11 @@ class GraphQuery:
         defs) maps to the module node.  ``None`` when the file is not
         in the graph at all.
 
+        Path equality on both sides is
+        :func:`~sphinxcontrib.nexus.workspace.canonical_path`, so the
+        caller's spelling and the stored one are compared the same way
+        every other asker compares them.
+
         Relative paths — the caller's and any stored in the graph —
         resolve against the workspace root, which is the only tree the
         stored positions can mean.
@@ -868,24 +874,12 @@ class GraphQuery:
             line: 1-based line number, as editors and LSP report it.
         """
         root = self.project_root
-
-        # Path-equality contract: resolve relative spellings against
-        # the project root, then compare realpaths. Realized a second
-        # time in SQL-space by brief._in_file_node_ids (which must not
-        # load the graph) — keep the two in lockstep; the symlink/
-        # spelling corner tests in test_brief.py pin both.
-        def _norm(p: Path | str) -> Path:
-            p = Path(p)
-            if not p.is_absolute() and root is not None:
-                p = root / p
-            return p.resolve()
-
-        wanted = _norm(file_path)
+        wanted = canonical_path(file_path, root)
         spanning: list[tuple[int, int, str]] = []  # (span, -lineno, node_id)
         module_id: str | None = None
         for node_id, attrs in self._g.nodes(data=True):
             stored = attrs.get("file_path", "")
-            if not stored or _norm(stored) != wanted:
+            if not stored or canonical_path(stored, root) != wanted:
                 continue
             if attrs.get("type") == "module":
                 module_id = node_id

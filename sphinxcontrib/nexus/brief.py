@@ -32,6 +32,7 @@ from sphinxcontrib.nexus.export import get_connection, read_sqlite_metadata
 from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
     GitProvenance,
+    canonical_path,
     changed_files,
 )
 
@@ -100,9 +101,9 @@ def _in_file_node_ids(
 
     Stored paths come from the analyzer and may be absolute (Sphinx
     builds) or source-root-relative (bare ``nexus analyze``); the
-    query path may be either too. Both sides normalize through
-    ``project_root`` — the same resolution contract as
-    ``GraphQuery.node_at``.
+    query path may be either too. Both sides go through
+    :func:`~sphinxcontrib.nexus.workspace.canonical_path`, the one
+    path-equality contract every asker shares.
 
     Two-tier lookup, because the hook latency budget forbids
     normalizing thousands of stored paths per call: first an exact
@@ -113,17 +114,9 @@ def _in_file_node_ids(
     survivors (symlinked roots, mixed separators).
     """
 
-    # Same path-equality contract as GraphQuery.node_at's _norm,
-    # realized in SQL-space because this module must never load the
-    # graph — keep the two in lockstep; the symlink/spelling corner
-    # tests in test_brief.py pin both.
-    def _norm(p: Path | str) -> Path:
-        p = Path(p)
-        if not p.is_absolute() and project_root is not None:
-            p = project_root / p
-        return p.resolve()
-
-    wanted = _norm(file_path)
+    # Only the LOOKUP is SQL-space (this module must never load the
+    # graph); the path-equality contract itself is shared.
+    wanted = canonical_path(file_path, project_root)
     spellings = {json.dumps(str(wanted))}
     if project_root is not None:
         try:
@@ -155,7 +148,7 @@ def _in_file_node_ids(
             "WHERE key = 'file_path' AND value LIKE ? ESCAPE '\\'",
             (f'%{escaped}"',),
         )
-        if _norm(json.loads(row["value"])) == wanted
+        if canonical_path(json.loads(row["value"]), project_root) == wanted
     ]
 
 

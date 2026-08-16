@@ -39,6 +39,7 @@ from typing import Any
 import networkx as nx
 
 from sphinxcontrib.nexus.graph import KnowledgeGraph
+from sphinxcontrib.nexus.workspace import canonical_path
 
 # cProfile's ``co_firstlineno`` points at the first *decorator* line, while the
 # AST records ``node.lineno`` as the *def* line — so a decorated function's
@@ -203,13 +204,20 @@ class NodeBinder:
         ] or None
 
     def _abs(self, filename: str) -> str:
-        """Absolutise against ``root``, memoised — this runs per record."""
+        """The trace's spelling as a comparable key, memoised.
+
+        :func:`~sphinxcontrib.nexus.workspace.canonical_path` against
+        the TRACE's root, which is not the workspace root and must not
+        be confused with it: a ``coverage json`` key is relative to the
+        directory the traced run used, while a stored ``file_path`` is
+        relative to the checkout.  Same contract, two different trees —
+        so the two sides canonicalise separately and meet as absolutes.
+
+        Memoised because this runs once per trace record.
+        """
         hit = self._cache.get(filename)
         if hit is None:
-            path = Path(filename)
-            hit = str(
-                (path if path.is_absolute() else self.root / path).resolve()
-            )
+            hit = str(canonical_path(filename, self.root))
             self._cache[filename] = hit
         return hit
 
