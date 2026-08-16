@@ -25,7 +25,7 @@ Add to your `docs/conf.py`:
 extensions = ['sphinxcontrib.nexus']
 ```
 
-After `sphinx-build`, find the graph at `<outdir>/_nexus/graph.db` (SQLite) and `<outdir>/_nexus/graph.json`.
+After `sphinx-build`, find the graph at `<project root>/.nexus/graph.db` (SQLite) and `<project root>/.nexus/graph.json` — a convention derived from the project root, which `nexus config db` prints. The interactive explorer page is the one artefact written into the Sphinx HTML output, at `<outdir>/graph/graph.html`.
 
 ### Standalone AST Analysis (no Sphinx needed)
 
@@ -80,7 +80,7 @@ nexus visualize --db graph.db            # opens HTML graph explorer in browser
 
 | Config value | Default | Description |
 |---|---|---|
-| `nexus_output` | `_nexus` | Output directory relative to build output |
+| `nexus_output` | `_nexus` | Where the interactive HTML explorer page is written, relative to the Sphinx HTML output directory. It moves `graph.html` only — the database, its JSON export and the runtime traces are not configurable; they are derived from the project root at `<root>/.nexus/` whenever the project is *anchored* (has a `.nexus/`). An unanchored project has no durable root to anchor to, so its store stays with the build output under this directory too. |
 | `nexus_ast_analyze` | `True` | Run AST analysis during Sphinx build |
 | `nexus_max_viz_nodes` | `300` | Max nodes in auto-generated graph.html |
 | `nexus_extra_source_dirs` | `[]` | Extra directories (relative to project root) to analyze in addition to autodetected source roots. Useful for out-of-tree test suites or separate module roots. |
@@ -212,7 +212,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 - **`protocol_conformers`** — classes satisfying a `Protocol`'s method-set without declaring it: `Protocol`s are satisfied structurally but `inherits` records only explicit subclassing, so a structural conformer has no edge. Matches by method-name set (a heuristic — the type checker / LSP `goToImplementation` is authoritative)
 
 ### Runtime overlay (dynamic execution-flow)
-The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then ingest the artifact; the overlay is stored in a sidecar (`_nexus/traces/<run>.json`) keyed by node-ID and re-binds to the live graph at query time — it is never written into `graph.db`. The query tools accept comma-separated run names to **union the canonical suite** (so `dead` means fired in NO run, a branch is missing only if no run took it).
+The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then ingest the artifact; the overlay is stored in a sidecar (`<project root>/.nexus/traces/<run>.json`) keyed by node-ID and re-binds to the live graph at query time — it is never written into `graph.db`. The query tools accept comma-separated run names to **union the canonical suite** (so `dead` means fired in NO run, a branch is missing only if no run took it).
 - **`runtime_ingest`** — ingest a `cProfile`/`pstats` dump (counts + time + call edges), a `coverage json --branch` report (line/branch coverage), or a `viztracer` JSON trace (temporal order) and overlay it on the graph by node-ID, joining on `(file_path, lineno)` with a decorator-window rule (97% join on a real solve). `source_prefix` drops stdlib/third-party frames and takes a **list** — profiling a test suite yields `tests` → package records, so either directory alone drops one endpoint of every one of them. `root` is the working directory the traced run used: `coverage json` emits **relative** file keys and records the rundir nowhere, so without it the join silently binds nothing. An ingest that binds nothing is reported as a failure, with a per-reason breakdown, and is not stored
 - **`runtime_runs`** — list ingested runs (name, kind, metadata, node/edge counts)
 - **`runtime_hotspots`** — nodes ranked by an observed metric: `cumtime` is the dominant *observed* call chain (the dynamic stage DAG, better than `processes`' static heuristic for a traced run); `ncalls` the iteration-count / recompute smell (a property called 10k×/run = a caching opportunity); `tottime` self-time
@@ -245,7 +245,7 @@ in both directions.
 ### Edit-time file brief (the ambient channel)
 
 ```bash
-nexus file-brief path/to/module.py --db _nexus/graph.db --project-root .
+nexus file-brief path/to/module.py --project-root .
 ```
 
 Prints ≤6 lines of graph context for one source file — node count and
@@ -436,7 +436,9 @@ Every path above produces the same `EdgeType.TESTS` / `EdgeType.IMPLEMENTS` edge
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.export import load_sqlite
 
-q = GraphQuery(load_sqlite("docs/_build/html/_nexus/graph.db"))
+from sphinxcontrib.nexus.project import resolve_db
+
+q = GraphQuery(load_sqlite(resolve_db()))
 
 # Full audit bucketed by V&V level
 audit = q.verification_audit(group_by="level", include_tests=True)
@@ -489,20 +491,45 @@ docs (or run `nexus analyze`) inside the worktree, then call
 
 ## Storage
 
-The graph is stored in two formats:
+Everything lives in `.nexus/` at the project root — the same directory
+that holds `config.toml`, which is what makes the root discoverable in
+the first place:
+
+```
+<project root>/.nexus/graph.db          # SQLite (primary)
+<project root>/.nexus/graph.json        # JSON export (secondary)
+<project root>/.nexus/traces/<run>.json # runtime overlay sidecars
+<html outdir>/graph/graph.html          # the interactive explorer page
+```
+
+The location of the database is a **convention, not a setting**: every
+surface already found `.nexus/` to read the settings, so none of them
+needs to be told where the graph is, and there is no second declaration
+to drift. `nexus config db` prints the derived path for scripts and hooks.
 
 - **SQLite** (primary) — indexed queries, FTS5 full-text search, 0.05ms neighbor lookups. Written with a `schema_version` row in the `metadata` table. `load_sqlite` rejects databases written by a future nexus release with `SchemaVersionError`, so downgrading consumers fail loud instead of silently misreading.
 - **JSON** (secondary) — human-readable, NetworkX node-link format.
+- **Runtime overlays** (`runtime_ingest`) — one JSON per run, a sidecar keyed by node-ID, never written into `graph.db` (which `sphinx-build` regenerates), so a trace survives graph rebuilds and re-binds to the live graph at query time.
 
-Runtime overlays (`runtime_ingest`) are stored separately, one JSON per run under `_nexus/traces/<run>.json` — a sidecar keyed by node-ID, never written into `graph.db` (which `sphinx-build` regenerates), so a trace survives graph rebuilds and re-binds to the live graph at query time.
+**Why only the explorer page stays in the build output.** Those four
+artefacts have three different lifetimes. `graph.db`/`graph.json` are
+derived and rewritten on every `sphinx-build`. `graph.html` is derived
+*and* must be served from the HTML tree. But `traces/` is **durable,
+expensive state** — a profiled test run costs minutes to reproduce, and
+the sidecar exists precisely so it survives the rebuild that wipes the
+database. While all four shared the build directory, they inherited its
+lifetime: `rm -rf docs/_build` destroyed the traces. A directory's
+lifetime is set by its most-derived member, so only the artefact that has
+to be served stays there.
 
 ## Python API
 
 ```python
 from sphinxcontrib.nexus.export import load_sqlite
+from sphinxcontrib.nexus.project import resolve_db
 from sphinxcontrib.nexus.query import GraphQuery
 
-kg = load_sqlite("_nexus/graph.db")
+kg = load_sqlite(resolve_db())   # <project root>/.nexus/graph.db
 q = GraphQuery(kg)
 
 # What uses numpy.ndarray?

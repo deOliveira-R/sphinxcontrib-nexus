@@ -97,7 +97,11 @@ def _scrubbed_env(project: Path) -> dict[str, str]:
 
 def test_doc_health_command_runs_without_nexus_on_path(tmp_path):
     _venv_layout(tmp_path)
-    db = tmp_path / "docs" / "_build" / "html" / "_nexus" / "graph.db"
+    # Staged at the CONVENTION, spelled out as a literal rather than
+    # derived — an independently-authored path is what keeps this an
+    # external pin on the store's location instead of a tautology
+    # against the same helper the hook uses.
+    db = tmp_path / ".nexus" / "graph.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     _graph_with_a_dead_reference(db)
 
@@ -134,7 +138,11 @@ def test_doc_health_degrades_readably_when_there_is_no_graph(tmp_path):
 
 def test_hook_emits_additional_context_without_nexus_on_path(tmp_path):
     _venv_layout(tmp_path)
-    db = tmp_path / "docs" / "_build" / "html" / "_nexus" / "graph.db"
+    # Staged at the CONVENTION, spelled out as a literal rather than
+    # derived — an independently-authored path is what keeps this an
+    # external pin on the store's location instead of a tautology
+    # against the same helper the hook uses.
+    db = tmp_path / ".nexus" / "graph.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     _graph_with_a_dead_reference(db)
 
@@ -152,7 +160,11 @@ def test_hook_stays_silent_on_a_clean_project(tmp_path):
     """No findings must cost zero context, or the channel trains agents to
     skim past it on the day it matters."""
     _venv_layout(tmp_path)
-    db = tmp_path / "docs" / "_build" / "html" / "_nexus" / "graph.db"
+    # Staged at the CONVENTION, spelled out as a literal rather than
+    # derived — an independently-authored path is what keeps this an
+    # external pin on the store's location instead of a tautology
+    # against the same helper the hook uses.
+    db = tmp_path / ".nexus" / "graph.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     write_sqlite(KnowledgeGraph(), db)
 

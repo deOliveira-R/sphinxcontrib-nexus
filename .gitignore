@@ -5,7 +5,13 @@ dist/
 build/
 .venv/
 .pytest_cache/
-_nexus/
+# The graph store. `.nexus/` also holds config.toml and ontology.toml,
+# which are the project's own settings and DO belong in the repo — so the
+# derived artefacts are ignored by name, not the directory. (Ignoring the
+# directory would also stop git descending into it, hiding the settings.)
+.nexus/graph.db
+.nexus/graph.json
+.nexus/traces/
 *.db
 # Everything under .claude/ is machine-local EXCEPT rules/, which are
 # instruction-authority and belong to the repo — a rule that vanishes on

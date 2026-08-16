@@ -33,8 +33,9 @@ guide/python-api
 ## The graph of this project
 
 These docs are built with `sphinxcontrib.nexus` enabled, so building them
-writes a graph of nexus itself to `_build/html/_nexus/graph.db`. That is
-both a demonstration and a test: if the extension breaks on a real
+writes a graph of nexus itself to `.nexus/graph.db` at the repository
+root, and the interactive explorer to `_build/html/graph/graph.html`. That
+is both a demonstration and a test: if the extension breaks on a real
 codebase, its own documentation build is the first thing to notice.
 
 ```{nexus-graph}

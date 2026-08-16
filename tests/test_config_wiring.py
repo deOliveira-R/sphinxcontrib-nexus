@@ -51,41 +51,57 @@ def _build(srcdir: Path, outdir: Path) -> None:
 
 @pytest.fixture(scope="module")
 def unconfigured(tmp_path_factory):
-    """Control: no ``.nexus/`` at all."""
+    """Control: no ``.nexus/`` at all, so the project is UNANCHORED."""
     root = tmp_path_factory.mktemp("unconfigured")
     out = root / "out"
     _build(_project(root, None), out)
-    return out
+    return root, out
 
 
 @pytest.fixture(scope="module")
 def configured(tmp_path_factory):
-    """Same project, plus a config file that renames the output."""
+    """Same project, plus a config file that renames the explorer output."""
     root = tmp_path_factory.mktemp("configured")
     out = root / "out"
     _build(_project(root, '[graph]\noutput = "kg"\n'), out)
-    return out
+    return root, out
 
 
-def test_control_lands_at_the_default_output(unconfigured):
-    assert (unconfigured / "_nexus" / "graph.db").exists()
+def test_control_puts_everything_in_the_build_output(unconfigured):
+    """Unanchored: nothing declared a project, so nothing outlives the build.
+
+    ``root`` is a *guess* here — the source's parent, because nothing above
+    it claimed the tree — so writing a store there would drop a graph into
+    whatever directory the docs happen to sit under. The artefacts stay
+    with the output instead.
+    """
+    root, out = unconfigured
+    assert (out / "_nexus" / "graph.db").exists()
+    assert not (root / ".nexus").exists()
 
 
-def test_config_toml_moves_the_output(configured):
-    """The witness: only the config file differs between these two trees."""
-    assert (configured / "kg" / "graph.db").exists()
-    assert not (configured / "_nexus").exists(), (
+def test_a_config_file_anchors_the_store_outside_the_build(configured):
+    """The witness: only the config file differs between these two trees.
+
+    It buys two separable things — the store lifts OUT of the build tree
+    (which is what makes `traces/` survive a clean build), and ``output``
+    renames the explorer directory, now that key's only job.
+    """
+    root, out = configured
+    assert (root / ".nexus" / "graph.db").exists(), "the store did not anchor"
+    assert (out / "kg" / "graph.html").exists(), "the explorer did not move"
+    assert not (out / "_nexus").exists(), (
         "the default location was still written — conf.py is winning over "
         ".nexus/config.toml, so the precedence chain is not wired"
     )
 
 
 def test_the_graph_is_otherwise_the_same(unconfigured, configured):
-    """Renaming the output must not change what is in the graph."""
+    """Relocating the store must not change what is in the graph."""
     from sphinxcontrib.nexus.export import load_sqlite
 
-    a = load_sqlite(unconfigured / "_nexus" / "graph.db").nxgraph
-    b = load_sqlite(configured / "kg" / "graph.db").nxgraph
+    a = load_sqlite(unconfigured[1] / "_nexus" / "graph.db").nxgraph
+    b = load_sqlite(configured[0] / ".nexus" / "graph.db").nxgraph
 
     assert set(a.nodes) == set(b.nodes)
     assert a.number_of_edges() == b.number_of_edges()
@@ -98,7 +114,8 @@ def test_config_toml_is_found_from_a_nested_srcdir(tmp_path):
     assert srcdir.parent == root  # the config sits above srcdir, not beside it
     out = tmp_path / "out"
     _build(srcdir, out)
-    assert (out / "kg" / "graph.db").exists()
+    assert (root / ".nexus" / "graph.db").exists()
+    assert (out / "kg" / "graph.html").exists()
 
 
 def test_an_unreadable_config_fails_the_build_loudly(tmp_path):
@@ -109,21 +126,20 @@ def test_an_unreadable_config_fails_the_build_loudly(tmp_path):
         _build(srcdir, tmp_path / "out")
 
 
-def test_cli_finds_the_graph_from_config_with_no_db_flag(tmp_path):
-    """The CLI's whole reason for the config file.
+def test_cli_opens_the_graph_the_build_wrote_with_nothing_declared(tmp_path):
+    """Producer and consumer agree on the store WITHOUT being told.
 
-    Runs from a SUBDIRECTORY with no ``--db``, so a pass means the loader
-    walked up, read ``[graph].db``, and opened it — none of which the
-    legacy CWD-relative default could have done.
+    This is the end-to-end pin the retired ``[graph].db`` key used to need
+    a human to maintain: the build writes, the CLI reads, and the only
+    thing joining them is the convention. Nothing in this test names a
+    path, so nothing in it can go stale when the store moves.
+
+    Run from a SUBDIRECTORY with no ``--db``, so a pass also means root
+    discovery walked up — the cwd-relative default could not have found it.
     """
     root = tmp_path / "proj"
-    srcdir = _project(root, "")  # config written below, once we know the path
-    out = root / "site"
-    _build(srcdir, out)
-
-    rel = (out / "_nexus" / "graph.db").relative_to(root)
-    (root / ".nexus").mkdir(exist_ok=True)
-    (root / ".nexus" / "config.toml").write_text(f'[graph]\ndb = "{rel}"\n')
+    srcdir = _project(root, "")  # an empty config still anchors the project
+    _build(srcdir, root / "site")
 
     workdir = root / "docs"
     result = subprocess.run(
@@ -263,32 +279,31 @@ def _config(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_config_db_reports_the_declared_path(tmp_path):
-    """The witness for every shell consumer."""
-    root = tmp_path / "proj"
-    _project(root, '[graph]\ndb = "site/kg/graph.db"\n')
+def test_config_db_reports_the_derived_path(tmp_path):
+    """The witness for every shell consumer.
 
-    result = _config("db", "--project-root", str(root), cwd=tmp_path)
+    ⚠ This test USED to be one of a differs-only-by-the-config-file pair,
+    proving that ``[graph].db`` was read. That key is retired: the store is
+    derived from the root, so the config file can no longer move it and no
+    input exists that would make the two members of that pair disagree.
+    Keeping both would be a control that cannot fail — so the pair is
+    merged, and what survives is the property still worth pinning:
+    **the path is anchored to the project root, not to the caller's cwd.**
+    The call is deliberately made from a cwd that is not the root, so a
+    relative answer, or one resolved against the caller, fails here.
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == str((root / "site/kg/graph.db").resolve())
-
-
-def test_config_db_without_a_config_reports_the_legacy_default(tmp_path):
-    """Control: differs from the test above ONLY in the config file.
-
-    Also pins the anchoring. The legacy default is a RELATIVE path, and
-    this call is deliberately made from a cwd that is not the project
-    root — so a bare `_nexus/graph.db`, or one resolved against the
-    caller's directory, both fail here.
+    The coverage the pair used to give — that the build and the CLI open
+    the SAME file — did not disappear with the key; it moved to
+    ``test_cli_opens_the_graph_the_build_wrote_with_nothing_declared``,
+    which is end-to-end and names no path at all.
     """
     root = tmp_path / "proj"
-    _project(root, None)
+    _project(root, '[graph]\noutput = "kg"\n')
 
     result = _config("db", "--project-root", str(root), cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == str((root / "_nexus/graph.db").resolve())
+    assert result.stdout.strip() == str((root / ".nexus/graph.db").resolve())
 
 
 def test_config_lists_every_setting_when_given_no_key(tmp_path):

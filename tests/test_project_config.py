@@ -15,7 +15,7 @@ import pytest
 
 from sphinxcontrib.nexus.project import (
     CONFIG_DIR,
-    LEGACY_DB,
+    GRAPH_DB_NAME,
     ProjectConfig,
     find_project_root,
     resolve,
@@ -62,6 +62,76 @@ def test_root_is_found_from_a_subdirectory(tmp_path):
 
 def test_no_config_anywhere_returns_none_root(tmp_path):
     assert find_project_root(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Where the walk STOPS. `.nexus/` names two different things — a project's
+# settings directory and, at `$HOME`, the machine's usage-log directory —
+# so an unbounded walk adopts whichever it reaches first.
+# ---------------------------------------------------------------------------
+
+
+def test_the_home_directory_is_never_a_project_root(tmp_path, monkeypatch):
+    """``~/.nexus/`` is machine state: it holds ``usage.jsonl``.
+
+    It therefore exists on every machine that has ever run the MCP server,
+    and before this bound, ANY tree beneath ``$HOME`` without a config of
+    its own resolved its root to the home directory. Measured 2026-08-16 in
+    this very repository: ``find_project_root("<repo>/tests/roots")``
+    returned ``/Users/rodrigo``, and a docs-fixture build wrote ``graph.db``
+    and ``graph.json`` into the home directory.
+
+    The read failure had been live and silent for far longer than the write
+    one: answering with the wrong project's settings looks like an answer.
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / CONFIG_DIR).mkdir()
+    deep = tmp_path / "some" / "project"
+    deep.mkdir(parents=True)
+
+    assert find_project_root(deep) is None
+
+
+def test_a_checkout_boundary_stops_the_walk(tmp_path, monkeypatch):
+    """A ``.nexus/`` above a checkout belongs to a different project."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nb"))
+    (tmp_path / CONFIG_DIR).mkdir()  # an outer project's settings
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    deep = repo / "src" / "pkg"
+    deep.mkdir(parents=True)
+
+    assert find_project_root(deep) is None
+
+
+def test_a_worktree_boundary_stops_the_walk_too(tmp_path, monkeypatch):
+    """In a worktree or submodule ``.git`` is a FILE, not a directory."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nb"))
+    (tmp_path / CONFIG_DIR).mkdir()
+    repo = tmp_path / "wt"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+
+    assert find_project_root(repo) is None
+
+
+def test_the_checkouts_own_config_is_still_found(tmp_path, monkeypatch):
+    """Positive control: the bounds must not make discovery inert.
+
+    Without this, all three tests above would pass just as well if
+    ``find_project_root`` had been made to return ``None`` unconditionally
+    — which is the reading a bounded search is most likely to produce by
+    accident.
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nb"))
+    (tmp_path / CONFIG_DIR).mkdir()  # the outer project, which must NOT win
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / CONFIG_DIR).mkdir()
+    deep = repo / "src" / "pkg"
+    deep.mkdir(parents=True)
+
+    assert find_project_root(deep) == repo.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -196,24 +266,61 @@ def test_resolve_does_not_treat_false_as_absent():
 
 
 def test_explicit_db_flag_wins(tmp_path):
-    root = _write(tmp_path, '[graph]\ndb = "docs/_build/html/graph/graph.db"\n')
+    root = _write(tmp_path, "[graph]\noutput = 'graph'\n")
     assert resolve_db("/somewhere/else.db", root) == Path("/somewhere/else.db")
 
 
-def test_config_db_is_used_when_no_flag(tmp_path):
-    root = _write(tmp_path, '[graph]\ndb = "docs/_build/html/graph/graph.db"\n')
+def test_the_store_is_derived_from_the_root_not_declared(tmp_path):
+    """The graph lives beside the settings, and nothing has to say so.
+
+    This is the whole point of the convention: the surface already found
+    ``.nexus/`` — that is how it read the settings — so it can name the
+    database without being told, and there is no second declaration to
+    disagree with the build.
+    """
+    root = _write(tmp_path, "[graph]\noutput = 'graph'\n")
     assert resolve_db(None, root) == (
-        tmp_path / "docs" / "_build" / "html" / "graph" / "graph.db"
+        tmp_path / CONFIG_DIR / GRAPH_DB_NAME
     ).resolve()
 
 
-def test_legacy_default_when_nothing_declares_one(tmp_path):
-    """Unconfigured projects keep the pre-config behaviour exactly."""
-    assert resolve_db(None, tmp_path) == LEGACY_DB
+def test_an_unconfigured_project_still_names_a_store(tmp_path):
+    """No config file is a supported state, and it gets the same convention.
+
+    Previously this returned a working-directory-relative ``_nexus/graph.db``
+    that was "almost never right for a real project" by its own docstring.
+    One convention everywhere is the point; a second spelling reachable only
+    by having no config is a second spelling.
+    """
+    assert resolve_db(None, tmp_path) == (
+        tmp_path / CONFIG_DIR / GRAPH_DB_NAME
+    ).resolve()
 
 
 def test_db_resolves_from_a_subdirectory(tmp_path):
-    root = _write(tmp_path, '[graph]\ndb = "build/graph.db"\n')
+    """Root discovery walks up, so the CLI works from anywhere in the tree."""
+    root = _write(tmp_path, "[graph]\noutput = 'graph'\n")
     deep = tmp_path / "a" / "b"
     deep.mkdir(parents=True)
-    assert resolve_db(None, deep) == (root / "build" / "graph.db").resolve()
+    assert resolve_db(None, deep) == (root / CONFIG_DIR / GRAPH_DB_NAME).resolve()
+
+
+def test_the_retired_db_key_is_reported_not_silently_obeyed(tmp_path, caplog):
+    """A leftover ``db =`` must be loud, because it reads as authoritative.
+
+    The witness is real: ORPHEUS's own config carried
+    ``db = "docs/_build/html/graph/graph.db"`` until this change. Dropping
+    the key from ``KNOWN_KEYS`` is what turns a silently-ignored declaration
+    — which would leave a reader believing they had redirected the graph —
+    into a warning naming the key and the ones that survive.
+    """
+    root = _write(
+        tmp_path, '[graph]\ndb = "docs/_build/html/graph/graph.db"\n'
+    )
+    with caplog.at_level(logging.WARNING):
+        cfg = ProjectConfig.load(root)
+
+    assert ("graph", "db") in cfg.unknown_keys()
+    assert "unknown key 'db'" in caplog.text
+    # …and the declaration has NO effect: the store is still the convention.
+    assert cfg.resolved_db() == (tmp_path / CONFIG_DIR / GRAPH_DB_NAME).resolve()

@@ -42,6 +42,28 @@ CONFIG_DIR = ".nexus"
 #: The settings file inside :data:`CONFIG_DIR`.
 CONFIG_NAME = "config.toml"
 
+#: The graph database, inside :data:`CONFIG_DIR`. A **convention**, not a
+#: setting: every surface derives it from the project root, so there is no
+#: second place for it to be declared and therefore no way for two surfaces
+#: to disagree about where the graph is.
+GRAPH_DB_NAME = "graph.db"
+
+#: The JSON export, beside the database.
+GRAPH_JSON_NAME = "graph.json"
+
+#: The runtime-overlay sidecar directory, beside the database.
+#:
+#: This is *why* the store lives here rather than under the Sphinx output
+#: directory. Three artefacts had been sharing that one directory with three
+#: different lifetimes: ``graph.db``/``graph.json`` are derived and rewritten
+#: on every build; ``graph.html`` is derived *and* must be served from the
+#: HTML tree; but a trace is **durable state** — a profiled suite run costs
+#: minutes to reproduce, and :mod:`~sphinxcontrib.nexus.runtime` says the
+#: sidecar exists precisely so it survives the rebuild that replaces the
+#: database. Sitting in the build tree, it did not: ``rm -rf docs/_build``
+#: destroyed it. A directory's lifetime is its most-derived member's.
+TRACES_DIR_NAME = "traces"
+
 #: Every key this loader understands, by table. A key outside this map is
 #: reported (see :meth:`ProjectConfig.unknown_keys`) rather than silently
 #: dropped — a typo that is ignored without comment is the same defect as
@@ -49,7 +71,6 @@ CONFIG_NAME = "config.toml"
 KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     "graph": frozenset({
         "output",
-        "db",
         "extra_source_dirs",
         "exclude_patterns",
         "analyze_tests",
@@ -61,12 +82,6 @@ KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     "scope": frozenset({"prefixes"}),
     "catalog": frozenset({"errors"}),
 }
-
-#: Where the graph lands when neither a flag nor a config file says
-#: otherwise. Relative to the working directory, which is why it is
-#: almost never right for a real project — the artefacts sit under the
-#: Sphinx output directory. Kept as the pre-config behaviour.
-LEGACY_DB = Path("_nexus/graph.db")
 
 T = TypeVar("T")
 
@@ -89,16 +104,20 @@ def resolve_db(
     explicit: Path | str | None = None,
     start: Path | str | None = None,
 ) -> Path:
-    """Which graph database to open: flag > config > legacy default.
+    """Which graph database to open: an explicit flag, else the project's.
 
     Shared by the CLI and the MCP server so the answer cannot differ
     between them — a server pointed at a different graph than the CLI is
     a confusing failure that looks like a stale graph.
+
+    There is no third case any more. The location is a convention
+    (:data:`GRAPH_DB_NAME` inside :data:`CONFIG_DIR`), so it is *derived*
+    from the project root rather than declared, and the only way to open a
+    different graph is to say so explicitly.
     """
     if explicit is not None:
         return Path(explicit)
-    declared = ProjectConfig.load(start or Path.cwd()).resolved_db()
-    return declared if declared is not None else LEGACY_DB
+    return ProjectConfig.load(start or Path.cwd()).resolved_db()
 
 
 def find_project_root(start: Path | str) -> Path | None:
@@ -108,11 +127,35 @@ def find_project_root(start: Path | str) -> Path | None:
     does. Returns ``None`` when no configuration directory exists, which
     is a supported state — nexus must keep working on an unconfigured
     project.
+
+    ⚠ The walk **stops at the checkout**, for two reasons that are really
+    one: ``.nexus/`` names two different things.
+
+    *A repository boundary.* A ``.nexus/`` above a checkout belongs to a
+    different project, so a directory holding ``.git`` ends the search —
+    checked itself, then final. Without this an unconfigured sub-project
+    silently adopts its parent's settings.
+
+    *The user's own directory.* ``~/.nexus/`` exists on every machine that
+    has ever run the MCP server, because that is where ``usage.jsonl``
+    lives — it is machine state, not a project. Ascending into it made
+    ``$HOME`` the resolved root of every unconfigured tree beneath it.
+    Measured 2026-08-16: ``find_project_root("<repo>/tests/roots")``
+    returned ``/Users/rodrigo``, and a docs-fixture build consequently
+    wrote ``graph.db`` and ``graph.json`` into the home directory. Caught
+    only because moving the store made the write observable; as a *read*
+    it had been silently answering with the wrong project's config.
     """
+    home = Path.home().resolve()
     current = Path(start).resolve()
     for candidate in (current, *current.parents):
-        if (candidate / CONFIG_DIR).is_dir():
+        if candidate != home and (candidate / CONFIG_DIR).is_dir():
             return candidate
+        # A checkout is the outermost thing a project can be. `.git` is a
+        # directory in a normal clone and a FILE in a worktree or submodule,
+        # so test existence, not kind.
+        if (candidate / ".git").exists():
+            return None
     return None
 
 
@@ -196,24 +239,50 @@ class ProjectConfig:
 
     @property
     def output(self) -> str | None:
-        """Directory name the graph artefacts are written to."""
+        """Subdirectory of the Sphinx HTML output the *explorer page* is
+        written to.
+
+        This names one artefact, not the graph store. ``graph.html`` is the
+        only piece that has to live under the HTML tree, because it is
+        served: a page links it and the ``.. nexus-graph::`` directive
+        iframes it. The database, its JSON export and the runtime traces are
+        not served and do not belong to the build output — see
+        :data:`TRACES_DIR_NAME` for what that cost.
+        """
         return self._get("graph", "output")
 
     @property
-    def db(self) -> str | None:
-        """Project-relative path to the graph database.
+    def is_anchored(self) -> bool:
+        """Is there a real :data:`CONFIG_DIR` at :attr:`root`?
 
-        The CLI and the MCP server cannot derive this: the artefacts land
-        under the *Sphinx output directory*, which only the build knows.
-        So it is stated once here rather than retyped as ``--db`` on every
-        invocation. The extension warns when what it wrote does not match
-        what this declares, which is the only way the two can disagree.
+        ``False`` means no project declared itself anywhere above the source
+        — :meth:`load` then falls back to the starting directory, so
+        :attr:`root` is a guess rather than a discovery. The distinction
+        matters to the build: an anchored project has somewhere durable to
+        put its graph, an unanchored one has only its output directory.
         """
-        return self._get("graph", "db")
+        return (self.root / CONFIG_DIR).is_dir()
 
-    def resolved_db(self) -> Path | None:
-        path = self.db
-        return None if path is None else (self.root / path).resolve()
+    @property
+    def graph_dir(self) -> Path:
+        """Directory holding the graph store — the database, its JSON
+        export and the runtime traces.
+
+        It is :data:`CONFIG_DIR` itself, which makes the store *derivable*:
+        every surface already finds this directory (that is how it found the
+        settings), so none of them needs to be told where the graph is, and
+        there is no second declaration to fall out of step with the first.
+
+        Only meaningful when :attr:`is_anchored`. A build that is not
+        anchored must not write here — :attr:`root` would be an ancestor it
+        merely happens to sit under, which for a throwaway or vendored docs
+        tree is somebody else's project.
+        """
+        return self.root / CONFIG_DIR
+
+    def resolved_db(self) -> Path:
+        """Absolute path of this project's graph database."""
+        return (self.graph_dir / GRAPH_DB_NAME).resolve()
 
     @property
     def extra_source_dirs(self) -> list[str] | None:

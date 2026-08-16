@@ -84,8 +84,11 @@ All take `exclude` for substring filtering, on top of the built-in
 The static graph is *what can run*; an overlay is *what did*. Capture is
 consumer-side: run a workload under a tracer, then `runtime_ingest` joins
 the artifact onto node ids and stores it in a sidecar
-(`_nexus/traces/<run>.json`) — never in `graph.db`, which is rewritten on
-every build.
+(`<project root>/.nexus/traces/<run>.json`) — never in `graph.db`, which is
+rewritten on every build. The sidecar sits beside the database and outside
+the Sphinx build output on purpose: a trace is durable state that costs
+minutes to reproduce, and a directory a clean build deletes would take it
+with the derived artefacts.
 
 | Tool | Answers | Key args |
 |---|---|---|

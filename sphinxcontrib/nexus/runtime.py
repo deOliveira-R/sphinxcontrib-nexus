@@ -5,7 +5,7 @@ The static graph (``graph.db``) is *what can run*. A **runtime** overlay is
 implementation was reached, which branches were taken. It is a distinct graph
 *species* that composes with the static graph **by join on node-ID** — it is
 never written into ``graph.db`` (which is rebuilt on every ``sphinx-build``).
-It lives in a sidecar, ``_nexus/traces/<run>.json``, and re-binds to the live
+It lives in a sidecar, ``.nexus/traces/<run>.json``, and re-binds to the live
 graph at query time because node IDs are stable across rebuilds.
 
 This module is the **ingest + store** layer. The **overlay queries** that join
@@ -692,14 +692,27 @@ def ingest_viztracer(
     )
 
 
-# ── Sidecar store: _nexus/traces/<run>.json ─────────────────────────
+# ── Sidecar store: .nexus/traces/<run>.json ─────────────────────────
 
 
 class RuntimeStore:
-    """The ``_nexus/traces/`` directory of ingested runs (one JSON each)."""
+    """The ``.nexus/traces/`` directory of ingested runs (one JSON each)."""
 
     def __init__(self, directory: Path | str) -> None:
         self.dir = Path(directory)
+
+    @classmethod
+    def beside(cls, db_path: Path | str) -> "RuntimeStore":
+        """The store belonging to the graph at ``db_path``.
+
+        Every surface that has a database has a store, and this is the one
+        place that says how to get from one to the other — the CLI and the
+        MCP server both derive it here rather than each spelling
+        ``db.parent / "traces"`` for itself.
+        """
+        from sphinxcontrib.nexus.project import TRACES_DIR_NAME
+
+        return cls(Path(db_path).parent / TRACES_DIR_NAME)
 
     def _path(self, name: str) -> Path:
         return self.dir / f"{name}.json"

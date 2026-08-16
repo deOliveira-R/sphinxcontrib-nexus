@@ -1,17 +1,28 @@
 # CLI
 
 Every command writes JSON to stdout unless noted, so they compose with
-`jq` and drop into shell hooks. The default database is
-`_nexus/graph.db` under the docs build directory; pass `--db` to point
-elsewhere.
+`jq` and drop into shell hooks.
+
+Every command also finds the graph on its own, so `--db` is optional
+throughout this page: the database lives at `<project root>/.nexus/graph.db`,
+where the project root is the directory holding `.nexus/`. The location is
+a **convention derived from the root**, not a setting — there is no config
+key for it, and so no second declaration for a hook or a script to fall out
+of step with. A script that needs the path asks for it:
+
+```bash
+db=$(nexus config db --project-root "$root")
+```
+
+Pass `--db` only to open a *different* graph.
 
 ## Setup and serving
 
 ```bash
 nexus setup                 # install skills for Claude Code / Cursor / Codex
-nexus serve --db <path>     # MCP server over stdio
-nexus analyze <src> --db <path>
-nexus status --db <path>    # node/edge counts by type
+nexus serve                 # MCP server over stdio
+nexus analyze <src>
+nexus status                # node/edge counts by type
 ```
 
 `nexus analyze` indexes Python source without Sphinx, for projects that
@@ -104,5 +115,8 @@ nexus visualize --db <path>     # interactive force-directed HTML
 nexus ingest <file> --db <path> --llm-command <cmd>
 ```
 
-A build also writes `_nexus/graph.html` automatically, and the
-`.. nexus-graph::` directive embeds it in a page.
+A build also writes the explorer page automatically, to `graph/graph.html`
+under the Sphinx HTML output directory (`[graph].output` names that
+subdirectory and nothing else), and the `.. nexus-graph::` directive embeds
+it in a page. It is the one artefact that stays in the build tree, because
+it is the one that has to be *served* from it.

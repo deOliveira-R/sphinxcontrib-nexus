@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sphinxcontrib.nexus.project import ProjectConfig, resolve
+from sphinxcontrib.nexus.project import (
+    GRAPH_DB_NAME,
+    GRAPH_JSON_NAME,
+    ProjectConfig,
+    resolve,
+)
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -73,7 +78,7 @@ def _effective(app: Sphinx) -> EffectiveSettings:
 
     settings = EffectiveSettings(
         project=cfg,
-        output=pick("output", cfg.output, "_nexus"),
+        output=pick("output", cfg.output, DEFAULT_OUTPUT),
         ast_analyze=bool(pick("ast_analyze", None, True)),
         analyze_tests=bool(pick("analyze_tests", cfg.analyze_tests, True)),
         test_patterns=list(
@@ -172,6 +177,14 @@ _BASE_EXCLUDE_PATTERNS: tuple[str, ...] = (
     ".venv/*",
     "__pycache__/*",
 )
+
+# Subdirectory of the Sphinx HTML output nexus writes its build artefacts
+# to. ONE constant because it is consumed twice — as the `pick()` fallback
+# and as the `nexus_output` config-value default — and two spellings of one
+# default is a coherence obligation nothing checks. (Measured 2026-08-16:
+# changing one of the two silently relocated every unanchored project's
+# graph, and 26 tests found it.)
+DEFAULT_OUTPUT = "_nexus"
 
 # Default glob patterns (POSIX-style, matched against the path relative
 # to each source dir via fnmatch) used to identify Python test modules.
@@ -387,32 +400,44 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     # Same project-root convention as _run_ast_analysis.
     stamp_provenance(graph, Path(app.srcdir).parent)
 
-    outdir = Path(app.outdir) / settings.output
-    outdir.mkdir(parents=True, exist_ok=True)
+    # `<output>` under the HTML tree is where nexus's build artefacts land.
+    # The explorer page always stays here — it is the one served artefact, a
+    # page links it and `.. nexus-graph::` iframes it.
+    explorer_dir = Path(app.outdir) / settings.output
+    explorer_dir.mkdir(parents=True, exist_ok=True)
 
-    db_path = outdir / "graph.db"
+    # An ANCHORED project — one that declared itself with a `.nexus/` — keeps
+    # its graph STORE there instead, root-relative and derivable, so no
+    # surface has to be told where the graph is. It also takes the store out
+    # of a directory `rm -rf docs/_build` empties, which is what the runtime
+    # traces need: `graph.db` is cheap to rebuild, a profiled run is not.
+    #
+    # Unanchored, the store stays with the build. `root` is then a guess (the
+    # source's parent, since nothing above it claimed the tree) and writing a
+    # graph into a directory that merely happens to be an ancestor would put
+    # it in somebody else's project — for a docs fixture, in the repository
+    # holding the fixture.
+    store = (
+        settings.project.graph_dir
+        if settings.project.is_anchored
+        else explorer_dir
+    )
+    store.mkdir(parents=True, exist_ok=True)
+
+    db_path = store / GRAPH_DB_NAME
     write_sqlite(graph, db_path)
     logger.info("Knowledge graph (SQLite) written to %s", db_path)
 
-    # The build is the only place that knows BOTH where the graph was
-    # written and what the config tells the CLI to open. If those differ
-    # the CLI silently reads a stale graph — a failure that presents as
-    # "the graph is out of date" and sends people to rebuild, repeatedly.
-    declared = settings.project.resolved_db()
-    if declared is not None and declared != db_path.resolve():
-        logger.warning(
-            "nexus: [graph].db in %s points at %s, but this build wrote %s — "
-            "the CLI and MCP server will open the wrong graph",
-            settings.project.source, declared, db_path.resolve(),
-        )
-
-    json_path = outdir / "graph.json"
+    json_path = store / GRAPH_JSON_NAME
     write_json(graph, json_path)
     logger.info("Knowledge graph (JSON) written to %s", json_path)
 
-    # Generate interactive HTML visualization
     from sphinxcontrib.nexus.visualize import generate_html
-    html_path = generate_html(db_path, max_nodes=settings.max_viz_nodes)
+    html_path = generate_html(
+        db_path,
+        output=explorer_dir / "graph.html",
+        max_nodes=settings.max_viz_nodes,
+    )
     logger.info("Knowledge graph (HTML viz) written to %s", html_path)
 
 
@@ -444,7 +469,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
             raw_node = nodes.raw("", raw_html, format="html")
             return [raw_node]
 
-    app.add_config_value("nexus_output", "_nexus", "env")
+    app.add_config_value("nexus_output", DEFAULT_OUTPUT, "env")
     app.add_config_value("nexus_ast_analyze", True, "env")
     app.add_config_value("nexus_extra_source_dirs", [], "env")
     app.add_config_value("nexus_max_viz_nodes", 300, "env")

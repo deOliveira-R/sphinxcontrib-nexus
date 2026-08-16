@@ -8,11 +8,11 @@ invoked. It is a finding, not a suggestion to go look for one.
 
 ## Dead documentation references
 
-!`N="${CLAUDE_PROJECT_DIR:-.}/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-${CLAUDE_PROJECT_DIR:-.}/docs/_build/html/_nexus/graph.db}"; if [ -n "$N" ] && [ -f "$D" ]; then "$N" dead-references --db "$D" --format text --limit 25; else echo "(nexus or graph not found — run 'nexus setup' and build the docs; set NEXUS_DB to override the graph path)"; fi`
+!`R="${CLAUDE_PROJECT_DIR:-.}"; N="$R/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-$([ -n "$N" ] && "$N" config db --project-root "$R" 2>/dev/null)}"; if [ -n "$N" ] && [ -n "$D" ] && [ -f "$D" ]; then "$N" dead-references --db "$D" --format text --limit 25; else echo "(nexus or graph not found — run 'nexus setup' and build the docs; the graph lives at <project root>/.nexus/graph.db, which 'nexus config db' prints; set NEXUS_DB to override it)"; fi`
 
 ## Timestamp drift
 
-!`N="${CLAUDE_PROJECT_DIR:-.}/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-${CLAUDE_PROJECT_DIR:-.}/docs/_build/html/_nexus/graph.db}"; if [ -n "$N" ] && [ -f "$D" ]; then "$N" staleness --db "$D" 2>/dev/null | head -40; fi`
+!`R="${CLAUDE_PROJECT_DIR:-.}"; N="$R/.venv/bin/nexus"; [ -x "$N" ] || N="$(command -v nexus 2>/dev/null)"; D="${NEXUS_DB:-$([ -n "$N" ] && "$N" config db --project-root "$R" 2>/dev/null)}"; if [ -n "$N" ] && [ -n "$D" ] && [ -f "$D" ]; then "$N" staleness --db "$D" 2>/dev/null | head -40; fi`
 
 ---
 

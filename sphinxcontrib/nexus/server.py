@@ -4,7 +4,7 @@ Exposes the full GraphQuery API as MCP tools, making the knowledge
 graph queryable by Claude and other MCP clients.
 
 Usage:
-    nexus serve --db _nexus/graph.db
+    nexus serve                      # opens <project root>/.nexus/graph.db
     # or via MCP config: command = "nexus", args = ["serve", "--db", "path/to/graph.db"]
 """
 
@@ -139,7 +139,7 @@ def _get_query() -> GraphQuery:
 
 
 def _get_runtime_store():
-    """The runtime-overlay sidecar store (``_nexus/traces/``), beside the
+    """The runtime-overlay sidecar store (``.nexus/traces/``), beside the
     active graph DB. Dynamic-trace runs live here, NOT in ``graph.db``
     (which is rebuilt on every ``sphinx-build``), and re-bind to the live
     graph by node-ID at query time."""
@@ -147,7 +147,7 @@ def _get_runtime_store():
 
     if _workspace is None:
         raise RuntimeError("No active workspace. Call serve() first.")
-    return RuntimeStore(_workspace.db_path.parent / "traces")
+    return RuntimeStore.beside(_workspace.db_path)
 
 
 def _load_run(name: str):
@@ -754,7 +754,7 @@ def runtime_ingest(
     ran* — call counts, time, which edges fired, which polymorphic impl was
     reached, which branches were taken. Capture is consumer-side: run a
     canonical workload under a tracer, then hand the artifact here. Stored in
-    `_nexus/traces/<run>.json` (a sidecar — never in graph.db, which is rebuilt
+    `.nexus/traces/<run>.json` (a sidecar — never in graph.db, which is rebuilt
     on every sphinx-build) and re-bound to the live graph at query time.
 
     Args:
@@ -1188,7 +1188,7 @@ def use_workspace(root: str) -> str:
             (e.g. ``sn-nd-layout``), its branch name, or its absolute
             root path. Its graph is expected at the same root-relative
             location as the active database
-            (e.g. ``docs/_build/html/_nexus/graph.db``).
+            (``.nexus/graph.db``).
     """
     if _workspace is None:
         return to_json({"error": "Graph not loaded. Call serve() first."})

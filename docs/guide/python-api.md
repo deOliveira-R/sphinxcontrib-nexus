@@ -5,9 +5,12 @@ wrap it in a query object, ask.
 
 ```python
 from sphinxcontrib.nexus.export import load_sqlite
+from sphinxcontrib.nexus.project import resolve_db
 from sphinxcontrib.nexus.query import GraphQuery
 
-kg = load_sqlite("docs/_build/html/_nexus/graph.db")
+# `<project root>/.nexus/graph.db` — derived from the directory holding
+# `.nexus/`, so ask for it rather than writing the path out.
+kg = load_sqlite(resolve_db())
 q = GraphQuery(kg)
 
 q.query("ndarray", node_types=["external"])
@@ -54,8 +57,9 @@ several checkouts without paying a full load.
 
 ```python
 from sphinxcontrib.nexus.export import read_sqlite_metadata
+from sphinxcontrib.nexus.project import resolve_db
 
-meta = read_sqlite_metadata("docs/_build/html/_nexus/graph.db")
+meta = read_sqlite_metadata(resolve_db())
 print(meta["provenance"]["git_commit"])
 ```
 

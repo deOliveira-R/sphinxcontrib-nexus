@@ -58,8 +58,15 @@ jobs:
           from pathlib import Path
           from sphinxcontrib.nexus.export import load_sqlite
 
+          # NOT `resolve_db()`. That answers for an ANCHORED project — one
+          # that declared itself with a `.nexus/` — and this repository
+          # deliberately has none: adding one would capture every docs
+          # FIXTURE under tests/ into the repository's own store, since
+          # root discovery walks up. Unanchored, the graph goes with the
+          # build output at `<outdir>/<[graph].output>`; both halves are
+          # named on the sphinx line above, plus the `_nexus` default.
           db = Path("docs/_build/html/_nexus/graph.db")
-          assert db.exists(), "no graph written by the docs build"
+          assert db.exists(), f"no graph written by the docs build at {db}"
           g = load_sqlite(db).nxgraph
           # Guards the shape, not a magic number: a build that silently
           # extracted nothing would still write a valid empty database.
@@ -74,8 +81,8 @@ jobs:
 
       - name: Nexus must not report drift in its own documentation
         run: |
-          python -m sphinxcontrib.nexus.cli dead-references \
-            --db docs/_build/html/_nexus/graph.db --exit-code
+          python -m sphinxcontrib.nexus.cli dead-references --exit-code \
+            --db docs/_build/html/_nexus/graph.db
 
   pyright:
     runs-on: ubuntu-latest

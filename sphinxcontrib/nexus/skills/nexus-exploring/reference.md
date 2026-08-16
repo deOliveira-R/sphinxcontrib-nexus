@@ -40,7 +40,7 @@ This file is shared across all nexus-* skills.
 | `protocol_conformers` | Classes satisfying a Protocol's method-set without declaring it | `min_methods`, `exclude`, `limit` |
 
 ### Runtime Overlay (dynamic execution-flow — the smell family's dynamic counterpart)
-The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then `runtime_ingest` joins the artifact onto node-IDs and stores it in a sidecar (`_nexus/traces/<run>.json`) — never in `graph.db`, which is rebuilt on every `sphinx-build`. The query tools take `run` as one name OR comma-separated names to **union the canonical suite**.
+The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then `runtime_ingest` joins the artifact onto node-IDs and stores it in a sidecar (`<project root>/.nexus/traces/<run>.json`) — never in `graph.db`, which is rebuilt on every `sphinx-build`. The sidecar sits beside the database, *outside* the Sphinx build output, because it is durable state: a profiled run costs minutes to reproduce, and a directory a clean build deletes would destroy it. The query tools take `run` as one name OR comma-separated names to **union the canonical suite**.
 | Tool | What it answers | Key args |
 |------|----------------|----------|
 | `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` trace on the graph | `artifact`, `kind`, `run`, `source_prefix` (list), `root` |
@@ -139,7 +139,9 @@ Wildcards: `*` matches any type. `name=prefix*` for prefix match.
 
 ## CLI Commands (for ! injection)
 
-All output JSON to stdout. Default db: `_nexus/graph.db`.
+All output JSON to stdout. `--db` is optional: each command derives the
+project's graph at `<project root>/.nexus/graph.db`, which `nexus config db`
+prints. Pass `--db` only to open a different graph.
 
 ```bash
 nexus callers <node_id> --db <path> [--transitive] [--max-depth 3]

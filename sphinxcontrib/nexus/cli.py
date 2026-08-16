@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     analyze.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db. "
+        help="SQLite database path. Defaults to the project's own graph, <project root>/.nexus/graph.db — `nexus config db` prints it. "
         "Merges with existing graph if present.",
     )
     analyze.add_argument(
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
+        help="SQLite database path. Defaults to the project's own graph, <project root>/.nexus/graph.db — `nexus config db` prints it.",
     )
     serve_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     file_brief_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
+        help="SQLite database path. Defaults to the project's own graph, <project root>/.nexus/graph.db — `nexus config db` prints it.",
     )
     file_brief_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     status_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
+        help="SQLite database path. Defaults to the project's own graph, <project root>/.nexus/graph.db — `nexus config db` prints it.",
     )
 
     # --- query ---
@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     viz_cmd.add_argument(
         "--output", type=Path, default=None,
-        help="Output HTML file (default: alongside graph.db).",
+        help="Output HTML file (default: alongside graph.db, i.e. in .nexus/; the Sphinx build instead writes it under the HTML output so the page can be served).",
     )
     viz_cmd.add_argument(
         "--max-nodes", type=int, default=500,
@@ -1756,7 +1756,7 @@ def _run_protocol_conformers(args: argparse.Namespace) -> int:
 
 def _runtime_store(db_path: Path):
     from sphinxcontrib.nexus.runtime import RuntimeStore
-    return RuntimeStore(db_path.parent / "traces")
+    return RuntimeStore.beside(db_path)
 
 
 def _runtime_load(db_path: Path, name: str):
