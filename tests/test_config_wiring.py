@@ -134,6 +134,57 @@ def test_cli_finds_the_graph_from_config_with_no_db_flag(tmp_path):
     assert "nodes" in result.stdout, result.stdout
 
 
+def test_no_subparser_carries_a_hardcoded_db_default():
+    """Every ``--db`` must default to None so post-parse resolution runs.
+
+    This pins a CLASS of defect, not the instance that produced it. The
+    original sweep replaced a multi-line spelling
+    (``"--db", type=Path, default=Path(...),``) and silently missed six
+    single-line ones (``add_argument("--db", type=Path, default=Path(...))``),
+    so those verbs kept the legacy CWD-relative default and ignored the
+    config — returning an empty result that reads exactly like "nothing
+    found".
+
+    A grep is the wrong instrument: it can only match spellings someone
+    thought of, and the miss above was purely a line-break. The AST sees
+    every ``add_argument`` call however it is written.
+
+    ⚠ The BETTER gate is walking the constructed parser, which would also
+    catch a default set through some path the AST cannot see. That needs
+    ``main()``'s inline parser extracted into a ``build_parser()`` — worth
+    doing, and deliberately not bundled here.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    import sphinxcontrib.nexus.cli as cli_mod
+
+    source = cli_mod.__file__
+    assert source is not None, "cli module is not file-backed"
+    tree = ast.parse(_Path(source).read_text())
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        if not any(
+            isinstance(a, ast.Constant) and a.value == "--db" for a in node.args
+        ):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "default" and not (
+                isinstance(kw.value, ast.Constant) and kw.value.value is None
+            ):
+                offenders.append(f"line {node.lineno}: {ast.unparse(kw.value)}")
+
+    assert offenders == [], (
+        "these --db arguments hardcode a default, so post-parse resolution "
+        f"never runs and .nexus/config.toml cannot reach them: {offenders}"
+    )
+
+
 class _StubConfig:
     """Just enough of ``app.config`` for ``_effective``'s ``getattr``."""
 

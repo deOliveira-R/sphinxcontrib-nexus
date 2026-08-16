@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     analyze.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path (default: _nexus/graph.db). "
+        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db. "
         "Merges with existing graph if present.",
     )
     analyze.add_argument(
@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path (default: _nexus/graph.db).",
+        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
     )
     serve_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     file_brief_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path (default: _nexus/graph.db).",
+        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
     )
     file_brief_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     status_cmd.add_argument(
         "--db", type=Path, default=None,
-        help="SQLite database path (default: _nexus/graph.db).",
+        help="SQLite database path. Defaults to [graph].db in .nexus/config.toml, else _nexus/graph.db.",
     )
 
     # --- query ---
@@ -621,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     rt_ing.add_argument("artifact", type=Path,
                         help="cProfile/pstats dump, coverage json --branch "
                              "report, or viztracer JSON trace.")
-    rt_ing.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_ing.add_argument("--db", type=Path, default=None)
     rt_ing.add_argument("--kind", choices=["cprofile", "coverage", "viztracer"],
                         default="cprofile")
     rt_ing.add_argument("--run", type=str, default="default",
@@ -636,13 +636,13 @@ def main(argv: list[str] | None = None) -> int:
     rt_runs = sub.add_parser(
         "runtime-runs", help="List ingested runtime runs (JSON)",
     )
-    rt_runs.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_runs.add_argument("--db", type=Path, default=None)
 
     rt_hot = sub.add_parser(
         "runtime-hotspots",
         help="Nodes ranked by an observed runtime metric — the dynamic stage DAG (JSON)",
     )
-    rt_hot.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_hot.add_argument("--db", type=Path, default=None)
     rt_hot.add_argument("--run", type=str, default="default",
                         help="Run name, or comma-separated names to union.")
     rt_hot.add_argument("--by", choices=["cumtime", "ncalls", "tottime"],
@@ -654,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime-edges",
         help="Runtime call edges overlaid on static CALLS — dispatch/dead detection (JSON)",
     )
-    rt_edges.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_edges.add_argument("--db", type=Path, default=None)
     rt_edges.add_argument("--run", type=str, default="default",
                           help="Run name, or comma-separated names to union "
                                "(real cross-suite dead-code for --mode dead).")
@@ -672,7 +672,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime-branches",
         help="Per-node branch coverage — the missing-type / accidental-branch signal (JSON)",
     )
-    rt_br.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_br.add_argument("--db", type=Path, default=None)
     rt_br.add_argument("--run", type=str, default="default",
                        help="Run name, or comma-separated names to union.")
     rt_br.add_argument("--node", type=str, default="",
@@ -686,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime-timeline",
         help="Observed execution sequence from a viztracer run — the stage DAG (JSON)",
     )
-    rt_tl.add_argument("--db", type=Path, default=Path("_nexus/graph.db"))
+    rt_tl.add_argument("--db", type=Path, default=None)
     rt_tl.add_argument("--run", type=str, default="default")
     rt_tl.add_argument("--max-depth", type=int, default=-1,
                        help="Keep nodes with stack depth <= this (-1 = all; "
@@ -1116,10 +1116,13 @@ def _run_setup(args: argparse.Namespace) -> int:
     # rather than on the spawn cwd, which is unspecified.
     project_dir = "${CLAUDE_PROJECT_DIR:-.}"
     nexus_cmd = shutil.which("nexus") or f"{project_dir}/.venv/bin/nexus"
-    db_path = f"{project_dir}/docs/_build/html/_nexus/graph.db"
+    # No --db: the server resolves it from --project-root via
+    # .nexus/config.toml, falling back to the legacy default. Emitting one
+    # here would re-introduce a second declaration of the graph path that
+    # nothing can detect diverging from where the build actually writes.
     nexus_server_config = {
         "command": nexus_cmd,
-        "args": ["serve", "--db", db_path, "--project-root", project_dir],
+        "args": ["serve", "--project-root", project_dir],
     }
 
     if args.global_install:
