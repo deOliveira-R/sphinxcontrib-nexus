@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import logging
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from sphinxcontrib.nexus.project import (
     CONFIG_DIR,
+    LEGACY_DB,
     ProjectConfig,
     find_project_root,
     resolve,
+    resolve_db,
 )
 
 
@@ -185,3 +188,32 @@ def test_resolve_does_not_treat_false_as_absent():
     """`infer_implements = false` must beat a `True` default."""
     assert resolve(None, False, default=True) is False
     assert resolve(None, 0, default=99) == 0
+
+
+# ---------------------------------------------------------------------------
+# Which graph the CLI and the server open
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_db_flag_wins(tmp_path):
+    root = _write(tmp_path, '[graph]\ndb = "docs/_build/html/graph/graph.db"\n')
+    assert resolve_db("/somewhere/else.db", root) == Path("/somewhere/else.db")
+
+
+def test_config_db_is_used_when_no_flag(tmp_path):
+    root = _write(tmp_path, '[graph]\ndb = "docs/_build/html/graph/graph.db"\n')
+    assert resolve_db(None, root) == (
+        tmp_path / "docs" / "_build" / "html" / "graph" / "graph.db"
+    ).resolve()
+
+
+def test_legacy_default_when_nothing_declares_one(tmp_path):
+    """Unconfigured projects keep the pre-config behaviour exactly."""
+    assert resolve_db(None, tmp_path) == LEGACY_DB
+
+
+def test_db_resolves_from_a_subdirectory(tmp_path):
+    root = _write(tmp_path, '[graph]\ndb = "build/graph.db"\n')
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    assert resolve_db(None, deep) == (root / "build" / "graph.db").resolve()

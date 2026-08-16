@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sphinxcontrib.nexus import __version__
+from sphinxcontrib.nexus.project import resolve_db
 from sphinxcontrib.nexus.install import MANIFEST_NAME, Payload
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Directory to scan for .py files.",
     )
     analyze.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path (default: _nexus/graph.db). "
         "Merges with existing graph if present.",
     )
@@ -124,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Start MCP server (stdio) over the knowledge graph",
     )
     serve_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path (default: _nexus/graph.db).",
     )
     serve_cmd.add_argument(
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         help="List project checkouts (git worktrees) and their graphs",
     )
     workspaces_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path of the active checkout.",
     )
     workspaces_cmd.add_argument(
@@ -159,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Source file; relative paths resolve against --project-root.",
     )
     file_brief_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path (default: _nexus/graph.db).",
     )
     file_brief_cmd.add_argument(
@@ -178,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Show graph summary: node/edge counts by type",
     )
     status_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path (default: _nexus/graph.db).",
     )
 
@@ -192,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Search text (case-insensitive substring match).",
     )
     query_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
         help="SQLite database path.",
     )
     query_cmd.add_argument(
@@ -214,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID of the symbol (e.g., 'py:function:sn_solver.solve_sn').",
     )
     impact_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     impact_cmd.add_argument(
         "--direction", default="upstream",
@@ -241,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID of a code symbol or equation.",
     )
     prov_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
 
     # --- coverage ---
@@ -250,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Verification coverage: which equations have code + tests",
     )
     cov_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     cov_cmd.add_argument(
         "--status", default="",
@@ -271,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Detect documentation pages that drifted from code",
     )
     stale_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     stale_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -291,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Package to migrate to (e.g., 'jax.numpy').",
     )
     mig_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
 
     # --- ingest ---
@@ -304,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Document to ingest (PDF, txt, md, rst, tex).",
     )
     ingest_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     ingest_cmd.add_argument(
         "--llm", default=None,
@@ -318,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Open interactive graph explorer in browser (Sigma.js WebGL)",
     )
     viz_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     viz_cmd.add_argument(
         "--output", type=Path, default=None,
@@ -336,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Session briefing: stats, stale docs, coverage gaps, recent changes (JSON)",
     )
     briefing_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     briefing_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -352,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID (e.g., 'py:function:orpheus.sn.solver.solve_sn').",
     )
     context_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     context_cmd.add_argument(
         "--limit-per-type", type=int, default=25,
@@ -370,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID to query.",
     )
     neighbors_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     neighbors_cmd.add_argument(
         "--direction", default="both",
@@ -392,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID of the failing test function.",
     )
     trace_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
 
     # --- retest ---
@@ -401,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Minimum set of tests to re-run after changes (JSON)",
     )
     retest_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     retest_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -418,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Detect which symbols changed in git and their impact (JSON)",
     )
     changes_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     changes_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -435,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Detect functional communities of tightly connected symbols (JSON)",
     )
     communities_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     communities_cmd.add_argument(
         "--min-size", type=int, default=3,
@@ -448,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Find bridge nodes connecting separate communities (JSON)",
     )
     bridges_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     bridges_cmd.add_argument(
         "--top-n", type=int, default=10,
@@ -461,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Most connected nodes by degree (JSON)",
     )
     god_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     god_cmd.add_argument(
         "--top-n", type=int, default=10,
@@ -474,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Functions that may belong inside a class — Feature Envy / 'native place' (JSON)",
     )
     np_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     np_cmd.add_argument(
         "--min-callers", type=int, default=1,
@@ -496,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Independent implementations of the same computation — twin paths (JSON)",
     )
     tp_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     tp_cmd.add_argument(
         "--min-similarity", type=float, default=0.7,
@@ -523,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Tags discriminated at multiple sites — candidate missing types (JSON)",
     )
     disc_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     disc_cmd.add_argument(
         "--min-sites", type=int, default=2,
@@ -545,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Functions/methods with no static callers — dead-code candidates (JSON)",
     )
     dead_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     dead_cmd.add_argument(
         "--exclude", type=str, default="",
@@ -570,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
              "longer exist (Sphinx renders these as plain text, no warning)",
     )
     deadref_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     deadref_cmd.add_argument(
         "--limit", type=int, default=50,
@@ -597,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Classes satisfying a Protocol's method-set without declaring it (JSON)",
     )
     pc_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     pc_cmd.add_argument(
         "--min-methods", type=int, default=2,
@@ -699,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Detect execution flows from entry points (JSON)",
     )
     processes_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     processes_cmd.add_argument(
         "--min-length", type=int, default=3,
@@ -728,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Target node ID.",
     )
     sp_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     sp_cmd.add_argument(
         "--max-hops", type=int, default=8,
@@ -745,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Query pattern, e.g. 'function -calls-> function'.",
     )
     gq_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     gq_cmd.add_argument(
         "--limit", type=int, default=50,
@@ -766,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         help="New symbol name.",
     )
     rename_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     rename_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -786,7 +787,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID of the function.",
     )
     callers_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     callers_cmd.add_argument(
         "--transitive", action="store_true",
@@ -807,7 +808,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Node ID of the function.",
     )
     callees_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     callees_cmd.add_argument(
         "--transitive", action="store_true",
@@ -824,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Complete V&V audit: coverage + staleness + gaps (JSON)",
     )
     audit_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     audit_cmd.add_argument(
         "--project-root", type=Path, default=None,
@@ -847,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         help="V&V gaps: untagged tests, unverified equations, missing err catchers (JSON)",
     )
     gaps_cmd.add_argument(
-        "--db", type=Path, default=Path("_nexus/graph.db"),
+        "--db", type=Path, default=None,
     )
     gaps_cmd.add_argument(
         "--module", default=None,
@@ -864,6 +865,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    # Resolve --db ONCE, here, instead of as an argparse default repeated
+    # on each of the 36 subparsers. argparse cannot consult
+    # ``.nexus/config.toml``, and a literal repeated 36 times is a literal
+    # with 36 chances to drift. Post-parse, ``None`` unambiguously means
+    # "the user said nothing", which is what the precedence chain needs.
+    if hasattr(args, "db"):
+        args.db = resolve_db(args.db, getattr(args, "project_root", None))
 
     verbose = getattr(args, "verbose", False)
     logging.basicConfig(

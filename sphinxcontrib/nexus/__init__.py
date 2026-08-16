@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from sphinxcontrib.nexus.project import ProjectConfig, resolve
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -14,6 +17,76 @@ if TYPE_CHECKING:
 __version__ = "0.17.0"
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EffectiveSettings:
+    """Settings after ``.nexus/config.toml`` is resolved over ``conf.py``.
+
+    Resolved ONCE per build rather than at each of the seven consumption
+    sites. A precedence rule re-applied at N consumers is N chances to
+    drift, and the rule is a property of the settings rather than a
+    requirement on whoever reads them.
+    """
+
+    project: ProjectConfig
+    output: str
+    ast_analyze: bool
+    analyze_tests: bool
+    test_patterns: list[str]
+    extra_source_dirs: list[str]
+    exclude_patterns: list[str]
+    max_viz_nodes: int
+
+
+def _effective(app: Sphinx) -> EffectiveSettings:
+    """Resolve settings for this build, caching them on the application.
+
+    Precedence is ``.nexus/config.toml`` > ``conf.py`` > default. The file
+    wins because it is the surface the CLI and the MCP server can also
+    read; ``conf.py`` stays supported and is the migration source. When
+    both set the same key to *different* values the override is logged —
+    a setting that changes silently is the kind of surprise that costs an
+    hour to find.
+    """
+    cached = getattr(app, "_nexus_effective", None)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    cfg = ProjectConfig.load(Path(app.srcdir).parent)
+
+    def pick(name: str, file_value: Any, default: Any) -> Any:
+        conf_value = getattr(app.config, f"nexus_{name}", None)
+        if (
+            file_value is not None
+            and conf_value is not None
+            and conf_value != default
+            and file_value != conf_value
+        ):
+            logger.info(
+                "nexus: .nexus/config.toml sets %s=%r, overriding conf.py's %r",
+                name, file_value, conf_value,
+            )
+        return resolve(file_value, conf_value, default=default)
+
+    settings = EffectiveSettings(
+        project=cfg,
+        output=pick("output", cfg.output, "_nexus"),
+        ast_analyze=bool(pick("ast_analyze", None, True)),
+        analyze_tests=bool(pick("analyze_tests", cfg.analyze_tests, True)),
+        test_patterns=list(
+            pick("test_patterns", cfg.test_patterns, list(DEFAULT_TEST_PATTERNS))
+        ),
+        extra_source_dirs=list(pick("extra_source_dirs", cfg.extra_source_dirs, [])),
+        exclude_patterns=list(
+            pick("source_exclude_patterns", cfg.exclude_patterns, [])
+        ),
+        max_viz_nodes=int(pick("max_viz_nodes", cfg.max_viz_nodes, 300)),
+    )
+    if cfg.source is not None:
+        logger.info("nexus: project configuration read from %s", cfg.source)
+    app._nexus_effective = settings  # type: ignore[attr-defined]
+    return settings
 
 
 def _on_env_check_consistency(app: Sphinx, env: BuildEnvironment) -> None:
@@ -160,11 +233,11 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     else:
         source_dirs = [project_root]
 
-    test_patterns = list(app.config.nexus_test_patterns)
-    analyze_tests = bool(app.config.nexus_analyze_tests)
-    user_excludes = list(getattr(app.config, "nexus_source_exclude_patterns", []) or [])
+    settings = _effective(app)
     exclude_patterns = _compute_exclude_patterns(
-        analyze_tests, test_patterns, user_excludes,
+        settings.analyze_tests,
+        list(settings.test_patterns),
+        list(settings.exclude_patterns),
     )
 
     # Scan main source directories.
@@ -180,7 +253,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # Scan user-specified extra dirs (e.g. out-of-tree source roots).
     # Test exclusion still follows the nexus_analyze_tests gate.
     all_sys_paths = source_dirs[:]
-    for extra in app.config.nexus_extra_source_dirs:
+    for extra in settings.extra_source_dirs:
         extra_path = (project_root / extra).resolve()
         if not extra_path.is_dir():
             logger.warning("nexus_extra_source_dirs: %s not found, skipping", extra)
@@ -282,8 +355,10 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     if graph is None:
         return
 
+    settings = _effective(app)
+
     # Run AST analysis and merge into the doc graph
-    if app.config.nexus_ast_analyze:
+    if settings.ast_analyze:
         _run_ast_analysis(app, graph)
 
     # Final cleanup: ensure all edges have confidence, classify phantom nodes
@@ -298,12 +373,24 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
     # Same project-root convention as _run_ast_analysis.
     stamp_provenance(graph, Path(app.srcdir).parent)
 
-    outdir = Path(app.outdir) / app.config.nexus_output
+    outdir = Path(app.outdir) / settings.output
     outdir.mkdir(parents=True, exist_ok=True)
 
     db_path = outdir / "graph.db"
     write_sqlite(graph, db_path)
     logger.info("Knowledge graph (SQLite) written to %s", db_path)
+
+    # The build is the only place that knows BOTH where the graph was
+    # written and what the config tells the CLI to open. If those differ
+    # the CLI silently reads a stale graph — a failure that presents as
+    # "the graph is out of date" and sends people to rebuild, repeatedly.
+    declared = settings.project.resolved_db()
+    if declared is not None and declared != db_path.resolve():
+        logger.warning(
+            "nexus: [graph].db in %s points at %s, but this build wrote %s — "
+            "the CLI and MCP server will open the wrong graph",
+            settings.project.source, declared, db_path.resolve(),
+        )
 
     json_path = outdir / "graph.json"
     write_json(graph, json_path)
@@ -311,7 +398,7 @@ def _on_build_finished(app: Sphinx, exception: Exception | None) -> None:
 
     # Generate interactive HTML visualization
     from sphinxcontrib.nexus.visualize import generate_html
-    html_path = generate_html(db_path, max_nodes=app.config.nexus_max_viz_nodes)
+    html_path = generate_html(db_path, max_nodes=settings.max_viz_nodes)
     logger.info("Knowledge graph (HTML viz) written to %s", html_path)
 
 
@@ -331,8 +418,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
 
         def run(self):
             height = self.options.get("height", "800px")
-            nexus_output = self.env.config.nexus_output
-            graph_url = f"{nexus_output}/graph.html"
+            graph_url = f"{_effective(self.env.app).output}/graph.html"
 
             raw_html = (
                 f'<div style="border:1px solid #333;border-radius:8px;overflow:hidden;margin:20px 0;">'

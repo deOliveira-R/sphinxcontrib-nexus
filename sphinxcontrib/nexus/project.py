@@ -49,6 +49,7 @@ CONFIG_NAME = "config.toml"
 KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     "graph": frozenset({
         "output",
+        "db",
         "extra_source_dirs",
         "exclude_patterns",
         "analyze_tests",
@@ -59,6 +60,12 @@ KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     "scope": frozenset({"prefixes"}),
     "catalog": frozenset({"errors"}),
 }
+
+#: Where the graph lands when neither a flag nor a config file says
+#: otherwise. Relative to the working directory, which is why it is
+#: almost never right for a real project — the artefacts sit under the
+#: Sphinx output directory. Kept as the pre-config behaviour.
+LEGACY_DB = Path("_nexus/graph.db")
 
 T = TypeVar("T")
 
@@ -75,6 +82,22 @@ def resolve(*candidates: Any, default: T) -> T:
         if candidate is not None:
             return candidate  # type: ignore[return-value]
     return default
+
+
+def resolve_db(
+    explicit: Path | str | None = None,
+    start: Path | str | None = None,
+) -> Path:
+    """Which graph database to open: flag > config > legacy default.
+
+    Shared by the CLI and the MCP server so the answer cannot differ
+    between them — a server pointed at a different graph than the CLI is
+    a confusing failure that looks like a stale graph.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    declared = ProjectConfig.load(start or Path.cwd()).resolved_db()
+    return declared if declared is not None else LEGACY_DB
 
 
 def find_project_root(start: Path | str) -> Path | None:
@@ -174,6 +197,22 @@ class ProjectConfig:
     def output(self) -> str | None:
         """Directory name the graph artefacts are written to."""
         return self._get("graph", "output")
+
+    @property
+    def db(self) -> str | None:
+        """Project-relative path to the graph database.
+
+        The CLI and the MCP server cannot derive this: the artefacts land
+        under the *Sphinx output directory*, which only the build knows.
+        So it is stated once here rather than retyped as ``--db`` on every
+        invocation. The extension warns when what it wrote does not match
+        what this declares, which is the only way the two can disagree.
+        """
+        return self._get("graph", "db")
+
+    def resolved_db(self) -> Path | None:
+        path = self.db
+        return None if path is None else (self.root / path).resolve()
 
     @property
     def extra_source_dirs(self) -> list[str] | None:
