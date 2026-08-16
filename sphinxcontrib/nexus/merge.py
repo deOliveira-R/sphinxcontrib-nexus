@@ -200,12 +200,34 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
       - solve_cp ↔ collision-rate (share no tokens — skip)
       - _compute_slab_rcp ↔ surface-to-region (share no tokens — skip)
       - _compute_slab_rcp ↔ rcp-from-double-antideriv (share "rcp" — match)
+
+    What may be inferred is **declared, not hardcoded here**: the domain
+    this walks and the attributes that disqualify a source both come from
+    ``[edge.implements]`` in the ontology. Two copies of that used to live
+    in this function — a literal ``{"function", "method", "class"}`` and a
+    hand-written ``in_test_file`` test — which is how a rule ends up
+    described in one place and enforced in another.
+
+    An edge type the ontology does not declare is not inferred at all. No
+    declaration is no licence; falling back to a literal would restore the
+    second copy this exists to remove.
     """
     import re as _re
 
-    code_types = {"function", "method", "class"}
+    from sphinxcontrib.nexus.ontology import Ontology
+
+    ontology = Ontology.load()
+    spec = ontology.edges.get("implements")
+    if spec is None:
+        logger.warning(
+            "ontology declares no 'implements' edge — skipping inference"
+        )
+        return
+
+    code_types = set(spec.domain)
     seen: set[tuple[str, str]] = set()
     count = 0
+    refused = 0
 
     def _tokenize(name: str) -> set[str]:
         """Split a name into meaningful tokens (min length 3)."""
@@ -231,21 +253,6 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
                 tgt_type in code_types
                 and edge_type == "documents"
                 and tgt not in code_map
-                # A test does not IMPLEMENT an equation — it VERIFIES
-                # one, which the graph already models with TESTS edges
-                # (``@pytest.mark.verifies``, the ``verifies``
-                # directive). Inferring IMPLEMENTS onto a test inverts
-                # the relationship the V&V surface reads: an equation
-                # whose only implementer is a test class reads as
-                # implemented when nothing implements it, and that is a
-                # false ALIVE — the direction that stays silent.
-                #
-                # Test classes are unusually prone to it because the
-                # match is on shared name tokens:
-                # ``TestSlabViaUnifiedDiscrepancyDiagnostic`` shares
-                # ``slab`` / ``peierls`` / ``multigroup`` with half the
-                # equations on its page and collects a dozen edges.
-                and not tgt_attrs.get("in_test_file")
             ):
                 code_map[tgt] = _tokenize(tgt_name)
 
@@ -278,16 +285,52 @@ def _infer_implements(g: "nx.MultiDiGraph") -> None:
                     seen.add(pair)
                     continue
                 seen.add(pair)
+
+                # The ontology is the admission authority, consulted at the
+                # producer rather than validated after the fact — an edge
+                # that should not exist must never be created, and a
+                # warn-after pass would let it ship.
+                #
+                # This is what refuses a test class: a test VERIFIES an
+                # equation, it does not implement one, and the graph
+                # already models that with TESTS edges. Inferring
+                # IMPLEMENTS onto a test inverts the relation the V&V
+                # surface reads — an equation whose only implementer is a
+                # test reads as implemented when nothing implements it,
+                # a false ALIVE. Test classes are unusually prone to it
+                # because the match is on shared name tokens:
+                # ``TestSlabViaUnifiedDiscrepancyDiagnostic`` shares
+                # ``slab``/``peierls``/``multigroup`` with half the
+                # equations on its page.
+                src_attrs = g.nodes[code_id]
+                refusal = ontology.check_edge(
+                    "implements",
+                    src_attrs.get("type", ""),
+                    g.nodes[eq_id].get("type", ""),
+                    source_attrs=src_attrs,
+                    source_id=code_id,
+                    target_id=eq_id,
+                )
+                if refusal is not None:
+                    refused += 1
+                    continue
+
                 g.add_edge(
                     code_id, eq_id,
                     type="implements", source="inferred",
-                    confidence=0.7,
+                    confidence=spec.default_confidence,
                     shared_tokens=sorted(shared),
                 )
                 count += 1
 
-    if count:
-        logger.info("Inferred %d IMPLEMENTS edges (code → equation)", count)
+    if count or refused:
+        # Report refusals too. A filter that drops silently is
+        # indistinguishable from one that never fires.
+        logger.info(
+            "Inferred %d IMPLEMENTS edges (code → equation); "
+            "%d candidate(s) refused by the ontology",
+            count, refused,
+        )
 
 
 def write_verifies_edges(g: "nx.MultiDiGraph") -> int:
