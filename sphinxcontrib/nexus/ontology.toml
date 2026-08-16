@@ -1,0 +1,287 @@
+#  Base ontology — what a nexus graph is made of, and what may connect to what.
+#
+#  This file is the semantics of the vocabulary; `graph.NodeType` and
+#  `graph.EdgeType` remain the source of truth for the *names*. A test pins the
+#  two to each other (tests/test_ontology.py), so neither can drift: adding an
+#  enum member without describing it here fails, and vice versa.
+#
+#  A project extends this with its own `.nexus/ontology.toml`. An extension may
+#  add node types, edge types and attributes; it may not silently redefine a
+#  base entry.
+#
+#  `domain` = permitted source node types, `range` = permitted target types.
+#  "*" means any. `enforcement` is one of:
+#     error  — a violating edge is a bug; refuse it
+#     warn   — report it; the extractor is expected to be right but is not pinned
+#     none   — the relation is deliberately unconstrained
+#  Nothing is set to `error` here yet: enforcement is being introduced against a
+#  measured corpus first, so a rule lands only once it is known not to fire on
+#  legitimate edges.
+
+[meta]
+version = 1
+description = "Node and edge vocabulary shipped with sphinxcontrib-nexus."
+
+# ---------------------------------------------------------------------------
+# Node types — from documentation
+# ---------------------------------------------------------------------------
+
+[node.file]
+description = "A doc page."
+origin = "sphinx"
+
+[node.section]
+description = "A labelled section — a `:ref:` target."
+origin = "sphinx"
+
+[node.equation]
+description = "A labelled math block — an `:eq:` target."
+origin = "sphinx"
+
+[node.proof_object]
+description = "A labelled sphinx-proof environment. Kind in metadata['prf_type'], prose in metadata['statement']."
+origin = "sphinx"
+attributes = ["prf_type", "statement"]
+
+[node.term]
+description = "A glossary term."
+origin = "sphinx"
+
+# ---------------------------------------------------------------------------
+# Node types — from code
+# ---------------------------------------------------------------------------
+
+[node.module]
+description = "A Python module."
+origin = "ast"
+
+[node.class]
+description = "A class."
+origin = "ast"
+
+[node.function]
+description = "A module-level function."
+origin = "ast"
+
+[node.method]
+description = "A function bound to a class."
+origin = "ast"
+
+[node.attribute]
+description = "A class or instance attribute."
+origin = "ast"
+
+[node.data]
+description = "A module-level constant."
+origin = "ast"
+
+[node.exception]
+description = "An exception class."
+origin = "ast"
+
+[node.type]
+description = "A type alias."
+origin = "ast"
+
+[node.tag]
+description = "A string or enum value a function branches on — the target of `discriminates_on`."
+origin = "ast"
+
+# ---------------------------------------------------------------------------
+# Node types — placeholders. Never definitions.
+# ---------------------------------------------------------------------------
+
+[node.external]
+description = "stdlib, builtins, or an installed package."
+origin = "derived"
+placeholder = true
+
+[node.unresolved]
+description = "Referenced but never defined anywhere nexus scanned."
+origin = "derived"
+placeholder = true
+# ⚠ Also, today, where CITATION nodes land: `extractors.py` builds
+# `citation:<key>` with type=unresolved and domain="citation". A cited work is a
+# real bibliographic entity, not a dangling reference, so it inflates the
+# `unresolved` count and falls inside `dead_references`' phantom set. Modelling
+# it as its own node type is a candidate change, not a described one — this
+# comment records the divergence rather than encoding a type that does not exist.
+
+# ---------------------------------------------------------------------------
+# Edge types — structure
+# ---------------------------------------------------------------------------
+
+[edge.contains]
+description = "Parent → child: toctree, module → function, class → method."
+domain = ["file", "section", "module", "class"]
+range = ["*"]
+enforcement = "warn"
+sources = ["sphinx", "ast"]
+
+[edge.imports]
+description = "Module → module."
+domain = ["module"]
+range = ["module", "external", "unresolved"]
+enforcement = "warn"
+sources = ["ast"]
+
+[edge.inherits]
+description = "Class → base class."
+domain = ["class", "exception"]
+range = ["class", "exception", "external", "unresolved"]
+enforcement = "warn"
+sources = ["ast"]
+
+# ---------------------------------------------------------------------------
+# Edge types — behaviour
+# ---------------------------------------------------------------------------
+
+[edge.calls]
+description = "Function → function it calls."
+domain = ["function", "method"]
+range = ["function", "method", "class", "external", "unresolved"]
+enforcement = "warn"
+sources = ["ast"]
+
+[edge.type_uses]
+description = "Function → a type in its annotations."
+domain = ["function", "method", "attribute", "data"]
+range = ["class", "type", "external", "unresolved"]
+enforcement = "warn"
+sources = ["ast"]
+attributes = ["param"]
+
+[edge.discriminates_on]
+description = "Function → a tag it branches on (`if x == '...'`, `match`)."
+domain = ["function", "method"]
+range = ["tag"]
+enforcement = "warn"
+sources = ["ast"]
+attributes = ["cases"]
+
+# ---------------------------------------------------------------------------
+# Edge types — documentation
+# ---------------------------------------------------------------------------
+
+[edge.documents]
+description = "Doc page → the code symbol it documents."
+domain = ["file", "section"]
+range = ["*"]
+enforcement = "warn"
+sources = ["sphinx"]
+
+[edge.references]
+description = "A cross-reference (`:ref:`, `:term:`, py-domain roles in docstrings)."
+domain = ["*"]
+range = ["*"]
+enforcement = "none"
+sources = ["sphinx", "ast"]
+attributes = ["reftype", "reftarget", "refdomain"]
+
+[edge.equation_ref]
+description = "Doc → equation (`:eq:`, `:math:numref:`)."
+domain = ["*"]
+range = ["equation", "proof_object"]
+enforcement = "warn"
+sources = ["sphinx"]
+
+[edge.cites]
+description = "Doc → citation."
+domain = ["file", "section"]
+# ⚠ `unresolved` is where citation nodes actually live today — see [node.unresolved].
+range = ["unresolved"]
+enforcement = "none"
+sources = ["sphinx", "ingest"]
+
+# ---------------------------------------------------------------------------
+# Edge types — code ↔ maths
+# ---------------------------------------------------------------------------
+
+[edge.implements]
+description = "This code IS this equation."
+domain = ["function", "method", "class"]
+range = ["equation", "proof_object"]
+default_confidence = 0.7
+enforcement = "warn"
+sources = ["directive", "inferred"]
+attributes = ["shared_tokens"]
+# A test VERIFIES an equation; it does not implement one. An equation whose only
+# implementer is a test class reads as implemented when nothing implements it.
+forbid_source_attr = { in_test_file = true }
+
+[edge.tests]
+description = "This test VERIFIES this equation."
+domain = ["function", "method"]
+range = ["equation", "proof_object"]
+default_confidence = 1.0
+enforcement = "warn"
+sources = ["pytest.mark.verifies", "directive", "registry"]
+
+[edge.derives]
+description = "Paper-level lineage written by `ingest` — distinct from the authored `derives_from`."
+domain = ["*"]
+range = ["*"]
+enforcement = "none"
+sources = ["ingest"]
+
+# ---------------------------------------------------------------------------
+# Edge types — statement relations. Direction is always specific → general.
+# ---------------------------------------------------------------------------
+
+[edge.discretizes]
+description = "A discrete form → the continuous one it discretizes."
+domain = ["equation", "proof_object"]
+range = ["equation", "proof_object"]
+default_confidence = 1.0
+enforcement = "warn"
+sources = ["directive"]
+
+[edge.derives_from]
+description = "A specialization → the parent it was reduced from."
+domain = ["equation", "proof_object"]
+range = ["equation", "proof_object"]
+default_confidence = 1.0
+enforcement = "warn"
+sources = ["directive"]
+
+[edge.approximates]
+description = "A closure or truncation → the exact form it stands in for."
+domain = ["equation", "proof_object"]
+range = ["equation", "proof_object"]
+default_confidence = 1.0
+enforcement = "warn"
+sources = ["directive"]
+
+# ---------------------------------------------------------------------------
+# Node attributes worth declaring — the ones a query branches on.
+# ---------------------------------------------------------------------------
+
+[attribute.is_test]
+applies_to = "node"
+description = "This IS a test case — name-based for functions. `retest` and `dead_functions` depend on it."
+type = "bool"
+
+[attribute.in_test_file]
+applies_to = "node"
+description = "This LIVES IN the test tree — file-based. A helper in tests/_harness/ has this and not is_test."
+type = "bool"
+
+[attribute.vv_level]
+applies_to = "node"
+description = "Verification level lifted from a pytest marker."
+type = "string"
+
+[attribute.prf_type]
+applies_to = "node"
+description = "sphinx-proof environment kind — theorem, definition, algorithm, and the rest."
+type = "string"
+
+[attribute.confidence]
+applies_to = "edge"
+description = "1.0 for anything extracted or declared; 0.7 for an inferred `implements`. Filter on it when a wrong edge is expensive."
+type = "float"
+
+[attribute.source]
+applies_to = "edge"
+description = "Which extractor or registry asserted this edge. Not 'inferred' ⇒ a human asserted it."
+type = "string"
