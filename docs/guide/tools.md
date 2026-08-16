@@ -12,12 +12,21 @@ and recent changes in one call, which is usually enough to know which of
 the tools below you actually want.
 :::
 
+:::{note}
+**Any** result carrying a position says so when that position is
+suspect. A graph is a snapshot of one checkout, so an edit above a
+definition moves it without moving the stored line — whenever a returned
+`file_path` has changed since the graph was built, a `stale` key appears
+beside it naming the build commit. Nothing appears when the graph is
+fresh, so its presence is the signal.
+:::
+
 ## Finding a starting point
 
 | Tool | Answers | Key args |
 |---|---|---|
 | `query` | Which symbols match this keyword? | `text`, `node_types`, `limit` |
-| `node_at` | Which node encloses this file position? Takes an LSP result or a stack-trace frame. Warns when the file changed since the graph was built | `file`, `line` |
+| `node_at` | Which node encloses this file position? Takes an LSP result or a stack-trace frame | `file`, `line` |
 | `stats` | How big is this graph, and of what? | — |
 | `session_briefing` | What should I know before starting? | — |
 

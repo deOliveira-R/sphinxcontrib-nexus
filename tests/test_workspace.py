@@ -601,30 +601,148 @@ def test_briefing_workspace_block_quiet_when_matching(server_on_main):
 
 
 # ---------------------------------------------------------------------------
-# node_at staleness — positions in a snapshot drift with edits
+# Position staleness at the TOOL BOUNDARY
 # ---------------------------------------------------------------------------
+#
+# A graph is a snapshot: its (file_path, lineno) pairs are true of the
+# tree at build time, and an edit above a definition moves it without
+# moving the stored line. The check used to live inside `node_at` — 1 of
+# 40 tools — so every other tool handed back positions with nothing said.
+# It now runs once, in the `@nexus_tool` wrapper.
 
 
-def test_position_warning_quiet_for_unchanged_file(server_on_main):
-    assert server_mod._position_staleness_warning("tracked.txt") is None
+@pytest.fixture()
+def server_with_positions(repo, monkeypatch):
+    """A server whose graph carries POSITIONS, in two tracked files.
+
+    ``server_on_main``'s one-node graph has no ``file_path`` at all, so
+    it cannot tell a flagged payload from an unflagged one — the pair of
+    files is what makes per-file discrimination observable.
+    """
+    (repo / "other.txt").write_text("untouched\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "second file")
+
+    kg = KnowledgeGraph()
+    for label, filename in (("tracked_fn", "tracked.txt"), ("other_fn", "other.txt")):
+        kg.add_node(GraphNode(
+            id=f"py:function:{label}", type=NodeType.FUNCTION, name=label,
+            display_name=label, domain="py",
+            metadata={"file_path": str(repo / filename), "lineno": 1},
+        ))
+    stamp_provenance(kg, repo)
+    db = repo / DB_RELPATH
+    write_sqlite(kg, db)
+
+    monkeypatch.setattr(
+        server_mod, "_query",
+        GraphQuery(load_sqlite(db), workspace=Workspace(db_path=db, root=repo)),
+    )
+    monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
+    return repo
 
 
-def test_position_warning_fires_for_changed_file(server_on_main):
-    (server_on_main / "tracked.txt").write_text("edited\n")
-    warning = server_mod._position_staleness_warning("tracked.txt")
-    assert warning is not None
-    prov = git_provenance(server_on_main)  # stamp == HEAD here
-    assert prov is not None
-    assert prov.commit in warning and "rebuild" in warning
+def test_a_fresh_graph_payload_is_returned_UNTOUCHED(server_with_positions):
+    """Identity, not equality: the ORIGINAL string is handed back, so a
+    healthy server's payloads are byte-for-byte what they were before
+    staleness was checked at all."""
+    payload = server_mod.to_json({"file_path": "tracked.txt", "lineno": 1})
+    assert server_mod._mark_stale_positions(payload) is payload
+    assert server_mod.STALE_KEY not in server_mod.query("tracked_fn")
 
 
-def test_node_at_payload_carries_the_warning(server_on_main):
-    """The warning rides along even when no node matches — a stale
-    graph is exactly when the no-match answer is least trustworthy."""
-    (server_on_main / "tracked.txt").write_text("edited\n")
+def test_a_fresh_graph_payload_is_not_even_PARSED(
+    server_with_positions, monkeypatch,
+):
+    """The cost half of the same claim, which identity cannot show.
+
+    Returning the original string is compatible with having parsed and
+    walked it first — so the early return is a promise no output can
+    witness. Counting the parse is the only instrument that can: on a
+    fresh graph the pass must decide from the cached changed-set alone
+    and touch the payload not at all.
+    """
+    parses = []
+
+    class _CountingJson:
+        JSONDecodeError = json.JSONDecodeError
+
+        @staticmethod
+        def loads(s, *a, **kw):
+            parses.append(s)
+            return json.loads(s, *a, **kw)
+
+    monkeypatch.setattr(server_mod, "json", _CountingJson)
+    server_mod.query("tracked_fn")
+    assert parses == []
+
+
+def test_a_DIRTY_tree_leaves_an_unaffected_payload_untouched(
+    server_with_positions,
+):
+    """Identity again, in the case that actually reaches the walk.
+
+    The test above returns early and so cannot see a pass that
+    re-serialises what it did not change; this one walks the payload,
+    marks nothing, and must still hand back the same object. Equality
+    would not catch it — ``to_json(json.loads(x))`` round-trips to an
+    equal string — which is why the assertion is ``is``.
+    """
+    (server_with_positions / "tracked.txt").write_text("edited\n")
+    payload = server_mod.to_json({"file_path": "other.txt", "lineno": 1})
+    assert server_mod._mark_stale_positions(payload) is payload
+
+
+def test_a_stale_position_is_flagged_where_it_sits(server_with_positions):
+    (server_with_positions / "tracked.txt").write_text("edited\n")
     payload = json.loads(server_mod.node_at("tracked.txt", 1))
-    assert "error" in payload  # the one-node graph has no file_path
-    assert "warning" in payload
+
+    note = payload[server_mod.STALE_KEY]
+    prov = git_provenance(server_with_positions)  # stamp == HEAD here
+    assert prov is not None
+    assert prov.commit in note and "rebuild" in note
+
+
+def test_a_tool_OTHER_than_node_at_is_flagged_too(server_with_positions):
+    """The whole point of moving the check to the boundary.
+
+    ``query`` returns a bare JSON ARRAY of nodes — a shape the retired
+    per-tool warning could not have annotated even if it had been called
+    there, since there is no object to hang a summary key on. The flag
+    goes on the entry itself.
+    """
+    (server_with_positions / "tracked.txt").write_text("edited\n")
+    entries = json.loads(server_mod.query("tracked_fn"))
+
+    assert isinstance(entries, list) and entries
+    assert all(server_mod.STALE_KEY in e for e in entries)
+
+
+def test_an_UNCHANGED_file_is_not_flagged_by_a_dirty_neighbour(
+    server_with_positions,
+):
+    """The control: a dirty tree must not blanket-flag every position.
+
+    Without this, "flag everything whenever anything changed" passes the
+    test above and is useless — the agent learns nothing about WHICH
+    position it should distrust.
+    """
+    (server_with_positions / "tracked.txt").write_text("edited\n")
+    entries = json.loads(server_mod.query("other_fn"))
+
+    assert entries, "the control needs a node to be unflagged"
+    assert all(server_mod.STALE_KEY not in e for e in entries)
+
+
+def test_the_no_match_answer_is_flagged_as_well(server_with_positions):
+    """A stale graph is exactly when "no node encloses this" is least
+    trustworthy — so the error payload names the file it looked for and
+    is annotated by the same pass as a match."""
+    (server_with_positions / "tracked.txt").write_text("edited\n")
+    payload = json.loads(server_mod.node_at("tracked.txt", 9999))
+
+    assert "error" in payload
+    assert server_mod.STALE_KEY in payload
 
 
 def test_changed_set_is_cached_per_query(server_on_main, monkeypatch):

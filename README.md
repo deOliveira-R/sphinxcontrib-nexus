@@ -188,7 +188,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 
 ### Exploration
 - **`query`** — keyword search across node names
-- **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node; warns when the file changed since the graph was built (positions in a snapshot drift with edits)
+- **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node
 - **`context`** — 360-degree view of a symbol: connections grouped by type, each bucket most-connected-first and token-budgeted (`limit_per_type`, default 25; honest `omitted` counts — a hub node's full context is megabytes)
 - **`neighbors`** — direct connections with direction and type filtering
 - **`callers`** — functions that call a given node (optionally transitive)
@@ -241,6 +241,14 @@ Node results from AST-derived symbols carry `file_path` and `lineno`,
 so any query answer can be fed straight back to an editor, LSP
 request, or file read — the position → node bridge (`node_at`) runs
 in both directions.
+
+Because that invites acting on a position, **every** tool's result is
+checked before it leaves the server: a graph is a snapshot of one
+checkout, and an edit above a definition moves it without moving the
+stored line. Whenever a returned `file_path` has changed since the graph
+was built, a `stale` key appears beside it naming the build commit. The
+check is silent — and costs nothing — on a fresh graph, so the key's
+presence is the whole signal.
 
 ### Edit-time file brief (the ambient channel)
 

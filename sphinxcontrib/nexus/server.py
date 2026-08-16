@@ -226,35 +226,82 @@ def _active_root() -> Path | None:
     return _query.project_root if _query is not None else None
 
 
-def _position_staleness_warning(file: str) -> str | None:
-    """Warning text when ``file`` has changed since the graph was
-    built — positions in a build-time snapshot drift with edits, and
-    the (file, line) → node mapping fails SILENTLY otherwise.
+#: Key added beside a stale ``file_path``. One spelling, so a consumer
+#: can test for it and the tests can pin it.
+STALE_KEY = "stale"
 
-    The two states it compares — what the graph was built from, and
-    what the tree holds now — are both read off the active query, which
-    carries the workspace it was loaded from. The server kept its own
-    copy of both, plus a hand-built ``(root, mtime, commit)`` cache key
-    whose only job was to notice that the query had been replaced; a
-    new query now IS the invalidation.
+
+def _mark_stale_positions(payload: str) -> str:
+    """Flag every position in ``payload`` whose file has changed since
+    the graph was built.
+
+    A graph is a snapshot: its ``(file_path, lineno)`` pairs are true of
+    the tree at build time, and an edit above a definition moves it
+    without moving the stored line. The failure is silent — the position
+    still looks like a position, and ``NodeResult``'s own docstring
+    invites feeding it straight to an editor or ``Read``.
+
+    Attached HERE rather than at the 51 producers that emit a position,
+    or at each of the 40 tools: staleness is a property of the *server's
+    two states* (graph versus working tree), not of any one query, and
+    one site cannot drift from another. It marks each affected object in
+    place rather than adding a summary key, because the payload may be a
+    bare JSON array as easily as an object — and a flag on the item is
+    what a reader needs anyway.
+
+    Costs nothing on a fresh graph: the first line answers "is anything
+    changed at all?" from a cached set, and returns the ORIGINAL string
+    — not a re-serialisation — whenever there is nothing to say. So a
+    healthy server's payloads are byte-identical to what they were
+    before this existed. Measured 2026-08-16 on ORPHEUS's graph
+    (23013 nodes) against the worst payload the server can produce,
+    ``context`` on the top god node uncapped, **2059 KiB**: 0.00 ms
+    fresh, 35.2 ms with 30 files dirty. The default ``limit_per_type``
+    keeps a real payload two orders below that.
     """
     if _query is None:
-        return None
-    root = _query.project_root
+        return payload
     changed = _query.files_changed_since_build
-    if root is None or not changed:
-        return None
-    queried = Path(file)
-    if not queried.is_absolute():
-        queried = root / queried
-    if queried.resolve() not in changed:
-        return None
-    return (
-        f"{file} changed since the graph was built "
-        f"(commit {_query.build_commit}) — positions may map to the wrong "
-        f"symbol; rebuild the graph (sphinx-build / nexus analyze) "
-        f"for faithful answers"
+    root = _query.project_root
+    if not changed or root is None:
+        return payload
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return payload  # not every tool returns JSON
+
+    verdict: dict[str, bool] = {}  # resolve() hits the disk — ask once per file
+
+    def is_stale(raw: str) -> bool:
+        if raw not in verdict:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = root / path
+            verdict[raw] = path.resolve() in changed
+        return verdict[raw]
+
+    note = (
+        f"changed since the graph was built (commit {_query.build_commit}) "
+        f"— this position may name the wrong symbol; rebuild the graph "
+        f"(sphinx-build / nexus analyze)"
     )
+    marked = False
+
+    def walk(node: Any) -> None:
+        nonlocal marked
+        if isinstance(node, dict):
+            file_path = node.get("file_path")
+            if isinstance(file_path, str) and file_path and is_stale(file_path):
+                node[STALE_KEY] = note
+                marked = True
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return to_json(data) if marked else payload
 
 
 def _workspace_payload() -> dict[str, Any]:
@@ -364,7 +411,12 @@ def _journal_usage(
 
 
 def nexus_tool(fn):
-    """Register an MCP tool with usage journaling.
+    """Register an MCP tool, journaled and staleness-checked.
+
+    Two concerns ride here because both are properties of *every* tool
+    call rather than of any tool, and both would otherwise be a line
+    each tool author has to remember — which is how position staleness
+    ended up applied by exactly 1 of the 40.
 
     The journal (``~/.nexus/usage.jsonl``; ``NEXUS_USAGE_LOG`` overrides
     the path, empty value disables) is ground truth for evaluating which
@@ -372,6 +424,10 @@ def nexus_tool(fn):
     (repr-truncated), duration, outcome, active workspace, server pid.
     Tool evaluation then rests on recorded behavior instead of anyone's
     memory. Journaling never blocks or fails a tool call.
+
+    The staleness pass (:func:`_mark_stale_positions`) flags returned
+    positions whose file has moved under the graph. It is a no-op, down
+    to the exact bytes, whenever the graph is fresh.
     """
     def record(args: tuple, kwargs: dict, started: float, outcome: str) -> None:
         _journal_usage(
@@ -379,13 +435,16 @@ def nexus_tool(fn):
             (time.perf_counter() - started) * 1000, outcome,
         )
 
+    def annotate(result: Any) -> Any:
+        return _mark_stale_positions(result) if isinstance(result, str) else result
+
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapper(*args, **kwargs):
             started = time.perf_counter()
             outcome = "ok"
             try:
-                return await fn(*args, **kwargs)
+                return annotate(await fn(*args, **kwargs))
             except Exception:
                 outcome = "exception"
                 raise
@@ -398,7 +457,7 @@ def nexus_tool(fn):
         started = time.perf_counter()
         outcome = "ok"
         try:
-            return fn(*args, **kwargs)
+            return annotate(fn(*args, **kwargs))
         except Exception:
             outcome = "exception"
             raise
@@ -449,10 +508,14 @@ def node_at(file: str, line: int) -> str:
     """
     q = _get_query()
     result = q.node_at(file, line)
-    warning = _position_staleness_warning(file)
     if result is None:
         payload: dict[str, Any] = {
             "error": f"No graph node encloses {file}:{line}",
+            # Named, not only interpolated into the message: it is what
+            # the staleness pass at the tool boundary keys on, so the
+            # no-match answer — the least trustworthy one a stale graph
+            # gives — is flagged by the same mechanism as a match.
+            "file_path": file,
             "hint": (
                 "Either the file is outside the analyzed tree, or the "
                 "graph predates it — rebuild (sphinx-build / nexus "
@@ -462,8 +525,6 @@ def node_at(file: str, line: int) -> str:
         }
     else:
         payload = to_dict(result)
-    if warning is not None:
-        payload["warning"] = warning
     return to_json(payload)
 
 
