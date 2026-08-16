@@ -10,7 +10,7 @@ import pytest
 
 from sphinxcontrib.nexus.cli import main
 from sphinxcontrib.nexus.export import load_sqlite, write_sqlite
-from sphinxcontrib.nexus.graph import KnowledgeGraph
+from sphinxcontrib.nexus.graph import GraphNode, KnowledgeGraph
 
 
 def test_cli_analyze(tmp_path):
@@ -267,3 +267,95 @@ class TestTokenBudgetCli:
         out = capsys.readouterr().out
         assert "more" not in out
         assert out.count("py:function:mod.caller_") == 30
+
+
+class TestRuntimeIngestReportsAZeroJoin:
+    """`runtime-ingest` must never report a failed join as a success.
+
+    It used to print `nodes: 0 / edges: 0 / unresolved: 0` and exit 0,
+    which is indistinguishable from a workload that genuinely touched
+    nothing indexed — and it pointed the reassuring way, so a consumer
+    read it as a measurement.
+    """
+
+    @staticmethod
+    def _graph_with_foo(src: str) -> KnowledgeGraph:
+        kg = KnowledgeGraph()
+        kg.add_node(GraphNode(
+            id="py:function:mod.foo", type="function", name="mod.foo",
+            metadata={"file_path": src, "lineno": 1, "end_lineno": 5},
+        ))
+        return kg
+
+    @pytest.fixture
+    def project(self, tmp_path):
+        """A graph with one function, plus a coverage report keyed as
+        coverage.py actually keys one: RELATIVE to the run directory."""
+        kg = self._graph_with_foo(str(tmp_path / "pkg" / "mod.py"))
+        db = tmp_path / "graph.db"
+        write_sqlite(kg, db)
+        art = tmp_path / "cov.json"
+        art.write_text(json.dumps({
+            "meta": {"format": 3, "branch_coverage": True},
+            "files": {"pkg/mod.py": {"executed_lines": [1, 2],
+                                     "missing_lines": []}},
+        }))
+        return db, art, tmp_path
+
+    def test_a_bound_ingest_succeeds_and_is_stored(self, project, capsys):
+        """Control — without it, the failure test could pass vacuously."""
+        db, art, root = project
+        rc = main(["runtime-ingest", str(art), "--kind", "coverage",
+                   "--db", str(db), "--run", "ok", "--root", str(root)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "nodes:      1" in out
+        assert (db.parent / "traces" / "ok.json").exists()
+
+    def test_a_zero_join_exits_nonzero_and_stores_nothing(self, project, capsys):
+        """Identical input; only `--root` differs from the control."""
+        db, art, _root = project
+        rc = main(["runtime-ingest", str(art), "--kind", "coverage",
+                   "--db", str(db), "--run", "bad", "--root", "/nowhere"])
+        captured = capsys.readouterr()
+        assert rc == 1, "a join that bound nothing is a FAILED ingest"
+        assert "different key spaces" in captured.err
+        assert not (db.parent / "traces" / "bad.json").exists(), (
+            "an empty run must not be stored — it would appear in "
+            "runtime-runs and answer every query with a confident "
+            "'nothing fired'"
+        )
+
+    def test_the_ledger_accounts_for_every_lookup(self, project, capsys):
+        db, art, _root = project
+        main(["runtime-ingest", str(art), "--kind", "coverage",
+              "--db", str(db), "--run", "bad", "--root", "/nowhere"])
+        out = capsys.readouterr().out
+        assert "lookups:    1" in out
+        assert "file not in graph:  1" in out
+
+    def test_viztracer_reaches_its_own_backend(self, tmp_path, capsys):
+        """`--kind viztracer` is an advertised choice.
+
+        The dispatch was a BINARY `cprofile if ... else coverage`, so a
+        viztracer artifact was fed to the coverage ingester, bound
+        nothing, and reported success — the same defect as above, one
+        layer up. A registered choice with no arm is not a choice.
+        """
+        src = str(tmp_path / "pkg" / "mod.py")
+        kg = self._graph_with_foo(src)
+        db = tmp_path / "graph.db"
+        write_sqlite(kg, db)
+        art = tmp_path / "viz.json"
+        art.write_text(json.dumps({"traceEvents": [
+            {"ph": "X", "name": f"foo ({src}:1)", "ts": 1000.0, "dur": 5.0},
+        ]}))
+
+        rc = main(["runtime-ingest", str(art), "--kind", "viztracer",
+                   "--db", str(db), "--run", "v"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        # The count must come from the family THIS kind fills. The old
+        # `len(calls) or len(coverage)` read 0 for a successful viztracer
+        # run, because viztracer fills `timeline`.
+        assert "nodes:      1" in out

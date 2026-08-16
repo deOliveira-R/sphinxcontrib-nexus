@@ -26,11 +26,14 @@ and external dependencies via MCP, CLI, or Python API.
 Quick start:
   nexus setup                    Install skills + show MCP config
   nexus analyze src/             Index Python source files
-  nexus serve --db graph.db      Start the MCP server
-  nexus status --db graph.db     Show graph summary
-  nexus query --db graph.db "solve"   Search the graph
-  nexus workspaces --db graph.db Show checkouts (worktrees) + their graphs
+  nexus serve                    Start the MCP server
+  nexus status                   Show graph summary
+  nexus query "solve"            Search the graph
+  nexus workspaces               Show checkouts (worktrees) + their graphs
   nexus config db                Print where the graph lives (for scripts)
+
+Every command finds the graph on its own, through `.nexus/config.toml`.
+Pass --db only to override that deliberately.
 """
 
 # The settings a consumer OUTSIDE Python may ask for by name. Each maps to
@@ -663,9 +666,20 @@ def main(argv: list[str] | None = None) -> int:
                         default="cprofile")
     rt_ing.add_argument("--run", type=str, default="default",
                         help="Name to store under (re-ingest overwrites).")
-    rt_ing.add_argument("--source-prefix", type=str, default="",
+    rt_ing.add_argument("--source-prefix", action="append", default=None,
+                        metavar="PATH",
                         help="Keep only records under this path prefix "
-                             "(drops stdlib/3rd-party frames).")
+                             "(drops stdlib/3rd-party frames). REPEATABLE, and "
+                             "usually must be: profiling a test suite yields "
+                             "tests->package records, so either directory "
+                             "alone drops one endpoint of every one of them.")
+    rt_ing.add_argument("--root", type=Path, default=None,
+                        help="Directory that relative paths in the artifact "
+                             "are relative to — i.e. the working directory the "
+                             "traced run used. `coverage json` emits relative "
+                             "keys and records this nowhere, so it cannot be "
+                             "recovered from the artifact. Defaults to the "
+                             "project root, else the current directory.")
     rt_ing.add_argument("--note", type=str, default="",
                         help="Free-text note of the workload, stored in metadata "
                              "under 'command'.")
@@ -1050,8 +1064,29 @@ def _load_query(db_path: Path) -> GraphQuery:
     from sphinxcontrib.nexus.query import GraphQuery
 
     if not db_path.exists():
+        # Say WHICH of the two causes this is. Most query subcommands take
+        # no --project-root, so they resolve from the cwd — and running one
+        # from outside the project produced "does not exist / run analyze
+        # first", which reads as "the graph was never built" when the truth
+        # is "you are in the wrong directory". A wrong remediation is worse
+        # than none: it sends the reader off to rebuild a graph they have.
+        from sphinxcontrib.nexus.project import CONFIG_DIR, find_project_root
+
         print(f"Error: {db_path} does not exist", file=sys.stderr)
-        print("Run 'nexus analyze' or 'sphinx-build' first.", file=sys.stderr)
+        if find_project_root(Path.cwd()) is None:
+            print(
+                f"No {CONFIG_DIR}/ directory above {Path.cwd()}, so this is "
+                "the built-in default rather than a declared path. If the "
+                "project is elsewhere, run this from inside it.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "That is the path this project declares (see 'nexus "
+                "config'). Run 'nexus analyze' or 'sphinx-build' to "
+                "create it.",
+                file=sys.stderr,
+            )
         sys.exit(1)
     return GraphQuery(load_sqlite(db_path))
 
@@ -1743,20 +1778,56 @@ def _runtime_load_many(db_path: Path, names: str):
 
 def _run_runtime_ingest(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus import runtime as rt
+    from sphinxcontrib.nexus.project import ProjectConfig
+
+    # A table, not a conditional chain. It was
+    # `ingest_cprofile if kind == "cprofile" else ingest_coverage` — a
+    # BINARY branch over three registered choices, so `--kind viztracer`
+    # ran the coverage ingester on a viztracer file, bound nothing, and
+    # reported `nodes: 0` with exit 0. The same defect this command is
+    # being fixed for, one layer up. The count comes from the table too,
+    # because each kind fills a different family and the old
+    # `len(calls) or len(coverage)` read 0 for a SUCCESSFUL viztracer run.
+    backends = {
+        "cprofile": (rt.ingest_cprofile, lambda r: len(r.calls)),
+        "coverage": (rt.ingest_coverage, lambda r: len(r.coverage)),
+        "viztracer": (rt.ingest_viztracer, lambda r: len(r.timeline)),
+    }
     if not args.artifact.exists():
         print(f"Error: {args.artifact} does not exist", file=sys.stderr)
         return 1
+    ingest, count = backends[args.kind]
     q = _load_query(args.db)
-    prefix = args.source_prefix or None
+    root = args.root or ProjectConfig.load(Path.cwd()).root
     meta = {"command": args.note} if args.note else {}
-    ingest = rt.ingest_cprofile if args.kind == "cprofile" else rt.ingest_coverage
     run = ingest(args.artifact, q.knowledge_graph, args.run,
-                 meta=meta, source_prefix=prefix)
-    path = _runtime_store(args.db).write(run)
-    print(f"Ingested {args.kind} run '{run.name}' -> {path}")
-    print(f"  nodes:      {len(run.calls) or len(run.coverage)}")
+                 meta=meta, source_prefixes=args.source_prefix, root=root)
+
+    bound = count(run)
+    ledger = run.ledger
+    diagnosis = ledger.diagnosis()
+    if diagnosis is None:
+        path = _runtime_store(args.db).write(run)
+        print(f"Ingested {args.kind} run '{run.name}' -> {path}")
+    else:
+        # Refuse to store a run that joined nothing. A stored empty run is
+        # worse than no run: it appears in `runtime-runs`, and every query
+        # against it answers "nothing fired" with total confidence.
+        print(f"Ingested NOTHING from {args.artifact} ({args.kind}).",
+              file=sys.stderr)
+
+    print(f"  nodes:      {bound}")
     print(f"  edges:      {len(run.edges)}")
-    print(f"  unresolved: {run.unresolved}")
+    print(f"  lookups:    {ledger.considered}")
+    print(f"    bound:              {ledger.bound}")
+    print(f"    outside scope:      {ledger.outside_scope}")
+    print(f"    file not in graph:  {ledger.unindexed_file}")
+    print(f"    no enclosing node:  {ledger.no_enclosing_node}")
+
+    if diagnosis is not None:
+        print(f"\n  root was: {Path(root).resolve()}", file=sys.stderr)
+        print(f"  {diagnosis}", file=sys.stderr)
+        return 1
     return 0
 
 

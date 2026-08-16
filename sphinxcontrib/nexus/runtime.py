@@ -82,6 +82,189 @@ def build_node_index(
     return by_file
 
 
+@dataclass
+class JoinLedger:
+    """Why a trace's records did or did not become node bindings.
+
+    An ingest that binds nothing is indistinguishable from a workload that
+    genuinely touched nothing indexed — unless it can say WHY each record
+    was dropped. Without that, ``nodes: 0`` reads as a measurement, and
+    every number derived from the overlay inherits an unverified
+    denominator.
+
+    The unit is one **lookup**. Backends ask different questions: coverage
+    asks about a whole file at a time, cProfile and viztracer about a
+    single ``(file, line)`` code object. So the counts are comparable
+    within a run, not across kinds.
+    """
+
+    #: the lookup found a node (or, for coverage, an indexed file)
+    bound: int = 0
+    #: filtered out by ``source_prefixes`` — usually stdlib / third-party
+    outside_scope: int = 0
+    #: in scope, but the graph has no nodes for that file at all. The
+    #: signature of a key-space mismatch when it is ~100% of lookups.
+    unindexed_file: int = 0
+    #: file is indexed, but no function/method span contains the line.
+    #: By design this is lambdas, comprehensions and nested closures.
+    no_enclosing_node: int = 0
+
+    @property
+    def considered(self) -> int:
+        return (
+            self.bound
+            + self.outside_scope
+            + self.unindexed_file
+            + self.no_enclosing_node
+        )
+
+    def add(self, other: "JoinLedger") -> None:
+        self.bound += other.bound
+        self.outside_scope += other.outside_scope
+        self.unindexed_file += other.unindexed_file
+        self.no_enclosing_node += other.no_enclosing_node
+
+    def diagnosis(self) -> str | None:
+        """The likely cause when an ingest bound nothing, or ``None``.
+
+        Named separately from the raw counts because a caller that bound
+        zero nodes needs to be told what to DO, and the three zero-yield
+        shapes have different remedies.
+        """
+        if self.bound:
+            return None
+        if not self.considered:
+            return "the artifact contained no trace records at all"
+        if self.unindexed_file and not self.outside_scope:
+            return (
+                "every in-scope file was missing from the graph — the two "
+                "sides are probably in different key spaces (coverage.py "
+                "emits paths relative to where it ran, while the graph "
+                "indexes absolute paths). Pass --root pointing at the "
+                "directory the traced run used as its working directory."
+            )
+        if self.outside_scope and not self.unindexed_file:
+            return (
+                "every record was filtered out by --source-prefix. Note a "
+                "profiled test suite produces tests -> package records, so "
+                "either prefix ALONE drops one endpoint of every one of "
+                "them; --source-prefix may be repeated."
+            )
+        if self.no_enclosing_node:
+            return (
+                "files were found but no record landed inside a "
+                "function/method span — check the graph is current "
+                "(rebuild) and that it was built from the same checkout "
+                "the trace was captured on."
+            )
+        return "no record bound, and no single reason dominates"
+
+
+class NodeBinder:
+    """The ``(file, line) -> node-ID`` join: one key space, one ledger.
+
+    Every backend performs this join, and before this class each did it
+    its own way — cProfile through a local ``in_scope`` helper, coverage
+    and viztracer through inline ``startswith`` — with three *different*
+    accounting behaviours. Two counted unresolved records; coverage
+    counted nothing at all, so a total join failure printed
+    ``nodes: 0 / edges: 0 / unresolved: 0`` and exited 0.
+
+    Two things are unified here because they are one concept:
+
+    **The key space.** Node ``file_path`` is absolute; ``coverage json``
+    emits keys relative to the directory it ran in; cProfile's
+    ``co_filename`` and viztracer's event names are absolute. Comparing
+    them raw drops every coverage file silently. Everything is
+    absolutised against ``root`` on the way in, once, so the mismatch is
+    unspellable rather than fixed in one backend.
+
+    **Scope.** ``source_prefixes`` is a LIST, because no single prefix
+    works: profiling a test suite yields ``tests -> package`` records, and
+    either directory alone drops one endpoint of every one of them, while
+    the repository root sweeps in the virtualenv. Containment is tested
+    with :meth:`~pathlib.PurePath.is_relative_to`, not ``startswith`` — a
+    string prefix matches ``/repo/orpheus_scratch`` against ``/repo/orpheus``.
+    """
+
+    def __init__(
+        self,
+        index: dict[str, list[tuple[int, int, str]]],
+        *,
+        source_prefixes: list[str] | None = None,
+        root: Path | str | None = None,
+    ) -> None:
+        self.root = Path(root).resolve() if root is not None else Path.cwd()
+        self.ledger = JoinLedger()
+        self._cache: dict[str, str] = {}
+        self._index = {self._abs(fp): spans for fp, spans in index.items()}
+        self._prefixes = [
+            Path(self._abs(p)) for p in (source_prefixes or [])
+        ] or None
+
+    def _abs(self, filename: str) -> str:
+        """Absolutise against ``root``, memoised — this runs per record."""
+        hit = self._cache.get(filename)
+        if hit is None:
+            path = Path(filename)
+            hit = str(
+                (path if path.is_absolute() else self.root / path).resolve()
+            )
+            self._cache[filename] = hit
+        return hit
+
+    def _in_scope(self, path: Path) -> bool:
+        if self._prefixes is None:
+            return True
+        return any(path.is_relative_to(p) for p in self._prefixes)
+
+    def spans(self, filename: str) -> list[tuple[int, int, str]] | None:
+        """Every indexed span in one file, or ``None`` — coverage's unit.
+
+        Records into the ledger, so a caller that skips the file still
+        leaves a trace of WHY.
+        """
+        absolute = self._abs(filename)
+        if not self._in_scope(Path(absolute)):
+            self.ledger.outside_scope += 1
+            return None
+        spans = self._index.get(absolute)
+        if not spans:
+            self.ledger.unindexed_file += 1
+            return None
+        self.ledger.bound += 1
+        return spans
+
+    def node(self, filename: str, lineno: int) -> str | None:
+        """One ``(file, line)`` code object to a node — the tracers' unit."""
+        absolute = self._abs(filename)
+        if not self._in_scope(Path(absolute)):
+            self.ledger.outside_scope += 1
+            return None
+        if absolute not in self._index:
+            self.ledger.unindexed_file += 1
+            return None
+        node_id = resolve_node(self._index, absolute, lineno)
+        if node_id is None:
+            self.ledger.no_enclosing_node += 1
+            return None
+        self.ledger.bound += 1
+        return node_id
+
+    def peek(self, filename: str, lineno: int) -> str | None:
+        """:meth:`node` without touching the ledger.
+
+        For lookups that are a second view of a record already counted —
+        cProfile's ``callers`` map, where each entry re-states a call whose
+        callee is its own stats row. Counting both would double the
+        denominator that :meth:`JoinLedger.diagnosis` reasons about.
+        """
+        absolute = self._abs(filename)
+        if not self._in_scope(Path(absolute)):
+            return None
+        return resolve_node(self._index, absolute, lineno)
+
+
 def resolve_node(
     index: dict[str, list[tuple[int, int, str]]],
     filename: str,
@@ -140,14 +323,37 @@ class RuntimeRun:
     #: milliseconds from the start of the trace, min_depth the shallowest
     #: call-stack depth the node appeared at)
     timeline: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: trace records (in-scope) that found no node — recall-gap audit
-    unresolved: int = 0
+    #: why records did or did not bind — the ingest's own audit trail
+    ledger: JoinLedger = field(default_factory=JoinLedger)
+
+    @property
+    def unresolved(self) -> int:
+        """In-scope records that found no node — the recall-gap audit.
+
+        Derived, not stored. It was a bare field until the ledger existed,
+        and on its own it could not distinguish "the trace reached files
+        the graph knows, but landed between functions" from "the two sides
+        were never in the same key space" — the second reads as a clean
+        zero. Kept as a property because it is the one number the CLI and
+        the MCP server have always reported.
+        """
+        return self.ledger.no_enclosing_node
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuntimeRun":
+        raw = data.get("ledger")
+        if raw is None:
+            # A sidecar written before the ledger existed. Its lone
+            # `unresolved` count is precisely today's no_enclosing_node;
+            # the other three reasons were never measured, and must stay
+            # ZERO rather than be guessed — an invented denominator is
+            # exactly the defect the ledger was added to prevent.
+            ledger = JoinLedger(no_enclosing_node=data.get("unresolved", 0))
+        else:
+            ledger = JoinLedger(**raw)
         return cls(
             name=data["name"],
             kind=data["kind"],
@@ -156,7 +362,7 @@ class RuntimeRun:
             edges=[tuple(e) for e in data.get("edges", [])],
             coverage=data.get("coverage", {}),
             timeline=data.get("timeline", {}),
-            unresolved=data.get("unresolved", 0),
+            ledger=ledger,
         )
 
 
@@ -194,7 +400,7 @@ def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
             agg["ncalls"] += m["ncalls"]
             agg["tottime"] += m["tottime"]
             agg["cumtime"] = max(agg["cumtime"], m["cumtime"])
-        merged.unresolved += run.unresolved
+        merged.ledger.add(run.ledger)
 
     edge_counts: dict[tuple[str, str], int] = {}
     for run in runs:
@@ -243,7 +449,8 @@ def overlay_cprofile(
     index: dict[str, list[tuple[int, int, str]]],
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
     """Join a ``pstats``-format stats dict onto node IDs.
 
@@ -252,24 +459,23 @@ def overlay_cprofile(
     ``{(file, line, func): (cc, nc, tt, ct)}``. ``nc`` is the (recursion-
     inclusive) call count, ``tt`` self time, ``ct`` cumulative time.
 
-    Records outside ``source_prefix`` (when given) are dropped — stdlib/3rd-
-    party frames collapse away, leaving the project's own stage DAG. Metrics
-    aggregate **by node-ID** (a node may own several code objects): ncalls and
-    tottime sum (both additive), cumtime takes the max (summing cumulative
-    double-counts nested frames).
+    Records outside ``source_prefixes`` (when given) are dropped —
+    stdlib/3rd-party frames collapse away, leaving the project's own stage
+    DAG. Metrics aggregate **by node-ID** (a node may own several code
+    objects): ncalls and tottime sum (both additive), cumtime takes the max
+    (summing cumulative double-counts nested frames).
+
+    See :class:`NodeBinder` for the key space and why the scope filter is a
+    LIST. ``root`` anchors relative paths; cProfile's ``co_filename`` is
+    absolute, so it matters here only for the prefixes.
     """
     run = RuntimeRun(name=name, kind=KIND_CPROFILE, meta=dict(meta or {}))
-
-    def in_scope(filename: str) -> bool:
-        return source_prefix is None or filename.startswith(source_prefix)
+    binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
 
     edge_counts: dict[tuple[str, str], int] = {}
     for (filename, lineno, _func), (_cc, nc, tt, ct, callers) in stats.items():
-        if not in_scope(filename):
-            continue
-        node_id = resolve_node(index, filename, lineno)
+        node_id = binder.node(filename, lineno)
         if node_id is None:
-            run.unresolved += 1
             continue
         m = run.calls.setdefault(
             node_id, {"ncalls": 0, "tottime": 0.0, "cumtime": 0.0}
@@ -279,15 +485,18 @@ def overlay_cprofile(
         m["cumtime"] = max(m["cumtime"], ct)
 
         for (cfile, cline, _cfunc), (_ccc, cnc, _ctt, _cct) in callers.items():
-            if not in_scope(cfile):
-                continue
-            caller_id = resolve_node(index, cfile, cline)
+            # A caller lookup is not a record of its own — it is a second
+            # view of an edge whose callee already counted. Binding it
+            # through the ledger would double-count every call site and
+            # inflate the denominator the diagnosis reasons about.
+            caller_id = binder.peek(cfile, cline)
             if caller_id is None or caller_id == node_id:
-                continue  # unresolved caller, or a recursion self-loop
+                continue  # out of scope, unresolved, or a recursion self-loop
             key = (caller_id, node_id)
             edge_counts[key] = edge_counts.get(key, 0) + cnc
 
     run.edges = [(u, v, c) for (u, v), c in edge_counts.items()]
+    run.ledger = binder.ledger
     return run
 
 
@@ -296,7 +505,8 @@ def ingest_cprofile(
     graph: KnowledgeGraph | nx.MultiDiGraph,
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
     """Load a ``cProfile`` ``.pstats``/``.prof`` artifact and overlay it."""
     import pstats
@@ -304,7 +514,7 @@ def ingest_cprofile(
     stats = pstats.Stats(str(artifact))
     return overlay_cprofile(
         stats.stats, build_node_index(graph), name,  # type: ignore[attr-defined]
-        meta=meta, source_prefix=source_prefix,
+        meta=meta, source_prefixes=source_prefixes, root=root,
     )
 
 
@@ -316,23 +526,35 @@ def overlay_coverage(
     index: dict[str, list[tuple[int, int, str]]],
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
-    """Join a ``coverage json`` (format 3, ``--branch``) report onto node IDs.
+    """Join a ``coverage json`` (format 3) report onto node IDs.
+
+    Produced by ``coverage run --branch`` followed by ``coverage json`` —
+    the ``--branch`` belongs to the RUN, not the report, and ``coverage
+    json --branch`` is rejected outright.
 
     Per-file ``executed_branches`` / ``missing_branches`` are ``[from, to]``
     arcs; an arc is attributed to the node whose ``[lineno, end_lineno]``
     contains its ``from`` line. A node with missing arcs and ≥2 branch arcs is
     a *partial-branch* suspect — a conditional not exercised both ways in this
     run, the runtime evidence behind the accidental-vs-essential distinction.
+
+    ⚠ ``coverage json`` keys its files **relative to the directory it ran
+    in**, while the graph indexes absolute paths, so the two sides do not
+    compare raw — every file drops and the run binds nothing. ``root`` is
+    what closes that gap, and it must be supplied by the caller: the
+    report's own ``meta`` carries only ``format``/``version``/
+    ``timestamp``/``branch_coverage``/``show_contexts``, and records the
+    rundir **nowhere**.
     """
     run = RuntimeRun(name=name, kind=KIND_COVERAGE, meta=dict(meta or {}))
+    binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
 
     for filename, fdata in cov_json.get("files", {}).items():
-        if source_prefix is not None and not filename.startswith(source_prefix):
-            continue
-        spans = index.get(filename)
-        if not spans:
+        spans = binder.spans(filename)
+        if spans is None:
             continue
         exec_lines = set(fdata.get("executed_lines", []))
         miss_lines = set(fdata.get("missing_lines", []))
@@ -354,6 +576,7 @@ def overlay_coverage(
                 "branches_total": total_arcs,
                 "missing_arcs": [list(a) for a in missing],
             }
+    run.ledger = binder.ledger
     return run
 
 
@@ -362,13 +585,14 @@ def ingest_coverage(
     graph: KnowledgeGraph | nx.MultiDiGraph,
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
     """Load a ``coverage json`` artifact and overlay it."""
     cov_json = json.loads(Path(artifact).read_text())
     return overlay_coverage(
         cov_json, build_node_index(graph), name,
-        meta=meta, source_prefix=source_prefix,
+        meta=meta, source_prefixes=source_prefixes, root=root,
     )
 
 
@@ -390,7 +614,8 @@ def overlay_viztracer(
     index: dict[str, list[tuple[int, int, str]]],
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
     """Join viztracer ``traceEvents`` onto node IDs, keeping temporal order.
 
@@ -411,6 +636,7 @@ def overlay_viztracer(
     degenerate and not produced by viztracer.
     """
     run = RuntimeRun(name=name, kind=KIND_VIZTRACER, meta=dict(meta or {}))
+    binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
     calls = [
         e for e in events
         if e.get("ph") == "X" and "ts" in e and "name" in e
@@ -433,11 +659,8 @@ def overlay_viztracer(
         if parsed is None:
             continue
         filename, lineno = parsed
-        if source_prefix is not None and not filename.startswith(source_prefix):
-            continue
-        node_id = resolve_node(index, filename, lineno)
+        node_id = binder.node(filename, lineno)
         if node_id is None:
-            run.unresolved += 1
             continue
         rel_ms = (ts - t0) / 1000.0
         slot = run.timeline.get(node_id)
@@ -449,6 +672,7 @@ def overlay_viztracer(
             slot["count"] += 1
             slot["min_depth"] = min(slot["min_depth"], depth)
             slot["first_ts"] = min(slot["first_ts"], rel_ms)
+    run.ledger = binder.ledger
     return run
 
 
@@ -457,13 +681,14 @@ def ingest_viztracer(
     graph: KnowledgeGraph | nx.MultiDiGraph,
     name: str,
     meta: dict[str, Any] | None = None,
-    source_prefix: str | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
 ) -> RuntimeRun:
     """Load a viztracer JSON artifact (Chrome-trace format) and overlay it."""
     data = json.loads(Path(artifact).read_text())
     return overlay_viztracer(
         data.get("traceEvents", []), build_node_index(graph), name,
-        meta=meta, source_prefix=source_prefix,
+        meta=meta, source_prefixes=source_prefixes, root=root,
     )
 
 

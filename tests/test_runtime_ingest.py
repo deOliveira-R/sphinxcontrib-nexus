@@ -93,7 +93,7 @@ def test_overlay_cprofile_joins_and_builds_edges():
         bar: (5, 0.2, 0.2, {foo: (5, 5, 0.0, 0.0)}),     # foo calls bar ×5
         foo: (1, 0.1, 0.5, {}),
     })
-    run = overlay_cprofile(stats, idx, "r", source_prefix=SRC)
+    run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     assert run.calls["py:function:mod.bar"]["ncalls"] == 5
     assert run.calls["py:function:mod.foo"]["cumtime"] == 0.5
     assert ("py:function:mod.foo", "py:function:mod.bar", 5) in run.edges
@@ -105,7 +105,7 @@ def test_overlay_cprofile_source_prefix_drops_out_of_scope():
         ("/usr/lib/python/json.py", 1, "loads"): (9, 0.0, 0.0, {}),
         (SRC, 10, "foo"): (1, 0.1, 0.1, {}),
     })
-    run = overlay_cprofile(stats, idx, "r", source_prefix=SRC)
+    run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     assert set(run.calls) == {"py:function:mod.foo"}
     assert run.unresolved == 0
 
@@ -118,7 +118,7 @@ def test_overlay_cprofile_aggregates_by_node_id():
         (SRC, 10, "foo"): (3, 0.1, 0.4, {}),
         (SRC, 9, "foo_wrapped"): (2, 0.2, 0.9, {}),
     })
-    run = overlay_cprofile(stats, idx, "r", source_prefix=SRC)
+    run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     m = run.calls["py:function:mod.foo"]
     assert m["ncalls"] == 5 and abs(m["tottime"] - 0.3) < 1e-9
     assert m["cumtime"] == 0.9
@@ -128,14 +128,14 @@ def test_overlay_cprofile_recursion_self_loop_dropped():
     idx = build_node_index(_graph())
     foo = (SRC, 10, "foo")
     stats = _stats({foo: (2, 0.1, 0.1, {foo: (2, 2, 0.0, 0.0)})})
-    run = overlay_cprofile(stats, idx, "r", source_prefix=SRC)
+    run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     assert run.edges == []
 
 
 def test_overlay_cprofile_unresolved_counted():
     idx = build_node_index(_graph())
     stats = _stats({(SRC, 999, "ghost"): (1, 0.0, 0.0, {})})
-    run = overlay_cprofile(stats, idx, "r", source_prefix=SRC)
+    run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     assert run.unresolved == 1 and run.calls == {}
 
 
@@ -160,7 +160,7 @@ def _cov_json():
 
 def test_overlay_coverage_branch_attribution():
     idx = build_node_index(_graph())
-    run = overlay_coverage(_cov_json(), idx, "c", source_prefix=SRC)
+    run = overlay_coverage(_cov_json(), idx, "c", source_prefixes=[SRC])
     foo = run.coverage["py:function:mod.foo"]
     bar = run.coverage["py:function:mod.bar"]
     assert foo["branches_total"] == 2 and foo["branches_hit"] == 2   # full
@@ -170,7 +170,7 @@ def test_overlay_coverage_branch_attribution():
 
 def test_overlay_coverage_lines():
     idx = build_node_index(_graph())
-    run = overlay_coverage(_cov_json(), idx, "c", source_prefix=SRC)
+    run = overlay_coverage(_cov_json(), idx, "c", source_prefixes=[SRC])
     bar = run.coverage["py:function:mod.bar"]
     assert bar["lines_hit"] == 3 and bar["lines_total"] == 4  # 30,32,33 hit; 35 miss
 
@@ -179,7 +179,7 @@ def test_ingest_coverage_from_file(tmp_path):
     import json
     art = tmp_path / "cov.json"
     art.write_text(json.dumps(_cov_json()))
-    run = ingest_coverage(art, _graph(), "c", source_prefix=SRC)
+    run = ingest_coverage(art, _graph(), "c", source_prefixes=[SRC])
     assert run.kind == "coverage"
     assert "py:function:mod.bar" in run.coverage
 
@@ -265,7 +265,7 @@ def _viz_events():
 
 def test_overlay_viztracer_depth_and_order():
     idx = build_node_index(_graph())
-    run = overlay_viztracer(_viz_events(), idx, "v", source_prefix=SRC)
+    run = overlay_viztracer(_viz_events(), idx, "v", source_prefixes=[SRC])
     foo = run.timeline["py:function:mod.foo"]
     bar = run.timeline["py:function:mod.bar"]
     assert foo["min_depth"] == 0 and bar["min_depth"] == 1   # bar nested in foo
@@ -276,7 +276,7 @@ def test_overlay_viztracer_depth_and_order():
 
 def test_overlay_viztracer_scope_and_unresolved():
     idx = build_node_index(_graph())
-    run = overlay_viztracer(_viz_events(), idx, "v", source_prefix=SRC)
+    run = overlay_viztracer(_viz_events(), idx, "v", source_prefixes=[SRC])
     # the stdlib frame is dropped silently; the in-scope ghost is counted
     assert run.unresolved == 1
     assert set(run.timeline) == {"py:function:mod.foo", "py:function:mod.bar"}
@@ -294,7 +294,7 @@ def test_overlay_viztracer_depth_shared_start_and_zero_dur():
         ev(f"bar ({SRC}:30)", 1000.0, 40.0),     # shares START -> still depth 1
         ev(f"bar ({SRC}:30)", 1050.0, 0.0),      # zero-dur, inside foo -> depth 1
     ]
-    run = overlay_viztracer(events, build_node_index(_graph()), "v", source_prefix=SRC)
+    run = overlay_viztracer(events, build_node_index(_graph()), "v", source_prefixes=[SRC])
     assert run.timeline["py:function:mod.foo"]["min_depth"] == 0
     assert run.timeline["py:function:mod.bar"]["min_depth"] == 1
     assert run.timeline["py:function:mod.bar"]["count"] == 2
@@ -312,3 +312,168 @@ def test_store_list_and_delete(tmp_path):
     assert store.delete("one") is True
     assert store.delete("one") is False
     assert {r["name"] for r in store.list_runs()} == {"two"}
+
+
+# ── the key space, and the ledger that makes a zero-join legible ─────
+#
+# `coverage json` emits file keys RELATIVE to the directory it ran in;
+# the graph indexes ABSOLUTE paths. Compared raw, every file drops — and
+# the drop happened upstream of any counter, so a total join failure
+# printed `nodes: 0 / edges: 0 / unresolved: 0` and exited 0. That is
+# indistinguishable from a workload that genuinely touched nothing, and
+# it points in the reassuring direction: a consumer reads it as a
+# measurement.
+#
+# Note the asymmetry that hid it for so long: cProfile's `co_filename`
+# and viztracer's event names are absolute, so those backends never hit
+# this path. A clean cProfile ingest is NOT evidence coverage works.
+
+
+def _relative_cov_json():
+    """The same report coverage.py actually writes: keys relative."""
+    return {
+        "meta": {"format": 3, "branch_coverage": True},
+        "files": {
+            "pkg/mod.py": {          # SRC is /proj/pkg/mod.py
+                "executed_lines": [10, 12, 13],
+                "missing_lines": [],
+                "executed_branches": [[12, 13]],
+                "missing_branches": [],
+            },
+        },
+    }
+
+
+def test_relative_coverage_keys_bind_when_given_a_root():
+    """The #56 repair: the two sides are put in one key space."""
+    run = overlay_coverage(
+        _relative_cov_json(), build_node_index(_graph()), "c", root="/proj",
+    )
+    assert "py:function:mod.foo" in run.coverage
+    assert run.ledger.bound == 1
+    assert run.ledger.diagnosis() is None
+
+
+def test_relative_coverage_keys_bind_NOTHING_against_a_wrong_root():
+    """Control: identical input, only `root` differs.
+
+    Without this the test above could pass for reasons unrelated to the
+    key space — and this is also the regression itself, so it pins the
+    SHAPE of the failure (every file unindexed) rather than merely that
+    it failed.
+    """
+    run = overlay_coverage(
+        _relative_cov_json(), build_node_index(_graph()), "c",
+        root="/somewhere/else",
+    )
+    assert run.coverage == {}
+    assert run.ledger.bound == 0
+    assert run.ledger.unindexed_file == 1
+    assert "different key spaces" in (run.ledger.diagnosis() or "")
+
+
+def test_a_zero_join_is_never_silent():
+    """The load-bearing claim: `nodes: 0` must carry a reason.
+
+    `diagnosis()` returning None is what the CLI and the MCP server use
+    to decide between "store it" and "refuse and exit non-zero".
+    """
+    empty = overlay_coverage({"files": {}}, build_node_index(_graph()), "c")
+    assert empty.ledger.considered == 0
+    assert empty.ledger.diagnosis() is not None
+
+
+def test_ledger_tells_the_three_drop_reasons_apart():
+    """One count would collapse three different remedies into one number."""
+    cov = {"files": {
+        "/proj/pkg/mod.py": {"executed_lines": [10]},       # binds
+        "/proj/other/z.py": {"executed_lines": [1]},        # in scope, unindexed
+        "/elsewhere/q.py": {"executed_lines": [1]},         # out of scope
+    }}
+    run = overlay_coverage(
+        cov, build_node_index(_graph()), "c", source_prefixes=["/proj"],
+    )
+    assert (run.ledger.bound, run.ledger.unindexed_file,
+            run.ledger.outside_scope) == (1, 1, 1)
+    assert run.ledger.considered == 3
+
+
+def test_scope_accepts_several_prefixes():
+    """A profiled suite yields tests -> package records.
+
+    Either prefix ALONE drops one endpoint of every one of them, which is
+    why this is a list and not a string.
+    """
+    g = _graph()
+    g.add_node("py:function:t.test_foo", type="function", name="t.test_foo",
+               file_path="/proj/tests/test_foo.py", lineno=5, end_lineno=8)
+    idx = build_node_index(g)
+    cov = {"files": {
+        "/proj/pkg/mod.py": {"executed_lines": [10]},
+        "/proj/tests/test_foo.py": {"executed_lines": [5]},
+    }}
+
+    both = overlay_coverage(cov, idx, "c",
+                            source_prefixes=["/proj/pkg", "/proj/tests"])
+    assert both.ledger.bound == 2
+
+    one = overlay_coverage(cov, idx, "c", source_prefixes=["/proj/pkg"])
+    assert one.ledger.bound == 1, "a single prefix must drop the other endpoint"
+    assert one.ledger.outside_scope == 1
+
+
+def test_scope_is_path_containment_not_string_prefix():
+    """`/proj/pkg_scratch` is not inside `/proj/pkg`, though it startswith it."""
+    g = _graph()
+    g.add_node("py:function:s.f", type="function", name="s.f",
+               file_path="/proj/pkg_scratch/s.py", lineno=1, end_lineno=3)
+    cov = {"files": {"/proj/pkg_scratch/s.py": {"executed_lines": [1]}}}
+    run = overlay_coverage(cov, build_node_index(g), "c",
+                           source_prefixes=["/proj/pkg"])
+    assert run.ledger.outside_scope == 1
+    assert run.ledger.bound == 0
+
+
+def test_cprofile_caller_lookups_do_not_inflate_the_ledger():
+    """A caller entry re-states a call whose callee already counted.
+
+    Counting both would double the denominator `diagnosis()` reasons
+    about, so a half-bound run could look fully bound.
+    """
+    stats = {
+        (SRC, 30, "bar"): (1, 1, 0.0, 0.0, {(SRC, 10, "foo"): (1, 1, 0.0, 0.0)}),
+        (SRC, 10, "foo"): (1, 1, 0.0, 0.0, {}),
+    }
+    run = overlay_cprofile(stats, build_node_index(_graph()), "r")
+    assert run.ledger.considered == 2, "2 stats rows, not 3 with the caller"
+    assert run.ledger.bound == 2
+    assert run.edges == [("py:function:mod.foo", "py:function:mod.bar", 1)]
+
+
+def test_a_pre_ledger_sidecar_still_loads():
+    """Old sidecars carry a bare `unresolved` and no ledger.
+
+    Its count is exactly today's `no_enclosing_node`; the other three
+    reasons were never measured and must stay ZERO rather than be
+    guessed — an invented denominator is the defect the ledger exists to
+    prevent.
+    """
+    run = RuntimeRun.from_dict({
+        "name": "old", "kind": "cprofile", "unresolved": 7,
+        "calls": {"x": {"ncalls": 1, "tottime": 0.0, "cumtime": 0.0}},
+    })
+    assert run.unresolved == 7
+    assert run.ledger.no_enclosing_node == 7
+    assert run.ledger.bound == 0
+    assert run.ledger.unindexed_file == 0
+
+
+def test_merge_sums_every_ledger_reason():
+    a = RuntimeRun(name="a", kind="cprofile")
+    a.ledger.bound, a.ledger.outside_scope = 3, 1
+    b = RuntimeRun(name="b", kind="cprofile")
+    b.ledger.bound, b.ledger.unindexed_file = 4, 2
+    merged = merge_runs([a, b])
+    assert merged.ledger.bound == 7
+    assert merged.ledger.outside_scope == 1
+    assert merged.ledger.unindexed_file == 2

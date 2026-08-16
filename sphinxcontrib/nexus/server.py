@@ -745,7 +745,8 @@ def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 50
 @nexus_tool
 def runtime_ingest(
     artifact: str, kind: str = "cprofile", run: str = "default",
-    source_prefix: str = "", command: str = "",
+    source_prefix: str | list[str] = "", command: str = "",
+    root: str = "",
 ) -> str:
     """Ingest a runtime trace and overlay it on the static graph by node-ID.
 
@@ -764,30 +765,64 @@ def runtime_ingest(
             branch coverage → the missing-type branch signal), or "viztracer"
             (temporal order → the observed stage sequence).
         run: Name to store under (re-ingesting the same name overwrites).
-        source_prefix: Keep only trace records under this path prefix (drops
-            stdlib / third-party frames). Recommended: your package's src dir.
+        source_prefix: Keep only trace records under these path prefixes
+            (drops stdlib / third-party frames). Accepts a LIST, and usually
+            needs one: profiling a test suite produces tests -> package
+            records, so either directory alone drops one endpoint of every
+            one of them, while the repository root sweeps in the virtualenv.
         command: Free-text note of the workload, recorded in run metadata.
+        root: Directory that relative paths in the artifact are relative to —
+            the working directory the traced run used. `coverage json` emits
+            RELATIVE file keys and records the rundir nowhere in the report,
+            so it cannot be recovered from the artifact; without this the
+            join silently binds nothing. Defaults to the project root.
     """
     from sphinxcontrib.nexus import runtime as rt
+    from sphinxcontrib.nexus.project import ProjectConfig
 
     ingesters = {
-        rt.KIND_CPROFILE: rt.ingest_cprofile,
-        rt.KIND_COVERAGE: rt.ingest_coverage,
-        rt.KIND_VIZTRACER: rt.ingest_viztracer,
+        rt.KIND_CPROFILE: (rt.ingest_cprofile, "calls"),
+        rt.KIND_COVERAGE: (rt.ingest_coverage, "coverage"),
+        rt.KIND_VIZTRACER: (rt.ingest_viztracer, "timeline"),
     }
     if kind not in ingesters:
         return to_json(
             {"error": f"kind must be one of {sorted(ingesters)}, got {kind!r}"})
+    ingest, family = ingesters[kind]
+    prefixes = (
+        [source_prefix] if isinstance(source_prefix, str) and source_prefix
+        else list(source_prefix) or None
+    )
     q = _get_query()
+    base = Path(root) if root else ProjectConfig.load(Path.cwd()).root
     meta = {"command": command} if command else {}
-    r = ingesters[kind](artifact, q.knowledge_graph, run,
-                        meta=meta, source_prefix=source_prefix or None)
-    _get_runtime_store().write(r)
-    return to_json({
+    r = ingest(artifact, q.knowledge_graph, run,
+               meta=meta, source_prefixes=prefixes, root=base)
+
+    ledger = r.ledger
+    payload: dict[str, Any] = {
         "run": r.name, "kind": r.kind,
-        "nodes": len(r.calls or r.coverage or r.timeline),
-        "edges": len(r.edges), "unresolved": r.unresolved,
-    })
+        # The family this KIND fills, not "whichever is non-empty" — the
+        # latter cannot tell a successful run apart from an empty one.
+        "nodes": len(getattr(r, family)),
+        "edges": len(r.edges),
+        "root": str(base),
+        "lookups": {
+            "considered": ledger.considered,
+            "bound": ledger.bound,
+            "outside_scope": ledger.outside_scope,
+            "unindexed_file": ledger.unindexed_file,
+            "no_enclosing_node": ledger.no_enclosing_node,
+        },
+    }
+    diagnosis = ledger.diagnosis()
+    if diagnosis is not None:
+        # Not stored. An empty run listed by `runtime_runs` answers every
+        # query with a confident "nothing fired".
+        payload["error"] = f"ingested nothing: {diagnosis}"
+        return to_json(payload)
+    _get_runtime_store().write(r)
+    return to_json(payload)
 
 
 @nexus_tool

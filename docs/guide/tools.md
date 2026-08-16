@@ -89,7 +89,7 @@ every build.
 
 | Tool | Answers | Key args |
 |---|---|---|
-| `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` artifact | `artifact`, `kind`, `run`, `source_prefix` |
+| `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` artifact | `artifact`, `kind`, `run`, `source_prefix` (list), `root` |
 | `runtime_runs` | Which runs have been ingested? | — |
 | `runtime_hotspots` | Where did time and iterations go? | `run`, `by`, `limit` |
 | `runtime_edges` | `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only` |

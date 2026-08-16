@@ -43,7 +43,7 @@ This file is shared across all nexus-* skills.
 The static graph is *what can run*; a runtime overlay is *what actually ran*. Capture is consumer-side (run a canonical workload under a tracer), then `runtime_ingest` joins the artifact onto node-IDs and stores it in a sidecar (`_nexus/traces/<run>.json`) — never in `graph.db`, which is rebuilt on every `sphinx-build`. The query tools take `run` as one name OR comma-separated names to **union the canonical suite**.
 | Tool | What it answers | Key args |
 |------|----------------|----------|
-| `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` trace on the graph | `artifact`, `kind`, `run`, `source_prefix` |
+| `runtime_ingest` | Overlay a `cProfile` / `coverage --branch` / `viztracer` trace on the graph | `artifact`, `kind`, `run`, `source_prefix` (list), `root` |
 | `runtime_runs` | List ingested runs | — |
 | `runtime_hotspots` | Hot path / iteration counts (the dynamic stage DAG) | `run`, `by` (cumtime/ncalls/tottime), `limit` |
 | `runtime_edges` | Fired-vs-static edges: `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only`, `limit` |
@@ -155,7 +155,7 @@ nexus processes --db <path> [--min-length 3]
 nexus shortest-path <source> <target> --db <path> [--max-hops 8]
 nexus graph-query "<pattern>" --db <path> [--limit 50]
 nexus trace <test_node_id> --db <path>
-nexus runtime-ingest <artifact> --db <path> [--kind cprofile|coverage|viztracer] [--run NAME] [--source-prefix PFX] [--note TEXT]
+nexus runtime-ingest <artifact> [--kind cprofile|coverage|viztracer] [--run NAME] [--source-prefix PFX ...] [--root DIR] [--note TEXT]
 nexus runtime-runs --db <path>
 nexus runtime-hotspots --db <path> [--run NAME[,NAME...]] [--by cumtime|ncalls|tottime] [--limit 20]
 nexus runtime-edges --db <path> [--run NAME[,NAME...]] [--mode dynamic_only|fired|dead] [--node SUBSTR] [--substantive-only] [--limit 50]
