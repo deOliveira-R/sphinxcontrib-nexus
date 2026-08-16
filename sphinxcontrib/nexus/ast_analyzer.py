@@ -162,7 +162,26 @@ def _render_decorator(node: ast.expr) -> str:
 def _dotted_name(node: ast.expr) -> str | None:
     """Reconstruct a dotted identifier like ``pytest.mark.l0`` from an
     ``Attribute`` / ``Name`` chain. Returns ``None`` if the chain
-    contains anything else (calls, subscripts, etc.)."""
+    contains anything else (calls, subscripts, etc.).
+
+    ``None`` is the load-bearing half of the contract, not an edge case.
+    A chain rooted in a run-time value — ``get_thing().method``,
+    ``items[0].method``, ``"".join`` — names nothing a static reader can
+    resolve, and the truncated tail (``"method"``, ``"join"``) is a
+    *different symbol* that merely shares a leaf.
+
+    Returning that tail is how call resolution invented edges: until
+    2026-08-16 a twin of this function, ``_unparse_attribute``, dropped an
+    unresolvable root and returned the tail, which the phantom folder then
+    bound to whichever unrelated symbol owned that leaf. It failed in the
+    false-ALIVE direction — inventing callers, so ``impact``/``retest``
+    over-report and ``dead_functions`` cannot flag a symbol whose only
+    "callers" are fabricated. Measured on ORPHEUS's graph before the twin
+    was retired: 510 attributed ``calls`` edges came from such sites, 85
+    landed on a real indexed symbol, and **62 symbols had no incoming call
+    edge that was not fabricated** — including a self-loop claiming
+    ``SumOfTensorProductsOperator.apply`` calls itself.
+    """
     parts: list[str] = []
     curr: ast.expr = node
     while isinstance(curr, ast.Attribute):
@@ -496,8 +515,8 @@ def _extract_type_names(
 
     # Dotted name: np.ndarray, scipy.sparse.csr_matrix
     if isinstance(node, ast.Attribute):
-        full = _unparse_attribute(node)
-        return [imports.resolve(full)]
+        full = _dotted_name(node)
+        return [imports.resolve(full)] if full is not None else []
 
     # Subscript: list[int], Optional[str], dict[str, int]
     if isinstance(node, ast.Subscript):
@@ -521,31 +540,19 @@ def _extract_type_names(
     return []
 
 
-def _unparse_attribute(node: ast.Attribute) -> str:
-    """Reconstruct a dotted name from nested ast.Attribute nodes."""
-    parts: list[str] = []
-    curr: ast.expr = node
-    while isinstance(curr, ast.Attribute):
-        parts.append(curr.attr)
-        curr = curr.value
-    if isinstance(curr, ast.Name):
-        parts.append(curr.id)
-    parts.reverse()
-    return ".".join(parts)
-
-
 def _resolve_call_target(node: ast.Call, imports: ImportTracker) -> str | None:
-    """Extract the function name from a Call node and resolve aliases."""
-    func = node.func
-    if isinstance(func, ast.Name):
-        return imports.resolve(func.id)
-    if isinstance(func, ast.Attribute):
-        full = _unparse_attribute(func)
-        # Skip self.method() — resolve to ClassName.method in the visitor
-        if full.startswith("self."):
-            return None  # handled specially in the visitor
-        return imports.resolve(full)
-    return None
+    """The name a call site names, resolved through imports — or ``None``.
+
+    ``None`` means *this call names no static target*, which covers both a
+    callee that is a run-time value (``get_thing().method()``) and
+    ``self.method()``, whose enclosing class the visitor supplies.
+    """
+    full = _dotted_name(node.func)
+    if full is None:
+        return None  # the callee is a run-time value; claim no edge
+    if full.startswith("self."):
+        return None  # handled specially in the visitor
+    return imports.resolve(full)
 
 
 # ---------------------------------------------------------------------------
@@ -1232,7 +1239,10 @@ class CodeVisitor(ast.NodeVisitor):
             if isinstance(base, ast.Name):
                 base_name = self._imports.resolve(base.id)
             elif isinstance(base, ast.Attribute):
-                base_name = self._imports.resolve(_unparse_attribute(base))
+                dotted = _dotted_name(base)
+                if dotted is None:
+                    continue  # a run-time base class names no target
+                base_name = self._imports.resolve(dotted)
             else:
                 continue
             self.edges.append(GraphEdge(

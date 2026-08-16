@@ -250,6 +250,57 @@ def test_calls_aliased():
     assert "py:function:numpy.array" in targets
 
 
+# A callee reached through a run-time value names no static target. Until
+# 2026-08-16 the resolver dropped the unresolvable root and kept the tail, so
+# ``get_thing().method()`` minted ``calls -> py:function:method`` — a bare leaf
+# the phantom folder then bound to whichever unrelated symbol owned that name.
+# It failed in the false-ALIVE direction: inventing callers inflates ``impact``
+# and ``retest``, and hides a symbol from ``dead_functions``.
+#
+# ``[M]`` 2026-08-16 on ORPHEUS's graph before the fix: 510 attributed ``calls``
+# edges came from such sites, 85 landed on a real indexed symbol, and 62 symbols
+# had NO incoming call edge that was not fabricated — including a self-loop
+# claiming ``SumOfTensorProductsOperator.apply`` calls itself.
+
+
+# Each row carries the id the OLD resolver fabricated for it, because the
+# truncated tail is not always the bare leaf: ``a.b().c.method()`` kept two
+# segments and produced ``c.method``. A row asserting only the bare-leaf id
+# would be green for that case under the very behaviour it names — an arm with
+# no witness (``vv-principles`` #17).
+@pytest.mark.parametrize(
+    "root, expr, fabricated",
+    [
+        ("call", "get_thing().method()", "py:function:method"),
+        ("subscript", "registry['k'].method()", "py:function:method"),
+        ("constant", "''.method()", "py:function:method"),
+        ("call_chain", "a.b().c.method()", "py:function:c.method"),
+        ("binop", "(x + y).method()", "py:function:method"),
+    ],
+)
+def test_a_runtime_rooted_callee_mints_no_call_edge(root, expr, fabricated):
+    v = _visit_source(f"def foo():\n    {expr}")
+    targets = {e[1] for e in _edge_tuples(v, "calls")}
+    assert fabricated not in targets, (
+        f"the {root}-rooted callee {expr!r} fabricated a call to {fabricated!r}; "
+        f"got {sorted(targets)}"
+    )
+
+
+def test_a_name_rooted_callee_still_mints_its_edge():
+    """Positive control for the negative legs above.
+
+    A green reading of "no edge is created" is also what a resolver that
+    creates NO edges at all would produce (``vv-principles`` #19). This leg
+    pins that the same dotted-chain path still resolves the calls it should,
+    so those legs measure the ROOT's resolvability rather than the resolver
+    being dead.
+    """
+    v = _visit_source("import pkg\ndef foo():\n    pkg.sub.method()")
+    targets = {e[1] for e in _edge_tuples(v, "calls")}
+    assert "py:function:pkg.sub.method" in targets
+
+
 def test_type_uses_param():
     v = _visit_source("def foo(x: int): pass")
     edges = _edge_tuples(v, "type_uses")
