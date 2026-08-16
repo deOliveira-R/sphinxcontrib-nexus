@@ -474,20 +474,32 @@ def test_every_declared_origin_names_a_producer_that_can_emit_it(tmp_path):
     )
 
 
-def test_the_ast_analyzer_does_not_type_an_exception_class_as_one(tmp_path):
-    """Pins the fact that made `exception`'s origin false, so the day
-    the AST learns to assign it, this gate says so and the origin moves
-    back with it.
+def test_an_exception_class_is_typed_class_by_both_producers():
+    """`exception` was RETIRED as a node type on 2026-08-16.
 
-    ⚠ This asserts a LIMITATION, deliberately. `exception` is slated for
-    retirement (an exception IS a class — one realization, no morphism,
-    so it fails the type-minting criterion), and whichever way that
-    lands, this gate has to be revisited rather than silently kept
-    green.
+    ⚠ This replaces `test_the_ast_analyzer_does_not_type_an_exception_class_as_one`,
+    which pinned the AST's inability to assign it. That gate said in its
+    own docstring that it had to be revisited rather than silently kept
+    green whichever way the retirement landed — and it went red the
+    moment the type went away, which is what a limitation-pin is for.
+
+    An exception IS a class: one realization, no non-identity morphism.
+    [M] the old split was 2 classes typed `exception` against 24 more
+    exception classes typed `class`, discriminated by whether autodoc
+    documented them.
     """
+    from sphinxcontrib.nexus._mappings import DOMAIN_TYPE_MAP, REFTYPE_OBJTYPE_MAP
+
+    assert "exception" not in {t.value for t in NodeType}
+    assert "exception" not in Ontology.load().nodes
+    # both producers land on `class`
+    assert DOMAIN_TYPE_MAP[("py", "exception")] is NodeType.CLASS
+    assert REFTYPE_OBJTYPE_MAP["exc"] == NodeType.CLASS.value
+
+
+def test_the_ast_types_an_exception_class_as_a_class(tmp_path):
     emitted = _types_the_ast_analyzer_emits(tmp_path)
     assert NodeType.CLASS.value in emitted
-    assert NodeType.EXCEPTION.value not in emitted
 
 
 # ---------------------------------------------------------------------------

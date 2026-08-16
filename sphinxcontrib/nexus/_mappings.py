@@ -84,7 +84,7 @@ DOMAIN_TYPE_MAP: dict[tuple[str, str], NodeType] = {
     ("py", "attribute"): NodeType.ATTRIBUTE,
     ("py", "module"): NodeType.MODULE,
     ("py", "data"): NodeType.DATA,
-    ("py", "exception"): NodeType.EXCEPTION,
+    ("py", "exception"): NodeType.CLASS,   # an exception IS a class
     # A property is a METHOD, not an attribute — and this line is the
     # arbiter between the two producers. The AST sees `def ng(self)`
     # inside a class and types it `method`; autodoc reports objtype
@@ -229,7 +229,7 @@ REFTYPE_OBJTYPE_MAP: dict[str, str] = {
     "mod": "module",
     "attr": "attribute",
     "data": "data",
-    "exc": "exception",
+    "exc": "class",       # `:exc:` names a class; see NodeType
     "obj": "function",
 }
 
@@ -260,7 +260,6 @@ REFTYPE_OBJTYPE_MAP: dict[str, str] = {
 #: the class rather than a same-leaf function elsewhere.
 TYPE_RANK: dict[str, int] = {
     NodeType.CLASS.value: 0,
-    NodeType.EXCEPTION.value: 1,
     NodeType.METHOD.value: 2,
     NodeType.FUNCTION.value: 3,
     NodeType.TYPE.value: 4,

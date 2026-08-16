@@ -20,7 +20,13 @@ class NodeType(str, Enum):
     EQUATION = "equation"
     TERM = "term"
     DATA = "data"
-    EXCEPTION = "exception"
+    # ``EXCEPTION`` lived here until 2026-08-16. An exception IS a class —
+    # one realization, no non-identity morphism — so it never met the
+    # type-minting criterion, and in practice the discriminator was "did
+    # autodoc document it": [M] 2 classes on ORPHEUS were typed
+    # `exception` while 24 more exception classes were typed `class`.
+    # "Is this an exception" is a question about its BASES, which the
+    # `inherits` edges already answer.
     TYPE = "type"
     EXTERNAL = "external"
     UNRESOLVED = "unresolved"

@@ -111,20 +111,14 @@ origin = "ast"
 description = "A module-level constant."
 origin = "ast"
 
-[node.exception]
-description = "An exception class."
-# ⚠ `sphinx`, not `ast`, and the correction is the point. The AST analyzer
-# cannot assign this: it types every `class` statement `class`, so a class is
-# typed `exception` only when autodoc documented it as one. [M] 2026-08-16 on
-# ORPHEUS that is 2 classes, while 24 more exception classes are typed `class`
-# — the discriminator is "did someone write a docs page", which is not a fact
-# about the object.
-# ⛔ SLATED FOR RETIREMENT. An exception IS a class: one realization, no
-# non-identity morphism, so it fails the type-minting criterion. The end state
-# is no type at all — "is this an exception" is a QUERY over `inherits`, not a
-# stored kind. Recorded here so the correction below is not mistaken for
-# endorsement.
-origin = "sphinx"
+# ⛔ `[node.exception]` RETIRED 2026-08-16. An exception IS a class — one
+# realization, no non-identity morphism — so it never met the type-minting
+# criterion. In practice the discriminator was "did autodoc document it":
+# [M] 2 classes on ORPHEUS were typed `exception` while 24 more exception
+# classes were typed `class`, which is not a fact about the object. Its own
+# declared `origin` was the tell — it claimed `ast`, and no AST producer
+# could ever assign it. "Is this an exception" is a question about BASES,
+# which the `inherits` edges already answer.
 
 [node.type]
 description = "A type alias."
@@ -180,8 +174,8 @@ sources = ["ast"]
 
 [edge.inherits]
 description = "Class → base class."
-domain = ["class", "exception"]
-range = ["class", "exception", "external", "unresolved"]
+domain = ["class"]
+range = ["class", "external", "unresolved"]
 enforcement = "warn"
 sources = ["ast"]
 

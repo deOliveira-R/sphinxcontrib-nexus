@@ -1597,7 +1597,6 @@ _CANONICAL_TYPES: frozenset[str] = frozenset({
     NodeType.FUNCTION.value,
     NodeType.METHOD.value,
     NodeType.MODULE.value,
-    NodeType.EXCEPTION.value,
     NodeType.TYPE.value,
     NodeType.ATTRIBUTE.value,
     NodeType.DATA.value,
@@ -1624,7 +1623,6 @@ _ID_PREFIX_TO_TYPE: dict[str, str] = {
     "py:method:": NodeType.METHOD.value,
     "py:module:": NodeType.MODULE.value,
     "py:attribute:": NodeType.ATTRIBUTE.value,
-    "py:exception:": NodeType.EXCEPTION.value,
     "py:type:": NodeType.TYPE.value,
     "py:data:": NodeType.DATA.value,
 }
@@ -1789,7 +1787,7 @@ def _namespace_of(g: "Any", node_id: str) -> tuple[str, str]:
         if ntype == NodeType.MODULE.value:
             modname = name
             break
-        if ntype in (NodeType.CLASS.value, NodeType.EXCEPTION.value):
+        if ntype == NodeType.CLASS.value:
             classname = name.rsplit(".", 1)[-1]
         # A symbol has more than one ``contains`` parent: its lexical
         # owner (module/class) AND every doc page that documents it.
