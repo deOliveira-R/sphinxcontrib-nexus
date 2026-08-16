@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 from sphinxcontrib.nexus._mappings import (
     PLACEHOLDER_TYPES,
+    REFTYPE_OBJTYPE_MAP,
     candidate_rank,
     candidates_are_ambiguous,
     test_node_is_off_limits,
@@ -923,12 +924,6 @@ class CodeVisitor(ast.NodeVisitor):
                 metadata={"source": "ast"},
             ))
 
-        # Python-domain role → objtype
-        py_type_map = {
-            "func": "function", "meth": "method", "class": "class",
-            "mod": "module", "attr": "attribute", "data": "data",
-            "exc": "exception", "obj": "function",
-        }
         for match in _SPHINX_ROLE_RE.finditer(docstring):
             role, raw = match.group(1), match.group(2)
             target = _parse_role_target(raw)
@@ -944,14 +939,14 @@ class CodeVisitor(ast.NodeVisitor):
                 if any(c in target for c in "\\{}"):
                     continue
                 target_id = f"math:equation:{target}"
-            elif role in py_type_map:
+            elif role in REFTYPE_OBJTYPE_MAP:
                 resolved = self._imports.resolve(target)
                 if not _is_dotted_identifier(resolved):
                     # Not a well-formed dotted path even after
                     # wrap-normalization — forging a node for it
                     # would create a phantom nothing can resolve.
                     continue
-                target_id = f"py:{py_type_map[role]}:{resolved}"
+                target_id = f"py:{REFTYPE_OBJTYPE_MAP[role]}:{resolved}"
             else:
                 # Unknown or unsupported role — skip rather than forge a
                 # bogus `py:<role>:...` node that can never resolve.

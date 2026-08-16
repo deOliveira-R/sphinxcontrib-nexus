@@ -449,3 +449,76 @@ def test_parallel_build_matches_serial(tmp_path_factory):
     # already covers this, but this gives a cleaner failure
     # message).
     assert len(serial.edges) == len(parallel.edges)
+
+
+# ---------------------------------------------------------------------------
+# A Python-domain id is spelled with the objtype, on BOTH producers
+# ---------------------------------------------------------------------------
+#
+# A node id carries the objtype (``function``), but a Sphinx cross-reference
+# carries the ROLE (``func``). The docstring scanner in ``ast_analyzer``
+# translated between them with a local dict; the doctree walker in
+# ``extractors`` did not, so the same symbol got two ids and its edges were
+# split between them.
+#
+# ``[M]`` 2026-08-16 on ORPHEUS's graph before the map was hoisted to
+# ``_mappings.REFTYPE_OBJTYPE_MAP``: 316 short-prefix nodes (``py:func`` 206,
+# ``py:mod`` 55, ``py:meth`` 23, ``py:attr`` 22, ``py:obj`` 8, ``py:exc`` 2)
+# and 265 symbols carrying both spellings at once.
+
+_ROLE_SPELLED_PREFIXES = (
+    "py:func:", "py:meth:", "py:attr:", "py:mod:", "py:exc:", "py:obj:",
+)
+
+
+def test_no_node_id_is_spelled_with_a_role_instead_of_an_objtype(fixture_graph):
+    offenders = sorted(
+        n for n in fixture_graph
+        if isinstance(n, str) and n.startswith(_ROLE_SPELLED_PREFIXES)
+    )
+    assert not offenders, (
+        "these ids are spelled with the Sphinx ROLE, so they are separate "
+        f"nodes from the objtype-spelled ones: {offenders}"
+    )
+
+
+@pytest.mark.parametrize(
+    "objtype_id, role_id",
+    [
+        ("py:function:solver_pkg.absent.compute_leakage",
+         "py:func:solver_pkg.absent.compute_leakage"),
+        ("py:method:solver_pkg.helpers.Mesh.absent_method",
+         "py:meth:solver_pkg.helpers.Mesh.absent_method"),
+        ("py:attribute:solver_pkg.helpers.Mesh.absent_attr",
+         "py:attr:solver_pkg.helpers.Mesh.absent_attr"),
+        ("py:function:numpy.absent_function",
+         "py:func:numpy.absent_function"),
+    ],
+)
+def test_an_unresolved_prose_role_lands_under_its_objtype(
+    fixture_graph, objtype_id, role_id
+):
+    """The four roles in ``theory/balance.rst`` name nothing resolvable, so
+    each takes the branch that forges an id — the branch the fix touches."""
+    assert role_id not in fixture_graph
+    assert objtype_id in fixture_graph, (
+        f"{objtype_id} absent; graph has "
+        f"{sorted(n for n in fixture_graph if 'absent' in str(n))}"
+    )
+
+
+def test_a_resolvable_prose_role_still_reaches_the_documented_node(fixture_graph):
+    """Positive control for the two legs above.
+
+    They assert that a short-prefix id is ABSENT, which is also true of a
+    walker that stopped emitting reference nodes at all (``vv-principles``
+    #19). This pins that a role which DOES resolve still lands on the
+    autodoc'd node — so the legs above measure the SPELLING rather than the
+    walker being dead.
+    """
+    target = "py:function:solver_pkg.solver.solve_attenuation"
+    assert target in fixture_graph
+    assert not any(
+        str(n).endswith("solve_attenuation") and str(n).startswith("py:func:")
+        for n in fixture_graph
+    ), "the resolvable role forged a phantom beside the documented node"

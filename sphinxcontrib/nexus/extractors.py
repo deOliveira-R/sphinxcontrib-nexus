@@ -11,6 +11,7 @@ from sphinx import addnodes
 from sphinxcontrib.nexus._mappings import (
     DOMAIN_TYPE_MAP,
     REFTYPE_EDGE_MAP,
+    REFTYPE_OBJTYPE_MAP,
     resolve_target_id,
 )
 from sphinxcontrib.nexus.graph import (
@@ -399,9 +400,15 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                 elif reftype == "eq":
                     target_id = _node_id("math", "equation", reftarget)
                 else:
-                    target_id = _node_id(
-                        refdomain or "std", reftype or "any", reftarget,
-                    )
+                    domain = refdomain or "std"
+                    objtype = reftype or "any"
+                    if domain == "py":
+                        # An id is spelled with the OBJTYPE, so a raw role
+                        # here mints `py:func:X` beside the docstring
+                        # scanner's `py:function:X` — one symbol, two nodes,
+                        # its edges split between them.
+                        objtype = REFTYPE_OBJTYPE_MAP.get(objtype, objtype)
+                    target_id = _node_id(domain, objtype, reftarget)
                 if not graph.has_node(target_id):
                     graph.add_node(GraphNode(
                         id=target_id,

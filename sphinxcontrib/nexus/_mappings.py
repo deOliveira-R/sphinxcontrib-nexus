@@ -104,6 +104,33 @@ REFTYPE_EDGE_MAP: dict[str, EdgeType] = {
     "citation": EdgeType.CITES,
 }
 
+# Map a Python-domain reftype (the ROLE as written, ``:func:``) to the
+# objtype Sphinx registers the object under (``function``). A node id is
+# built from the objtype, so skipping this step spells the same symbol two
+# ways and splits its edges between them.
+#
+# It lives here because BOTH producers need it and they are in different
+# modules: the docstring scanner in ``ast_analyzer`` and the doctree walker
+# in ``extractors``. It was a local dict inside the first of those until
+# 2026-08-16, so the second built ids from the raw role — measured on
+# ORPHEUS: 316 short-prefix nodes (``py:func`` 206, ``py:mod`` 55,
+# ``py:meth`` 23, ``py:attr`` 22, ``py:obj`` 8, ``py:exc`` 2) and **265
+# symbols carrying both spellings at once**, each holding part of the
+# symbol's edges.
+#
+# ``obj`` is deliberately not an identity: ``:obj:`` is the generic
+# cross-reference and the Python domain files those under ``function``.
+REFTYPE_OBJTYPE_MAP: dict[str, str] = {
+    "func": "function",
+    "meth": "method",
+    "class": "class",
+    "mod": "module",
+    "attr": "attribute",
+    "data": "data",
+    "exc": "exception",
+    "obj": "function",
+}
+
 
 # ---------------------------------------------------------------------------
 # Candidate ranking — the one answer to "which node did this name mean?"
