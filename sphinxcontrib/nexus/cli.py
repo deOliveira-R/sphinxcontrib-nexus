@@ -30,7 +30,27 @@ Quick start:
   nexus status --db graph.db     Show graph summary
   nexus query --db graph.db "solve"   Search the graph
   nexus workspaces --db graph.db Show checkouts (worktrees) + their graphs
+  nexus config db                Print where the graph lives (for scripts)
 """
+
+# The settings a consumer OUTSIDE Python may ask for by name. Each maps to
+# exactly one resolved answer, with the precedence chain already applied,
+# so a shell script never re-implements it.
+#
+# ``db`` is the load-bearing entry. Before this verb existed the only way
+# for a hook to find the graph was to hardcode the path — which is what
+# three of them did, and all three broke the moment a project moved
+# ``[graph].output``. Two failed SILENTLY (their contract is a quiet
+# ``exit 0`` when the graph is absent), so the breakage read as "no graph
+# here" rather than "I looked in the wrong place".
+_CONFIG_KEYS = (
+    "root",
+    "config",
+    "db",
+    "output",
+    "scope.prefixes",
+    "catalog.errors",
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,6 +168,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Checkout root the database belongs to (default: cwd).",
     )
     workspaces_cmd.add_argument("-v", "--verbose", action="store_true")
+
+    # --- config ---
+    config_cmd = sub.add_parser(
+        "config",
+        help="Print resolved project settings (where the graph lives, etc.)",
+    )
+    config_cmd.add_argument(
+        "key", nargs="?", default=None,
+        help=(
+            "Print just this setting's value, bare, for shell capture "
+            f"({', '.join(_CONFIG_KEYS)}). Omit to print them all."
+        ),
+    )
+    config_cmd.add_argument(
+        "--project-root", type=Path, default=None,
+        help="Where to start looking for .nexus/ (default: cwd).",
+    )
 
     # --- file-brief ---
     file_brief_cmd = sub.add_parser(
@@ -885,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
         "analyze": _run_analyze,
         "serve": _run_serve,
         "workspaces": _run_workspaces,
+        "config": _run_config,
         "file-brief": _run_file_brief,
         "status": _run_status,
         "query": _run_query,
@@ -934,6 +972,77 @@ def main(argv: list[str] | None = None) -> int:
 # ------------------------------------------------------------------
 # Command handlers
 # ------------------------------------------------------------------
+
+
+def _run_config(args: argparse.Namespace) -> int:
+    """Resolved settings, for consumers that cannot import Python.
+
+    With a ``key``, prints that value bare and nothing else, so a shell
+    can capture it: ``db=$(nexus config db --project-root "$root")``.
+    A list prints one item per line, which is what ``read -r`` and
+    ``$(...)`` word-splitting expect.
+
+    Without a key, prints every setting as ``key = value`` for a human.
+
+    Exit codes carry the meaning a script needs: ``0`` the value is
+    known, ``1`` unset or no such key. An UNSET setting prints nothing
+    and fails, rather than printing a default the caller would then have
+    no way to distinguish from a declared value.
+    """
+    from sphinxcontrib.nexus.project import ProjectConfig
+
+    start = args.project_root or Path.cwd()
+    config = ProjectConfig.load(start)
+    resolved: dict[str, object | None] = {
+        "root": config.root,
+        "config": config.source,
+        # `db` is the one entry that always answers: an unconfigured
+        # project still has a graph, at the legacy default. Resolving it
+        # HERE rather than letting the caller fall back keeps the default
+        # in one place too.
+        #
+        # Anchored to `start`, not to the cwd. `resolve_db` returns the
+        # legacy default as a RELATIVE path — correct for the CLI's own
+        # verbs, which have always read it relative to wherever they were
+        # invoked — but this verb's whole contract is to answer for the
+        # project root it was given, and a relative answer would be
+        # resolved against the CALLER's directory instead.
+        "db": (start / resolve_db(None, start)).resolve(),
+        "output": config.output,
+        "scope.prefixes": config.scope_prefixes,
+        "catalog.errors": config.resolved_catalog_errors(),
+    }
+
+    def emit(value: object) -> None:
+        for item in value if isinstance(value, list) else [value]:
+            print(item)
+
+    def render(value: object | None) -> str:
+        if value is None:
+            return "(unset)"
+        if isinstance(value, list):
+            return " ".join(str(item) for item in value)
+        return str(value)
+
+    if args.key is None:
+        for name, value in resolved.items():
+            print(f"{name} = {render(value)}")
+        return 0
+
+    if args.key not in resolved:
+        print(
+            f"Error: unknown setting {args.key!r} — known: "
+            f"{', '.join(_CONFIG_KEYS)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    value = resolved[args.key]
+    if value is None:
+        print(f"Error: {args.key} is not set", file=sys.stderr)
+        return 1
+    emit(value)
+    return 0
 
 
 def _load_query(db_path: Path) -> GraphQuery:

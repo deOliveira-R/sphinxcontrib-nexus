@@ -242,3 +242,102 @@ def test_cli_without_config_still_uses_the_legacy_default(tmp_path):
     )
     assert result.returncode != 0
     assert "does not exist" in (result.stdout + result.stderr)
+
+
+# ---------------------------------------------------------------------
+# `nexus config` — the seam for consumers that cannot import Python
+# ---------------------------------------------------------------------
+#
+# Shell hooks need to know where the graph lives. Before this verb the
+# only way was to hardcode the path, and three ORPHEUS hooks did exactly
+# that; when `[graph].output` moved, two of them went silently dark (they
+# `exit 0` when the graph is absent, so "wrong path" is indistinguishable
+# from "no graph") and the third told every session to run a rebuild that
+# could not fix it. The verb exists so a path is declared once.
+
+
+def _config(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "sphinxcontrib.nexus.cli", "config", *args],
+        cwd=cwd, capture_output=True, text=True,
+    )
+
+
+def test_config_db_reports_the_declared_path(tmp_path):
+    """The witness for every shell consumer."""
+    root = tmp_path / "proj"
+    _project(root, '[graph]\ndb = "site/kg/graph.db"\n')
+
+    result = _config("db", "--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str((root / "site/kg/graph.db").resolve())
+
+
+def test_config_db_without_a_config_reports_the_legacy_default(tmp_path):
+    """Control: differs from the test above ONLY in the config file.
+
+    Also pins the anchoring. The legacy default is a RELATIVE path, and
+    this call is deliberately made from a cwd that is not the project
+    root — so a bare `_nexus/graph.db`, or one resolved against the
+    caller's directory, both fail here.
+    """
+    root = tmp_path / "proj"
+    _project(root, None)
+
+    result = _config("db", "--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str((root / "_nexus/graph.db").resolve())
+
+
+def test_config_lists_every_setting_when_given_no_key(tmp_path):
+    root = tmp_path / "proj"
+    _project(root, '[graph]\noutput = "kg"\n')
+
+    result = _config("--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "output = kg" in result.stdout
+    assert "catalog.errors = (unset)" in result.stdout, (
+        "an unset setting must say so, not be omitted — a missing line "
+        "reads as a missing FEATURE"
+    )
+
+
+def test_config_prints_a_list_one_item_per_line(tmp_path):
+    """`$(...)` word-splitting and `read -r` both expect this shape."""
+    root = tmp_path / "proj"
+    _project(root, '[scope]\nprefixes = ["src", "tests"]\n')
+
+    result = _config("scope.prefixes", "--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["src", "tests"]
+
+
+def test_config_fails_on_an_unset_setting(tmp_path):
+    """Unset must be distinguishable from set — by the exit code.
+
+    A script doing `x=$(nexus config k) || fallback` needs the failure;
+    printing a default here would make "declared" and "defaulted" look
+    identical to every caller.
+    """
+    root = tmp_path / "proj"
+    _project(root, "")
+
+    result = _config("catalog.errors", "--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+
+
+def test_config_fails_on_an_unknown_key(tmp_path):
+    root = tmp_path / "proj"
+    _project(root, "")
+
+    result = _config("no.such.key", "--project-root", str(root), cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "unknown setting" in result.stderr
+    assert "scope.prefixes" in result.stderr, "the error must list what IS known"
