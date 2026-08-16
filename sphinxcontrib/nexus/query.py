@@ -17,12 +17,12 @@ import networkx as nx
 
 from sphinxcontrib.nexus.fingerprint import jaccard
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
+from sphinxcontrib.nexus.position import PositionIndex
 from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
     GitProvenance,
     NoWorkspaceError,
     Workspace,
-    canonical_path,
     changed_files,
     default_branch,
 )
@@ -782,6 +782,18 @@ class GraphQuery:
         return root
 
     @cached_property
+    def positions(self) -> PositionIndex:
+        """This graph's ``(file, line)`` → node index, built on first use.
+
+        A :func:`~functools.cached_property` because the index is a pure
+        function of (graph, root) and a ``GraphQuery`` is a pure function
+        of the same two — so the object IS the cache key, and a reloaded
+        graph gets a new query and therefore a new index without anyone
+        having to remember to invalidate anything.
+        """
+        return PositionIndex(self._kg, self.project_root)
+
+    @cached_property
     def build_commit(self) -> str | None:
         """Commit the graph's provenance stamp records; ``None`` when
         the graph is unstamped (built by nexus < 0.12) or was built
@@ -852,50 +864,25 @@ class GraphQuery:
         """The graph node enclosing a file position.
 
         The bridge from position-speaking tools (language servers,
-        stack traces, editors) into the graph: AST nodes carry
-        ``file_path`` / ``lineno`` / ``end_lineno``, so a position maps
-        to the INNERMOST function / method / class whose span contains
-        it.  A position in module scope (imports, constants, between
-        defs) maps to the module node.  ``None`` when the file is not
-        in the graph at all.
+        stack traces, editors) into the graph: a position maps to the
+        INNERMOST function / method / class whose extent contains it.  A
+        position in module scope (imports, constants, between defs) maps
+        to the module node.  ``None`` when the file is not in the graph
+        at all.
 
-        Path equality on both sides is
-        :func:`~sphinxcontrib.nexus.workspace.canonical_path`, so the
-        caller's spelling and the stored one are compared the same way
-        every other asker compares them.
-
-        Relative paths — the caller's and any stored in the graph —
-        resolve against the workspace root, which is the only tree the
-        stored positions can mean.
+        The search itself is
+        :meth:`~sphinxcontrib.nexus.position.PositionIndex.enclosing` —
+        shared with the runtime backends' trace join, which asks the
+        neighbouring question over the same extents.  Keeping the two
+        searches separate is what let them answer differently.
 
         Args:
             file_path: File of interest; relative paths resolve
                 against the workspace root.
             line: 1-based line number, as editors and LSP report it.
         """
-        root = self.project_root
-        wanted = canonical_path(file_path, root)
-        spanning: list[tuple[int, int, str]] = []  # (span, -lineno, node_id)
-        module_id: str | None = None
-        for node_id, attrs in self._g.nodes(data=True):
-            stored = attrs.get("file_path", "")
-            if not stored or canonical_path(stored, root) != wanted:
-                continue
-            if attrs.get("type") == "module":
-                module_id = node_id
-                continue
-            lineno, end_lineno = attrs.get("lineno"), attrs.get("end_lineno")
-            if lineno is None or end_lineno is None:
-                continue
-            if lineno <= line <= end_lineno:
-                # Innermost = smallest span; tie-break on the latest
-                # start (a nested def starts after its encloser).
-                spanning.append((end_lineno - lineno, -lineno, node_id))
-        if spanning:
-            return self._node_result(min(spanning)[2])
-        if module_id is not None:
-            return self._node_result(module_id)
-        return None
+        node_id = self.positions.enclosing(file_path, line)
+        return self._node_result(node_id) if node_id else None
 
     def neighbors(
         self,

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import json
 import re
-from bisect import bisect_right
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,16 +38,16 @@ from typing import Any
 import networkx as nx
 
 from sphinxcontrib.nexus.graph import KnowledgeGraph
+from sphinxcontrib.nexus.position import Definition, PositionIndex
 from sphinxcontrib.nexus.workspace import canonical_path
 
-# cProfile's ``co_firstlineno`` points at the first *decorator* line, while the
-# AST records ``node.lineno`` as the *def* line — so a decorated function's
-# trace line sits a few lines ABOVE its static lineno. The lines between the
-# previous node's end and a def are only decorators/blanks/comments (no other
-# node body lives there), so widening the effective start downward by this
-# window absorbs the decorator stack without false matches. Measured to lift
-# the cProfile→node join from 68% to 97% on a real ORPHEUS SN solve.
-DECORATOR_WINDOW = 8
+# ``DECORATOR_WINDOW`` lived here until 2026-08-16. The window was a GUESS
+# at where a decorated definition starts; the analyzer now records the
+# answer (`decorator_lineno`), so the join is an exact match and the
+# constant survives only as `position.DECORATOR_WINDOW`, the fallback for
+# graphs built before that. ⚠ Its old note claimed the window absorbed the
+# decorator stack "without false matches" — [M] 2026-08-16 it mis-bound 456
+# of ORPHEUS's 3530 decorated definitions, always to the next sibling down.
 
 KIND_CPROFILE = "cprofile"
 KIND_COVERAGE = "coverage"
@@ -59,28 +58,10 @@ KIND_MERGED = "merged"
 # ── The join: (file, line) trace record → static node id ────────────
 
 
-def build_node_index(
-    graph: KnowledgeGraph | nx.MultiDiGraph,
-) -> dict[str, list[tuple[int, int, str]]]:
-    """Index function/method nodes by file for the (file, line) join.
-
-    Returns ``file_path -> sorted [(lineno, end_lineno, node_id)]``. Only
-    ``function``/``method`` nodes participate: a property is a ``method`` node
-    carrying ``file_path``/``lineno``, and class nodes would shadow their own
-    methods in the enclosing-range fallback.
-    """
-    g = graph.nxgraph if isinstance(graph, KnowledgeGraph) else graph
-    by_file: dict[str, list[tuple[int, int, str]]] = {}
-    for node_id, attrs in g.nodes(data=True):
-        if attrs.get("type") not in ("function", "method"):
-            continue
-        fp, ln = attrs.get("file_path"), attrs.get("lineno")
-        if not fp or not ln:
-            continue
-        by_file.setdefault(fp, []).append((ln, attrs.get("end_lineno") or ln, node_id))
-    for spans in by_file.values():
-        spans.sort()
-    return by_file
+# ``build_node_index`` and ``resolve_node`` lived here until 2026-08-16.
+# Both are now :class:`~sphinxcontrib.nexus.position.PositionIndex` — the
+# join is the same concept the navigation verb ``GraphQuery.node_at``
+# needed, and keeping two of them is what let them answer differently.
 
 
 @dataclass
@@ -180,6 +161,13 @@ class NodeBinder:
     absolutised against ``root`` on the way in, once, so the mismatch is
     unspellable rather than fixed in one backend.
 
+    ⚠ ``root`` is the TRACE's tree — the directory the profiled run used
+    — which is not the checkout the graph's stored paths are relative
+    to. The two are usually the same and are not the same concept; the
+    stored side is canonicalised by
+    :class:`~sphinxcontrib.nexus.position.PositionIndex`, this side
+    here, and they meet as absolutes.
+
     **Scope.** ``source_prefixes`` is a LIST, because no single prefix
     works: profiling a test suite yields ``tests -> package`` records, and
     either directory alone drops one endpoint of every one of them, while
@@ -190,7 +178,7 @@ class NodeBinder:
 
     def __init__(
         self,
-        index: dict[str, list[tuple[int, int, str]]],
+        index: PositionIndex,
         *,
         source_prefixes: list[str] | None = None,
         root: Path | str | None = None,
@@ -198,7 +186,7 @@ class NodeBinder:
         self.root = Path(root).resolve() if root is not None else Path.cwd()
         self.ledger = JoinLedger()
         self._cache: dict[str, str] = {}
-        self._index = {self._abs(fp): spans for fp, spans in index.items()}
+        self._index = index
         self._prefixes = [
             Path(self._abs(p)) for p in (source_prefixes or [])
         ] or None
@@ -226,8 +214,9 @@ class NodeBinder:
             return True
         return any(path.is_relative_to(p) for p in self._prefixes)
 
-    def spans(self, filename: str) -> list[tuple[int, int, str]] | None:
-        """Every indexed span in one file, or ``None`` — coverage's unit.
+    def definitions(self, filename: str) -> tuple[Definition, ...] | None:
+        """Every indexed definition in one file, or ``None`` — coverage's
+        unit.
 
         Records into the ledger, so a caller that skips the file still
         leaves a trace of WHY.
@@ -236,12 +225,12 @@ class NodeBinder:
         if not self._in_scope(Path(absolute)):
             self.ledger.outside_scope += 1
             return None
-        spans = self._index.get(absolute)
-        if not spans:
+        defs = self._index.definitions_in(absolute)
+        if defs is None:
             self.ledger.unindexed_file += 1
             return None
         self.ledger.bound += 1
-        return spans
+        return defs
 
     def node(self, filename: str, lineno: int) -> str | None:
         """One ``(file, line)`` code object to a node — the tracers' unit."""
@@ -249,10 +238,10 @@ class NodeBinder:
         if not self._in_scope(Path(absolute)):
             self.ledger.outside_scope += 1
             return None
-        if absolute not in self._index:
+        if not self._index.knows(absolute):
             self.ledger.unindexed_file += 1
             return None
-        node_id = resolve_node(self._index, absolute, lineno)
+        node_id = self._index.defined_at(absolute, lineno)
         if node_id is None:
             self.ledger.no_enclosing_node += 1
             return None
@@ -270,35 +259,7 @@ class NodeBinder:
         absolute = self._abs(filename)
         if not self._in_scope(Path(absolute)):
             return None
-        return resolve_node(self._index, absolute, lineno)
-
-
-def resolve_node(
-    index: dict[str, list[tuple[int, int, str]]],
-    filename: str,
-    firstlineno: int,
-) -> str | None:
-    """Map a ``(file, def-line)`` trace record onto a static node id.
-
-    Exact def-line hit first; then a decorator-window / enclosing-body hit
-    (innermost wins). ``None`` for records with no node — by design this is
-    lambdas, comprehensions, and nested closures the AST attributes to their
-    enclosing function rather than giving a node of their own.
-    """
-    spans = index.get(filename)
-    if not spans:
-        return None
-    best: str | None = None
-    starts = [s[0] for s in spans]
-    # Only spans whose def line is at or below firstlineno + the decorator
-    # window can contain it; scan those, innermost (latest start) wins.
-    hi = bisect_right(starts, firstlineno + DECORATOR_WINDOW)
-    for ln, end, node_id in spans[:hi]:
-        if ln == firstlineno:
-            return node_id
-        if ln - DECORATOR_WINDOW <= firstlineno <= end:
-            best = node_id
-    return best
+        return self._index.defined_at(absolute, lineno)
 
 
 # ── The ingested run (the sidecar payload) ──────────────────────────
@@ -521,7 +482,7 @@ def ingest_cprofile(
 
     stats = pstats.Stats(str(artifact))
     return overlay_cprofile(
-        stats.stats, build_node_index(graph), name,  # type: ignore[attr-defined]
+        stats.stats, PositionIndex(graph), name,  # type: ignore[attr-defined]
         meta=meta, source_prefixes=source_prefixes, root=root,
     )
 
@@ -561,15 +522,20 @@ def overlay_coverage(
     binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
 
     for filename, fdata in cov_json.get("files", {}).items():
-        spans = binder.spans(filename)
-        if spans is None:
+        defs = binder.definitions(filename)
+        if defs is None:
             continue
         exec_lines = set(fdata.get("executed_lines", []))
         miss_lines = set(fdata.get("missing_lines", []))
         exec_arcs = [tuple(a) for a in fdata.get("executed_branches", [])]
         miss_arcs = [tuple(a) for a in fdata.get("missing_branches", [])]
 
-        for lineno, end, node_id in spans:
+        for d in defs:
+            # The BODY range, not the decorator extent: a decorator line
+            # executes at import time and coverage attributes it to the
+            # module, not to the function it decorates.
+            lineno, end = d.def_line, d.end_line
+            node_id = d.node_id
             lines_hit = sum(1 for ln in exec_lines if lineno <= ln <= end)
             lines_miss = sum(1 for ln in miss_lines if lineno <= ln <= end)
             hit_arcs = [a for a in exec_arcs if lineno <= a[0] <= end]
@@ -599,7 +565,7 @@ def ingest_coverage(
     """Load a ``coverage json`` artifact and overlay it."""
     cov_json = json.loads(Path(artifact).read_text())
     return overlay_coverage(
-        cov_json, build_node_index(graph), name,
+        cov_json, PositionIndex(graph), name,
         meta=meta, source_prefixes=source_prefixes, root=root,
     )
 
@@ -695,7 +661,7 @@ def ingest_viztracer(
     """Load a viztracer JSON artifact (Chrome-trace format) and overlay it."""
     data = json.loads(Path(artifact).read_text())
     return overlay_viztracer(
-        data.get("traceEvents", []), build_node_index(graph), name,
+        data.get("traceEvents", []), PositionIndex(graph), name,
         meta=meta, source_prefixes=source_prefixes, root=root,
     )
 

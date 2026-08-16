@@ -1169,6 +1169,9 @@ class CodeVisitor(ast.NodeVisitor):
             class_meta["decorators"] = tuple(
                 _render_decorator(dec) for dec in node.decorator_list
             )
+            class_meta["decorator_lineno"] = min(
+                dec.lineno for dec in node.decorator_list
+            )
 
         # Stash class-level pytest markers so contained methods pick
         # them up as defaults (function-level markers still win per the
@@ -1287,6 +1290,15 @@ class CodeVisitor(ast.NodeVisitor):
         if node.decorator_list:
             meta["decorators"] = tuple(
                 _render_decorator(dec) for dec in node.decorator_list
+            )
+            # Where the definition's SOURCE starts, which is not where its
+            # `def` is. CPython records this as `co_firstlineno`, so it is
+            # the line every tracer reports for a decorated function —
+            # keeping only the rendered decorator NAMES threw away the one
+            # number the runtime join needs, and left it guessing with a
+            # fixed-width window. See `position.Definition`.
+            meta["decorator_lineno"] = min(
+                dec.lineno for dec in node.decorator_list
             )
             meta.update(_parse_pytest_markers(node.decorator_list))
 

@@ -44,7 +44,28 @@ method-for-method index.
 **The checkout** — {class}`sphinxcontrib.nexus.workspace.Workspace` pairs a
 checkout with the graph built inside it. A graph is a snapshot of one
 checkout; this is what lets a session working in a git worktree find the
-right one.
+right one. Two path spellings name the same file exactly when
+{func}`sphinxcontrib.nexus.workspace.canonical_path` maps them equal —
+that is the whole contract, and every asker shares it.
+
+**Positions** — {class}`sphinxcontrib.nexus.position.PositionIndex` turns a
+`(file, line)` into a node, and answers *two* questions with two verbs
+because they are genuinely different.
+{meth}`~sphinxcontrib.nexus.position.PositionIndex.enclosing` is the
+navigator's — *what am I looking at?* — so any node type may answer, and a
+module-scope position gets the module.
+{meth}`~sphinxcontrib.nexus.position.PositionIndex.defined_at` is the
+tracers' — *which definition does this record name?* — so only a function or
+a method may answer, and `None` is a real result (lambdas and comprehensions
+have no node of their own). Reach it from a query as
+{attr}`~sphinxcontrib.nexus.query.GraphQuery.positions`.
+
+A {class}`~sphinxcontrib.nexus.position.Definition` carries **two** line
+numbers on purpose. `def_line` is where the `def` keyword sits; `first_line`
+is where the definition's source begins — its first decorator. The second is
+what CPython records as `co_firstlineno`, and therefore what every tracer
+reports, so a join holding only the first has to guess where the definition
+started.
 
 ## Loading and saving
 
@@ -95,6 +116,14 @@ at a time.
    :members: query, get_node, neighbors, impact, provenance_chain,
              dead_references, verification_coverage, staleness,
              graph_query, retest
+
+.. autoclass:: sphinxcontrib.nexus.position.PositionIndex
+   :members: enclosing, defined_at, definitions_in, knows
+
+.. autoclass:: sphinxcontrib.nexus.position.Definition
+   :members: extent, contains
+
+.. autofunction:: sphinxcontrib.nexus.workspace.canonical_path
 
 .. autofunction:: sphinxcontrib.nexus.export.load_sqlite
 

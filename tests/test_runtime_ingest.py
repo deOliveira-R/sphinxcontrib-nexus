@@ -1,40 +1,66 @@
 """runtime ingest — the (file, line) → node join, overlay, and sidecar store."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import networkx as nx
 
+from sphinxcontrib.nexus.position import PositionIndex
 from sphinxcontrib.nexus.runtime import (
     RuntimeRun,
     RuntimeStore,
-    build_node_index,
     ingest_coverage,
     merge_runs,
     overlay_coverage,
     overlay_cprofile,
     overlay_viztracer,
-    resolve_node,
 )
 
 SRC = "/proj/pkg/mod.py"
 
 
 def _graph() -> nx.MultiDiGraph:
-    """Two functions and a property-like method in one file.
+    """One file, laid out so the decorator join can actually FAIL.
 
-    foo: def at line 10 (one decorator at 9), body to 20.
-    bar: def at line 30, body to 40.
-    prop: a @property method, def at 52 (decorator @property at 51), body to 55.
+    ⚠ This fixture was re-spaced 2026-08-16, and the old spacing is the
+    point. Its defs sat at 10 / 30 / 52 — gaps of 20 and 22 against a
+    ``DECORATOR_WINDOW`` of 8 — so no definition could ever reach into
+    another's decorator lines, and ``test_resolve_decorator_line_above_def``
+    was green and *structurally unable* to fail. Real ``@property``
+    blocks sit ~5 lines apart (ORPHEUS ``mixture.py``: 108/113/118/123),
+    which is exactly the configuration that mis-bound 456 of 3530
+    decorated definitions. ``prop_a`` / ``prop_b`` below reproduce it.
+
+    ==================  ==========================================
+    ``foo``             decorator 9, def 10, end 20
+    ``bar``             def 30, end 40 — undecorated
+    ``C``               a class, 45-80 — never a join target
+    ``C.prop_a``        decorator 51, def 52, end 55
+    ``C.prop_b``        decorator 57, def 58, end 61 — 6 lines below
+                        ``prop_a``'s def, i.e. INSIDE the window that
+                        used to let it steal line 51
+    ``C.legacy``        def 70, end 73, **no** ``decorator_lineno`` —
+                        stands in for a graph built before the analyzer
+                        recorded it, so the fallback stays exercised
+    ``C.after``         def 76, end 79, also without one
+    ==================  ==========================================
     """
     g = nx.MultiDiGraph()
     g.add_node("py:function:mod.foo", type="function", name="mod.foo",
-               file_path=SRC, lineno=10, end_lineno=20)
+               file_path=SRC, lineno=10, end_lineno=20, decorator_lineno=9)
     g.add_node("py:function:mod.bar", type="function", name="mod.bar",
                file_path=SRC, lineno=30, end_lineno=40)
-    g.add_node("py:method:mod.C.prop", type="method", name="mod.C.prop",
-               file_path=SRC, lineno=52, end_lineno=55)
-    # a class node + a no-position node must be ignored by the index
+    g.add_node("py:method:mod.C.prop_a", type="method", name="mod.C.prop_a",
+               file_path=SRC, lineno=52, end_lineno=55, decorator_lineno=51)
+    g.add_node("py:method:mod.C.prop_b", type="method", name="mod.C.prop_b",
+               file_path=SRC, lineno=58, end_lineno=61, decorator_lineno=57)
+    g.add_node("py:method:mod.C.legacy", type="method", name="mod.C.legacy",
+               file_path=SRC, lineno=70, end_lineno=73)
+    g.add_node("py:method:mod.C.after", type="method", name="mod.C.after",
+               file_path=SRC, lineno=76, end_lineno=79)
+    # a class node + a no-position node must be ignored by the join
     g.add_node("py:class:mod.C", type="class", name="mod.C",
-               file_path=SRC, lineno=45, end_lineno=60)
+               file_path=SRC, lineno=45, end_lineno=80)
     g.add_node("py:function:mod.nofile", type="function", name="mod.nofile")
     return g
 
@@ -42,36 +68,82 @@ def _graph() -> nx.MultiDiGraph:
 # ── the join ────────────────────────────────────────────────────────
 
 
-def test_index_only_positioned_functions_methods():
-    idx = build_node_index(_graph())
-    ids = {nid for spans in idx.values() for _, _, nid in spans}
+def test_only_positioned_functions_methods_can_be_bound():
+    idx = PositionIndex(_graph())
+    ids = {d.node_id for d in idx.definitions_in(SRC) or ()}
     assert ids == {"py:function:mod.foo", "py:function:mod.bar",
-                   "py:method:mod.C.prop"}   # class + no-file excluded
+                   "py:method:mod.C.prop_a", "py:method:mod.C.prop_b",
+                   "py:method:mod.C.legacy", "py:method:mod.C.after"}
+    # the class and the position-less node are not join targets
+    assert "py:class:mod.C" not in ids
+    assert "py:function:mod.nofile" not in ids
 
 
-def test_resolve_exact_def_line():
-    idx = build_node_index(_graph())
-    assert resolve_node(idx, SRC, 10) == "py:function:mod.foo"
-    assert resolve_node(idx, SRC, 30) == "py:function:mod.bar"
+def test_defined_at_exact_def_line():
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 10) == "py:function:mod.foo"
+    assert idx.defined_at(SRC, 30) == "py:function:mod.bar"
 
 
-def test_resolve_decorator_line_above_def():
-    # cProfile reports co_firstlineno at the decorator line (9 / 51), one
-    # above the AST def line — the join must still land on the function.
-    idx = build_node_index(_graph())
-    assert resolve_node(idx, SRC, 9) == "py:function:mod.foo"
-    assert resolve_node(idx, SRC, 51) == "py:method:mod.C.prop"
+def test_defined_at_decorator_line_above_def():
+    # cProfile reports co_firstlineno at the decorator line (9 / 51), above
+    # the AST def line — the join must still land on the function.
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 9) == "py:function:mod.foo"
+    assert idx.defined_at(SRC, 51) == "py:method:mod.C.prop_a"
 
 
-def test_resolve_body_line():
-    idx = build_node_index(_graph())
-    assert resolve_node(idx, SRC, 15) == "py:function:mod.foo"
+def test_a_decorator_line_is_not_STOLEN_by_the_next_definition():
+    """The 456-misbinding defect, as a gate.
+
+    ``prop_a``'s decorator is line 51; ``prop_b`` starts 6 lines below its
+    def, inside the old fixed-width window. The retired ``resolve_node``
+    wrote the window and the body test as one condition and took the
+    LATEST start, so ``prop_b`` matched line 51 and, being scanned later,
+    won it — while ``prop_a`` received nothing.
+
+    [M] 2026-08-16 on ORPHEUS: 456 of 3530 decorated definitions, 291 of
+    them ``@property``, always stolen by the next sibling down the file.
+    """
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 51) == "py:method:mod.C.prop_a"
+    assert idx.defined_at(SRC, 57) == "py:method:mod.C.prop_b"
+    # and the bodies still belong to their own definitions
+    assert idx.defined_at(SRC, 53) == "py:method:mod.C.prop_a"
+    assert idx.defined_at(SRC, 59) == "py:method:mod.C.prop_b"
 
 
-def test_resolve_unmapped_returns_none():
-    idx = build_node_index(_graph())
-    assert resolve_node(idx, SRC, 100) is None      # past every range
-    assert resolve_node(idx, "/other.py", 10) is None  # unknown file
+def test_a_graph_without_decorator_linenos_still_binds_the_line_above():
+    """The fallback, and it must not steal either.
+
+    ``legacy`` (70-73) and ``after`` (76-79) carry no ``decorator_lineno``
+    — the shape of a graph built before the analyzer recorded it. A trace
+    line at 69 is ``legacy``'s decorator; the nearest definition BELOW
+    wins, not the last one whose window happens to reach back.
+    """
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 69) == "py:method:mod.C.legacy"
+    assert idx.defined_at(SRC, 75) == "py:method:mod.C.after"
+
+
+def test_defined_at_body_line():
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 15) == "py:function:mod.foo"
+
+
+def test_defined_at_unmapped_returns_none():
+    idx = PositionIndex(_graph())
+    assert idx.defined_at(SRC, 100) is None      # past every range
+    assert idx.defined_at("/other.py", 10) is None  # unknown file
+
+
+def test_a_relative_spelling_finds_the_same_definition():
+    """The old index keyed on the RAW stored path, so a relative query
+    silently found nothing while ``node_at`` found the node — one of the
+    three measured disagreements."""
+    idx = PositionIndex(_graph(), root=Path("/proj"))
+    assert idx.defined_at("pkg/mod.py", 10) == "py:function:mod.foo"
+    assert idx.defined_at(SRC, 10) == "py:function:mod.foo"
 
 
 # ── cProfile overlay ────────────────────────────────────────────────
@@ -86,7 +158,7 @@ def _stats(records):
 
 
 def test_overlay_cprofile_joins_and_builds_edges():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     foo = (SRC, 10, "foo")
     bar = (SRC, 30, "bar")
     stats = _stats({
@@ -100,7 +172,7 @@ def test_overlay_cprofile_joins_and_builds_edges():
 
 
 def test_overlay_cprofile_source_prefix_drops_out_of_scope():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     stats = _stats({
         ("/usr/lib/python/json.py", 1, "loads"): (9, 0.0, 0.0, {}),
         (SRC, 10, "foo"): (1, 0.1, 0.1, {}),
@@ -113,7 +185,7 @@ def test_overlay_cprofile_source_prefix_drops_out_of_scope():
 def test_overlay_cprofile_aggregates_by_node_id():
     # two code objects (decorator line + def line) map to ONE node:
     # ncalls + tottime sum, cumtime takes the max (no double-count).
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     stats = _stats({
         (SRC, 10, "foo"): (3, 0.1, 0.4, {}),
         (SRC, 9, "foo_wrapped"): (2, 0.2, 0.9, {}),
@@ -125,7 +197,7 @@ def test_overlay_cprofile_aggregates_by_node_id():
 
 
 def test_overlay_cprofile_recursion_self_loop_dropped():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     foo = (SRC, 10, "foo")
     stats = _stats({foo: (2, 0.1, 0.1, {foo: (2, 2, 0.0, 0.0)})})
     run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
@@ -133,7 +205,7 @@ def test_overlay_cprofile_recursion_self_loop_dropped():
 
 
 def test_overlay_cprofile_unresolved_counted():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     stats = _stats({(SRC, 999, "ghost"): (1, 0.0, 0.0, {})})
     run = overlay_cprofile(stats, idx, "r", source_prefixes=[SRC])
     assert run.unresolved == 1 and run.calls == {}
@@ -159,7 +231,7 @@ def _cov_json():
 
 
 def test_overlay_coverage_branch_attribution():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     run = overlay_coverage(_cov_json(), idx, "c", source_prefixes=[SRC])
     foo = run.coverage["py:function:mod.foo"]
     bar = run.coverage["py:function:mod.bar"]
@@ -169,7 +241,7 @@ def test_overlay_coverage_branch_attribution():
 
 
 def test_overlay_coverage_lines():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     run = overlay_coverage(_cov_json(), idx, "c", source_prefixes=[SRC])
     bar = run.coverage["py:function:mod.bar"]
     assert bar["lines_hit"] == 3 and bar["lines_total"] == 4  # 30,32,33 hit; 35 miss
@@ -264,7 +336,7 @@ def _viz_events():
 
 
 def test_overlay_viztracer_depth_and_order():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     run = overlay_viztracer(_viz_events(), idx, "v", source_prefixes=[SRC])
     foo = run.timeline["py:function:mod.foo"]
     bar = run.timeline["py:function:mod.bar"]
@@ -275,7 +347,7 @@ def test_overlay_viztracer_depth_and_order():
 
 
 def test_overlay_viztracer_scope_and_unresolved():
-    idx = build_node_index(_graph())
+    idx = PositionIndex(_graph())
     run = overlay_viztracer(_viz_events(), idx, "v", source_prefixes=[SRC])
     # the stdlib frame is dropped silently; the in-scope ghost is counted
     assert run.unresolved == 1
@@ -294,7 +366,7 @@ def test_overlay_viztracer_depth_shared_start_and_zero_dur():
         ev(f"bar ({SRC}:30)", 1000.0, 40.0),     # shares START -> still depth 1
         ev(f"bar ({SRC}:30)", 1050.0, 0.0),      # zero-dur, inside foo -> depth 1
     ]
-    run = overlay_viztracer(events, build_node_index(_graph()), "v", source_prefixes=[SRC])
+    run = overlay_viztracer(events, PositionIndex(_graph()), "v", source_prefixes=[SRC])
     assert run.timeline["py:function:mod.foo"]["min_depth"] == 0
     assert run.timeline["py:function:mod.bar"]["min_depth"] == 1
     assert run.timeline["py:function:mod.bar"]["count"] == 2
@@ -347,7 +419,7 @@ def _relative_cov_json():
 def test_relative_coverage_keys_bind_when_given_a_root():
     """The #56 repair: the two sides are put in one key space."""
     run = overlay_coverage(
-        _relative_cov_json(), build_node_index(_graph()), "c", root="/proj",
+        _relative_cov_json(), PositionIndex(_graph()), "c", root="/proj",
     )
     assert "py:function:mod.foo" in run.coverage
     assert run.ledger.bound == 1
@@ -363,7 +435,7 @@ def test_relative_coverage_keys_bind_NOTHING_against_a_wrong_root():
     it failed.
     """
     run = overlay_coverage(
-        _relative_cov_json(), build_node_index(_graph()), "c",
+        _relative_cov_json(), PositionIndex(_graph()), "c",
         root="/somewhere/else",
     )
     assert run.coverage == {}
@@ -378,7 +450,7 @@ def test_a_zero_join_is_never_silent():
     `diagnosis()` returning None is what the CLI and the MCP server use
     to decide between "store it" and "refuse and exit non-zero".
     """
-    empty = overlay_coverage({"files": {}}, build_node_index(_graph()), "c")
+    empty = overlay_coverage({"files": {}}, PositionIndex(_graph()), "c")
     assert empty.ledger.considered == 0
     assert empty.ledger.diagnosis() is not None
 
@@ -391,7 +463,7 @@ def test_ledger_tells_the_three_drop_reasons_apart():
         "/elsewhere/q.py": {"executed_lines": [1]},         # out of scope
     }}
     run = overlay_coverage(
-        cov, build_node_index(_graph()), "c", source_prefixes=["/proj"],
+        cov, PositionIndex(_graph()), "c", source_prefixes=["/proj"],
     )
     assert (run.ledger.bound, run.ledger.unindexed_file,
             run.ledger.outside_scope) == (1, 1, 1)
@@ -407,7 +479,7 @@ def test_scope_accepts_several_prefixes():
     g = _graph()
     g.add_node("py:function:t.test_foo", type="function", name="t.test_foo",
                file_path="/proj/tests/test_foo.py", lineno=5, end_lineno=8)
-    idx = build_node_index(g)
+    idx = PositionIndex(g)
     cov = {"files": {
         "/proj/pkg/mod.py": {"executed_lines": [10]},
         "/proj/tests/test_foo.py": {"executed_lines": [5]},
@@ -428,7 +500,7 @@ def test_scope_is_path_containment_not_string_prefix():
     g.add_node("py:function:s.f", type="function", name="s.f",
                file_path="/proj/pkg_scratch/s.py", lineno=1, end_lineno=3)
     cov = {"files": {"/proj/pkg_scratch/s.py": {"executed_lines": [1]}}}
-    run = overlay_coverage(cov, build_node_index(g), "c",
+    run = overlay_coverage(cov, PositionIndex(g), "c",
                            source_prefixes=["/proj/pkg"])
     assert run.ledger.outside_scope == 1
     assert run.ledger.bound == 0
@@ -444,7 +516,7 @@ def test_cprofile_caller_lookups_do_not_inflate_the_ledger():
         (SRC, 30, "bar"): (1, 1, 0.0, 0.0, {(SRC, 10, "foo"): (1, 1, 0.0, 0.0)}),
         (SRC, 10, "foo"): (1, 1, 0.0, 0.0, {}),
     }
-    run = overlay_cprofile(stats, build_node_index(_graph()), "r")
+    run = overlay_cprofile(stats, PositionIndex(_graph()), "r")
     assert run.ledger.considered == 2, "2 stats rows, not 3 with the caller"
     assert run.ledger.bound == 2
     assert run.edges == [("py:function:mod.foo", "py:function:mod.bar", 1)]
@@ -477,3 +549,49 @@ def test_merge_sums_every_ledger_reason():
     assert merged.ledger.bound == 7
     assert merged.ledger.outside_scope == 1
     assert merged.ledger.unindexed_file == 2
+
+
+def _graph_with_relative_paths() -> nx.MultiDiGraph:
+    """A graph as ``nexus analyze`` writes one: source-root-RELATIVE
+    ``file_path``.
+
+    Sphinx builds store absolute paths and every other fixture here does
+    too, which makes them all blind to the key-space axis — the exact
+    shape that hid a defect in Track 1.1 (``rich_graph``'s relative
+    paths matching whatever root they were asked about, inverted).
+    """
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:mod.rel", type="function", name="mod.rel",
+               file_path="pkg/mod.py", lineno=10, end_lineno=20)
+    return g
+
+
+def test_a_relatively_stored_path_is_found_by_its_absolute_spelling():
+    """The index keys stored paths through ``canonical_path`` too, not
+    only queried ones — otherwise a ``nexus analyze`` graph answers every
+    absolute trace record with ``None``, silently."""
+    idx = PositionIndex(_graph_with_relative_paths(), root=Path("/proj"))
+    assert idx.defined_at("/proj/pkg/mod.py", 10) == "py:function:mod.rel"
+    assert idx.defined_at("pkg/mod.py", 10) == "py:function:mod.rel"
+
+
+def _graph_with_a_long_decorator_stack() -> nx.MultiDiGraph:
+    """A definition whose decorators span more than ``DECORATOR_WINDOW``.
+
+    Stacked ``@pytest.mark.parametrize`` blocks routinely run 10-20 lines;
+    ORPHEUS has many. This is the case the fixed-width window CANNOT
+    reach however the window is ordered, and therefore the case that
+    makes ``decorator_lineno`` load-bearing rather than merely tidier.
+    """
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:mod.heavy", type="function", name="mod.heavy",
+               file_path=SRC, lineno=55, end_lineno=60, decorator_lineno=40)
+    return g
+
+
+def test_a_decorator_stack_longer_than_the_window_still_binds():
+    idx = PositionIndex(_graph_with_a_long_decorator_stack())
+    # cProfile reports line 40 for this function; 55 - 40 = 15 > 8, so no
+    # window can find it. The recorded extent can.
+    assert idx.defined_at(SRC, 40) == "py:function:mod.heavy"
+    assert idx.defined_at(SRC, 47) == "py:function:mod.heavy"  # mid-stack
