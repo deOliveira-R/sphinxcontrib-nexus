@@ -55,6 +55,7 @@ KNOWN_KEYS: Mapping[str, frozenset[str]] = {
         "analyze_tests",
         "test_patterns",
         "infer_implements",
+        "verification_registry",
         "max_viz_nodes",
     }),
     "scope": frozenset({"prefixes"}),
@@ -241,6 +242,11 @@ class ProjectConfig:
         inference off rather than let the two mix under one edge type.
         """
         return self._get("graph", "infer_implements")
+
+    @property
+    def verification_registry(self) -> list[str] | None:
+        """Registry files declaring verification edges from outside the code."""
+        return self._get("graph", "verification_registry")
 
     @property
     def max_viz_nodes(self) -> int | None:

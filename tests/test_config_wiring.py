@@ -134,6 +134,47 @@ def test_cli_finds_the_graph_from_config_with_no_db_flag(tmp_path):
     assert "nodes" in result.stdout, result.stdout
 
 
+class _StubConfig:
+    """Just enough of ``app.config`` for ``_effective``'s ``getattr``."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _StubApp:
+    def __init__(self, srcdir, **conf):
+        self.srcdir = str(srcdir)
+        self.config = _StubConfig(**conf)
+
+
+@pytest.mark.parametrize("declared, expected", [(True, True), (False, False)])
+def test_infer_implements_reaches_the_call_site(tmp_path, declared, expected):
+    """The setting is carried from the file to `EffectiveSettings`.
+
+    ⚠ HONEST SCOPE: this pins the WIRING, not the EFFECT. It does not show
+    that turning inference off removes `implements` edges — that needs a
+    fixture in which inference actually fires, and two attempts at one
+    produced zero inferred edges. A behavioural gate is owed; a green test
+    that cannot fail is worse than none, so it is not faked here.
+    """
+    from sphinxcontrib.nexus import _effective
+
+    root = tmp_path / "proj"
+    docs = _project(root, f"[graph]\ninfer_implements = {str(declared).lower()}\n")
+    settings = _effective(_StubApp(docs, nexus_infer_implements=not declared))
+    assert settings.infer_implements is expected
+
+
+def test_verification_registry_reaches_the_call_site(tmp_path):
+    """Same scope caveat as above — wiring, not effect."""
+    from sphinxcontrib.nexus import _effective
+
+    root = tmp_path / "proj"
+    docs = _project(root, '[graph]\nverification_registry = ["reg.yaml"]\n')
+    settings = _effective(_StubApp(docs, nexus_verification_registry=[]))
+    assert settings.verification_registry == ["reg.yaml"]
+
+
 def test_cli_without_config_still_uses_the_legacy_default(tmp_path):
     """Control: the same invocation must NOT find a graph unaided.
 

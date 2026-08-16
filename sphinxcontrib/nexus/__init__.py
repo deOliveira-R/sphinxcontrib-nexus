@@ -36,6 +36,8 @@ class EffectiveSettings:
     test_patterns: list[str]
     extra_source_dirs: list[str]
     exclude_patterns: list[str]
+    infer_implements: bool
+    verification_registry: list[str]
     max_viz_nodes: int
 
 
@@ -80,6 +82,12 @@ def _effective(app: Sphinx) -> EffectiveSettings:
         extra_source_dirs=list(pick("extra_source_dirs", cfg.extra_source_dirs, [])),
         exclude_patterns=list(
             pick("source_exclude_patterns", cfg.exclude_patterns, [])
+        ),
+        infer_implements=bool(
+            pick("infer_implements", cfg.infer_implements, True)
+        ),
+        verification_registry=list(
+            pick("verification_registry", cfg.verification_registry, [])
         ),
         max_viz_nodes=int(pick("max_viz_nodes", cfg.max_viz_nodes, 300)),
     )
@@ -306,9 +314,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     write_verifies_edges(graph.nxgraph)
     apply_pending_edges(app.env, graph.nxgraph)
 
-    registry_paths = list(
-        getattr(app.config, "nexus_verification_registry", []) or []
-    )
+    registry_paths = list(settings.verification_registry)
     # Paths are resolved relative to ``app.srcdir`` — the directory
     # that holds ``conf.py``. This matches how Sphinx handles most
     # config-driven paths and lets users colocate their registry with
@@ -336,7 +342,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
             written, rpath,
         )
 
-    if getattr(app.config, "nexus_infer_implements", True):
+    if settings.infer_implements:
         _infer_implements(graph.nxgraph)
 
     logger.info(
