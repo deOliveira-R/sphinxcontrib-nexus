@@ -5,9 +5,32 @@
 #  two to each other (tests/test_ontology.py), so neither can drift: adding an
 #  enum member without describing it here fails, and vice versa.
 #
-#  A project extends this with its own `.nexus/ontology.toml`. An extension may
-#  add node types, edge types and attributes; it may not silently redefine a
-#  base entry.
+#  A project extends this with its own `.nexus/ontology.toml`, with two verbs:
+#
+#    [node.foo] / [edge.bar] / [attribute.baz]
+#        Declare something NEW. A name the base already defines is refused —
+#        an extension may not silently redefine a base entry.
+#
+#    [extend.edge.implements] / [extend.node.function]
+#        WIDEN a base declaration. Only set-valued fields, and only by union:
+#        `domain`, `range`, `sources`, `attributes` on an edge; `attributes`
+#        on a node. So a project can declare its own node type and then make
+#        it a legal target of a base edge:
+#
+#            [node.equation_variant]
+#            description = "A project-specific flavour of equation."
+#
+#            [extend.edge.implements]
+#            range = ["equation_variant"]
+#
+#        Narrowing is refused, not discouraged. Widening is MONOTONE —
+#        anything the base admitted, the extension still admits — so no pass
+#        written against the base vocabulary can be invalidated by a project.
+#        A project able to remove a type from a range would break those passes
+#        silently, as a missing edge rather than as an error.
+#        `enforcement` and `default_confidence` are scalars with no wider
+#        value; `forbid_source_attr` is a set whose members SUBTRACT. None of
+#        the three is extendable.
 #
 #  `domain` = permitted source node types, `range` = permitted target types.
 #  "*" means any. `enforcement` is one of:

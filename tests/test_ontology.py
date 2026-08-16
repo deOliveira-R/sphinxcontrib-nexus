@@ -197,3 +197,128 @@ def test_load_without_a_project_yields_the_base_alone():
     onto = Ontology.load()
     assert len(onto.sources) == 1
     assert onto.sources[0].name == "ontology.toml"
+
+
+# ---------------------------------------------------------------------------
+# `extend` — a project may WIDEN a base declaration, never narrow it (#69)
+# ---------------------------------------------------------------------------
+#
+# Before this, `_guard_redefinition` was the ONLY rule, so the extension tier
+# supported exactly one verb: add a new name. A project could declare its own
+# node type and then had no way to say that type is a valid target of a BASE
+# edge — the two-tier vocabulary was not expressible. The only escape was the
+# `ANY = "*"` wildcard, which buys openness by giving up range checking exactly
+# where a project is most likely to get it wrong.
+
+
+def test_an_extension_widens_a_base_edges_range(tmp_path):
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [node.equation_variant]
+        description = "A project-specific flavour of equation."
+
+        [extend.edge.implements]
+        range = ["equation_variant"]
+        """,
+    )
+    onto = Ontology.load(root)
+    spec = onto.edges["implements"]
+    assert spec.admits_target("equation_variant")
+    # The base entries are kept, not replaced.
+    assert "equation" in spec.range
+
+
+def test_widening_is_monotone_over_every_node_type(tmp_path):
+    """The property that makes widening safe, asserted rather than argued.
+
+        base.admits_target(t)  ⟹  extended.admits_target(t)     ∀ t
+
+    Union gives this by construction — which is exactly why narrowing must be
+    refused rather than discouraged. A project able to REMOVE a type from a
+    range would silently invalidate every pass written against the base, and
+    the breakage would surface as a missing edge, not as an error.
+    """
+    base = Ontology.load()
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [node.equation_variant]
+        description = "A project-specific flavour of equation."
+
+        [extend.edge.implements]
+        domain = ["module"]
+        range = ["equation_variant"]
+        """,
+    )
+    extended = Ontology.load(root)
+
+    universe = sorted(set(base.nodes) | set(extended.nodes))
+    assert universe, "no node types to quantify over — the check would be vacuous"
+
+    for name, base_spec in base.edges.items():
+        ext_spec = extended.edges[name]
+        for node_type in universe:
+            assert not (
+                base_spec.admits_source(node_type)
+                and not ext_spec.admits_source(node_type)
+            ), f"{name}: extension NARROWED domain, losing {node_type!r}"
+            assert not (
+                base_spec.admits_target(node_type)
+                and not ext_spec.admits_target(node_type)
+            ), f"{name}: extension NARROWED range, losing {node_type!r}"
+
+    # …and the widening actually happened, so the loop above is not vacuous.
+    assert extended.edges["implements"].admits_source("module")
+    assert not base.edges["implements"].admits_source("module")
+
+
+@pytest.mark.parametrize(
+    "body, because",
+    [
+        (
+            "[extend.edge.implements]\nenforcement = \"error\"\n",
+            "a scalar has no wider value; setting one is a redefinition",
+        ),
+        (
+            "[extend.edge.implements]\ndefault_confidence = 0.9\n",
+            "likewise a scalar",
+        ),
+        (
+            "[extend.edge.implements]\nforbid_source_attr = {is_test = true}\n",
+            "a set whose members SUBTRACT — adding one narrows the edge",
+        ),
+    ],
+)
+def test_an_extension_may_not_touch_a_non_widenable_field(tmp_path, body, because):
+    root = _write_project_ontology(tmp_path, body)
+    with pytest.raises(ValueError, match="may only widen"):
+        Ontology.load(root)
+
+
+def test_extending_something_that_does_not_exist_is_an_error(tmp_path):
+    """A typo must not silently mint a half-declared edge."""
+    root = _write_project_ontology(
+        tmp_path, "[extend.edge.implments]\nrange = [\"equation\"]\n"
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        Ontology.load(root)
+
+
+def test_the_redefinition_error_now_names_the_way_forward(tmp_path):
+    """The guard that used to be the only rule must point at the new verb.
+
+    Its message is what an author reads when they try the wrong thing, so it
+    is the discoverability surface for `extend` — a guard that refuses without
+    naming the alternative teaches the author that the thing is impossible.
+    """
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [edge.implements]
+        description = "redefining a base edge"
+        range = ["equation"]
+        """,
+    )
+    with pytest.raises(ValueError, match=r"\[extend\.edge\.implements\]"):
+        Ontology.load(root)

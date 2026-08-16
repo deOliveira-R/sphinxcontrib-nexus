@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -203,6 +203,26 @@ class Ontology:
                 if is_base:
                     base_names.add(f"attribute:{name}")
 
+            # Extensions run after this payload's own definitions, so a file
+            # may define and widen in either order.
+            extend = data.get("extend") or {}
+            if extend and is_base:
+                raise ValueError(
+                    f"{BASE_ONTOLOGY}: the base ontology DEFINES the "
+                    f"vocabulary; it has nothing to extend. Edit the [node] / "
+                    f"[edge] tables directly."
+                )
+            for kind, registry in (("node", nodes), ("edge", edges)):
+                for name, patch in (extend.get(kind) or {}).items():
+                    current = registry.get(name)
+                    if current is None:
+                        raise ValueError(
+                            f"{path}: [extend.{kind}.{name}] widens a "
+                            f"{kind} named {name!r}, which does not exist. "
+                            f"Use [{kind}.{name}] to declare a new one."
+                        )
+                    registry[name] = _widen(current, kind, name, patch, path)
+
         return cls(
             nodes=nodes,
             edges=edges,
@@ -287,6 +307,73 @@ def _guard_redefinition(
     if f"{kind}:{name}" in base_names:
         raise ValueError(
             f"{path}: {kind} {name!r} is defined by the base ontology and may "
-            f"not be redefined by a project extension — choose another name, "
-            f"or propose the change upstream."
+            f"not be redefined by a project extension — use [extend.{kind}."
+            f"{name}] to WIDEN its domain/range/sources/attributes, choose "
+            f"another name, or propose the change upstream."
         )
+
+
+#: Fields an extension may widen, per kind. Every one is a SET, and the only
+#: operation is union — which is what makes widening safe to reason about:
+#: anything the base admitted, the extension still admits.
+#:
+#: Absent by design:
+#:
+#: ``enforcement`` / ``default_confidence`` — scalars. There is no "more
+#: permissive" value to union toward; setting one is a redefinition.
+#:
+#: ``forbid_source_attr`` — a set, but one whose members *subtract*. Adding a
+#: forbid NARROWS the edge, which is exactly what this mechanism exists to
+#: refuse. Its set-ness is a trap, not a licence.
+_WIDENABLE: Mapping[str, frozenset[str]] = {
+    "edge": frozenset({"domain", "range", "sources", "attributes"}),
+    "node": frozenset({"attributes"}),
+}
+
+
+def _widen(spec: Any, kind: str, name: str, patch: Mapping[str, Any], path: Path):
+    """Return ``spec`` with the named sets unioned — never narrowed.
+
+    The monotonicity property this exists to guarantee, and the one its test
+    asserts over every node type::
+
+        base.admits_target(t)  ⟹  extended.admits_target(t)
+
+    Union gives it by construction, so no consumer of the base vocabulary can
+    be invalidated by a project's extension: an edge the base would have
+    admitted is still admitted. That is the whole reason narrowing is refused
+    rather than merely discouraged — a project that could *remove* a type from
+    a range would silently break the passes written against the base.
+
+    The result is built with :func:`dataclasses.replace`, so whatever
+    invariants the spec's construction enforces re-run on the widened value
+    instead of being restated here.
+    """
+    allowed = _WIDENABLE[kind]
+    unknown = sorted(set(patch) - allowed)
+    if unknown:
+        raise ValueError(
+            f"{path}: [extend.{kind}.{name}] may only widen "
+            f"{sorted(allowed)}, not {unknown}. Those fields either are not "
+            f"sets (a scalar has no wider value) or would NARROW the "
+            f"declaration, which an extension may never do."
+        )
+
+    updates: dict[str, tuple[str, ...]] = {}
+    for field_name, added in patch.items():
+        current = getattr(spec, field_name)
+        extra = tuple(v for v in _as_tuple(added) if v not in current)
+        if not extra:
+            continue
+        if ANY in current:
+            # Legal and monotone, but it does nothing — and a silent no-op in
+            # a vocabulary file reads as a change that took effect.
+            logger.info(
+                "%s: [extend.%s.%s] adds %s to %r, which already admits "
+                "everything (%r) — the extension has no effect",
+                path, kind, name, list(extra), field_name, ANY,
+            )
+            continue
+        updates[field_name] = current + extra
+
+    return replace(spec, **updates) if updates else spec
