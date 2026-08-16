@@ -1027,3 +1027,41 @@ def test_class_in_production_file_not_is_test():
     )
     cls = next(n for n in v.nodes if n.id == "py:class:testmod.RealOp")
     assert "is_test" not in cls.metadata
+
+
+# ---------------------------------------------------------------------------
+# Line-wrap normalization distinguishes a wrapped NAME from ordinary TEXT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected, why",
+    [
+        ("Foo.\n    bar", "Foo.bar", "a name broken by a line wrap"),
+        ("pkg.mod.\nThing", "pkg.mod.Thing", "same, no indent"),
+        ("plain.name", "plain.name", "nothing to collapse"),
+        # Everything below must pass through UNCHANGED.
+        ("x + y", "x + y", "inline LaTeX — the spaces are content"),
+        ("a_0\n> 0", "a_0\n> 0", "wrapped inline LaTeX is still LaTeX"),
+        (
+            "dict mapping material ID to Mixture.",
+            "dict mapping material ID to Mixture.",
+            "prose napoleon emits as a :class: target",
+        ),
+        ("all key variables.", "all key variables.", "prose"),
+    ],
+)
+def test_only_line_wrap_whitespace_is_collapsed(raw, expected, why):
+    """The prose rows are the ones with teeth.
+
+    ``_classify_unresolved`` refuses a target that is not a valid identifier,
+    which is what keeps napoleon's prose out of the graph. Collapsing ALL
+    whitespace when the result matches the dotted-name shape disguises a
+    sentence as an identifier and walks it through that gate — a sentence of
+    letters and a full stop matches once its spaces are gone. ``[M]``
+    2026-08-16: the loose version minted 48 junk classes on ORPHEUS
+    (``py:class:allkeyvariables.``, ``py:class:dictmappingmaterialIDtoMixture.``).
+    """
+    from sphinxcontrib.nexus._mappings import _normalize_wrapped_target
+
+    assert _normalize_wrapped_target(raw) == expected, why

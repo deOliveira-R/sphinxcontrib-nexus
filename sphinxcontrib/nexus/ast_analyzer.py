@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from sphinxcontrib.nexus._mappings import (
+    _DOTTED_TARGET_RE,
+    _normalize_wrapped_target,
     PLACEHOLDER_TYPES,
     REFTYPE_OBJTYPE_MAP,
     candidate_rank,
@@ -49,31 +51,6 @@ _SPHINX_ROLE_RE = re.compile(r":(\w+):`([^`]+)`")
 # title part must still match up to the ``<``.
 _ROLE_TITLE_TARGET_RE = re.compile(r"^.*?<(?P<target>[^>]+)>\s*$", re.DOTALL)
 
-# Shape of a plausible dotted reference target after line-wrap
-# whitespace is removed: dotted identifiers, plus ``-`` for equation
-# labels. Used to decide whether whitespace inside a role body is
-# docstring wrapping (collapse it) or meaningful content like inline
-# LaTeX (leave it alone).
-_DOTTED_TARGET_RE = re.compile(r"[A-Za-z_][\w.-]*")
-
-
-def _normalize_wrapped_target(candidate: str) -> str:
-    """Collapse line-wrap whitespace inside a dotted role target.
-
-    A long ``:class:`pkg.mod.Thing``` reference wraps across docstring
-    lines, leaving a newline + indent in the middle of the dotted path.
-    Sphinx normalizes that whitespace away when it resolves the role;
-    without the same normalization the graph forges a phantom whose
-    name contains a newline — unresolvable by definition. Collapse is
-    attempted only when the de-whitespaced text looks like a dotted
-    name, so ``:math:`x + y``` bodies pass through untouched.
-    """
-    if not any(ch.isspace() for ch in candidate):
-        return candidate
-    collapsed = re.sub(r"\s+", "", candidate)
-    if _DOTTED_TARGET_RE.fullmatch(collapsed.lstrip(".")):
-        return collapsed
-    return candidate
 
 
 def _is_dotted_identifier(name: str) -> bool:

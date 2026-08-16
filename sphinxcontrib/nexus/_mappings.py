@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import TYPE_CHECKING, Any
 
 from sphinxcontrib.nexus.graph import EdgeType, NodeType
@@ -404,3 +406,53 @@ def resolve_target_id(
     if exact_placeholder is not None:
         return exact_placeholder
     return best[-1] if best is not None else None
+
+
+# Shape of a plausible dotted reference target after line-wrap
+# whitespace is removed: dotted identifiers, plus ``-`` for equation
+# labels. Used to decide whether whitespace inside a role body is
+# docstring wrapping (collapse it) or meaningful content like inline
+# LaTeX (leave it alone).
+_DOTTED_TARGET_RE = re.compile(r"[A-Za-z_][\w.-]*")
+
+
+def _normalize_wrapped_target(candidate: str) -> str:
+    """Collapse LINE-WRAP whitespace inside a dotted role target.
+
+    A long ``:class:`pkg.mod.Thing``` reference wraps across source lines,
+    leaving a newline + indent in the middle of the dotted path. Sphinx
+    normalizes that away when it resolves the role; without the same
+    normalization the graph forges a phantom whose name contains a newline —
+    unresolvable by definition.
+
+    Only whitespace runs that CONTAIN A NEWLINE are collapsed, and only when
+    no whitespace survives. That is what separates a wrapped *name* from
+    ordinary *text*, and the distinction is load-bearing:
+
+    - ``"Foo.\\n    bar"`` → ``"Foo.bar"`` — a name broken by a line wrap.
+    - ``"x + y"`` → unchanged — inline LaTeX; the spaces are content.
+    - ``"dict mapping material ID to Mixture."`` → unchanged — prose, which
+      napoleon emits as a ``:class:`` target from a malformed type line.
+
+    ⚠ The third case is why the newline condition exists. This used to
+    collapse ALL whitespace whenever the result matched ``_DOTTED_TARGET_RE``
+    — and a sentence of letters, spaces and a full stop matches it once the
+    spaces are gone. Downstream, ``_classify_unresolved`` rejects a target
+    that is not a valid identifier as napoleon noise, so the space-bearing
+    prose was being dropped exactly as intended; collapsing it first
+    *disguised prose as an identifier* and walked it straight through that
+    gate. ``[M]`` 2026-08-16: applying the loose version on the doctree path
+    minted **48** junk classes on ORPHEUS — ``py:class:allkeyvariables.``,
+    ``py:class:dictmappingmaterialIDtoMixture.``, ``py:class:default0``.
+    Normalizing before classifying can only ever *add* things the classifier
+    was built to refuse.
+    """
+    if not any(ch.isspace() for ch in candidate):
+        return candidate
+    collapsed = re.sub(r"\s*\n\s*", "", candidate)
+    if any(ch.isspace() for ch in collapsed):
+        # Whitespace that was not a line wrap survived — content, not a name.
+        return candidate
+    if _DOTTED_TARGET_RE.fullmatch(collapsed.lstrip(".")):
+        return collapsed
+    return candidate

@@ -286,6 +286,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     from sphinxcontrib.nexus.directives import apply_pending_edges
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
+        drop_inline_math_references,
         reconcile_unresolved,
         write_verifies_edges,
     )
@@ -310,6 +311,11 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     reconcile_unresolved(graph)
     _resolve_relative_references(graph)
     _canonicalize_phantoms(graph)
+
+    # LAST of the resolution passes, on purpose: it asks "did this ``:math:``
+    # body turn out to name a declared label?", and the three passes above are
+    # exactly what can still turn an unresolved target into one.
+    drop_inline_math_references(graph)
 
     write_verifies_edges(graph.nxgraph)
     apply_pending_edges(app.env, graph.nxgraph)

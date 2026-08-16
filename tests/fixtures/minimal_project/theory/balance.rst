@@ -31,3 +31,7 @@ resolve, which is the branch that forges an id from the reftype:
 The control is a role that DOES resolve —
 :func:`solver_pkg.solver.solve_attenuation` — which must keep pointing at the
 autodoc'd node rather than gaining a phantom of its own.
+
+And one whose body WRAPS across source lines, which is how a newline reaches
+an id builder as raw text: :meth:`solver_pkg.helpers.Mesh.absent_
+wrapped_method` must be spelled without the wrap.

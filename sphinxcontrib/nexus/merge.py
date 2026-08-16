@@ -95,6 +95,70 @@ def merge_graphs(
 
 
 
+def drop_inline_math_references(graph: KnowledgeGraph) -> int:
+    """Retire equation references that a ``:math:`` role never made.
+
+    ``:eq:`X``` **references** a labelled equation. ``:math:`X``` **typesets**
+    ``X`` as inline math and references nothing — ``X`` is LaTeX source, not a
+    name. The docstring scanner nonetheless routes both into the equation
+    namespace, because writing ``:math:`` where ``:eq:`` was meant is a common
+    authoring slip and forgiving it is worth a phantom or two.
+
+    It was not a phantom or two. The scanner's guard was a *blocklist* —
+    reject a body containing ``\\``, ``{`` or ``}`` — while the Python branch
+    three lines below it asks the opposite, stronger question
+    (``_is_dotted_identifier``: is this a well-formed name?). Ordinary inline
+    math clears a blocklist trivially: ``c > 1``, ``x = 0``, ``[0, 1]``,
+    ``(L+C)`` contain none of those characters.
+
+    ``[M]`` 2026-08-16, ORPHEUS: of 1860 ``math:equation:*`` nodes, **956 were
+    unresolved** — the equation namespace was 51 % LaTeX fragments. 12 of the
+    13 ids in the whole graph containing a NEWLINE were inline math wrapped
+    across docstring lines.
+
+    The forgiveness is kept, and its condition is made the honest one: mint
+    the reference when ``X`` **is** a declared label. That is a question about
+    the declared set, not about spelling, so no lexical rule can answer it and
+    it cannot be answered per-file — hence a pass here, after every producer
+    has contributed and after phantom canonicalization has had its chance to
+    fold ``X`` onto a real label.
+
+    ⚠ Only ``reftype == "math"`` edges are considered. An ``:eq:`` naming an
+    undeclared label is a **dead reference** and must survive to be reported
+    as one — that is ``dead_references``' entire job. Dropping those would
+    turn a broken document into a clean one.
+
+    Returns the number of edges dropped.
+    """
+    g = graph.nxgraph
+    declared = NodeType.EQUATION.value
+
+    doomed = [
+        (src, tgt, key)
+        for src, tgt, key, data in g.edges(keys=True, data=True)
+        if data.get("reftype") == "math"
+        and isinstance(tgt, str)
+        and tgt.startswith("math:equation:")
+        and g.nodes.get(tgt, {}).get("type") != declared
+    ]
+    for src, tgt, key in doomed:
+        g.remove_edge(src, tgt, key=key)
+
+    orphaned = 0
+    for _, tgt, _ in doomed:
+        if tgt in g and g.in_degree(tgt) == 0 and g.out_degree(tgt) == 0:
+            g.remove_node(tgt)
+            orphaned += 1
+
+    if doomed:
+        logger.info(
+            "Dropped %d :math: references that name no declared label "
+            "(%d nodes left with no referrer)",
+            len(doomed), orphaned,
+        )
+    return len(doomed)
+
+
 def reconcile_unresolved(graph: KnowledgeGraph) -> int:
     """Fold UNRESOLVED nodes onto the real definitions that share a name.
 

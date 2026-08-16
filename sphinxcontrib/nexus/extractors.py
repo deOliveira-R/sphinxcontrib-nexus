@@ -9,6 +9,7 @@ from docutils import nodes as docutils_nodes
 from sphinx import addnodes
 
 from sphinxcontrib.nexus._mappings import (
+    _normalize_wrapped_target,
     DOMAIN_TYPE_MAP,
     REFTYPE_EDGE_MAP,
     REFTYPE_OBJTYPE_MAP,
@@ -390,6 +391,15 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
             )
 
             if target_id is None:
+                # A role wrapped across source lines leaves a newline mid-name
+                # (``:meth:`CoupledOperator.<newline>apply_transpose```).
+                # Sphinx normalizes that away when it RESOLVES; when it cannot,
+                # the raw text reaches us and would be forged into an id no
+                # reference can ever match. The docstring scanner has collapsed
+                # this since it was written — this path had not, the same
+                # one-of-two-producers split as REFTYPE_OBJTYPE_MAP below.
+                reftarget = _normalize_wrapped_target(reftarget)
+
                 # Classify the unresolved target
                 node_type = _classify_unresolved(reftarget, project_modules)
                 if node_type is None:

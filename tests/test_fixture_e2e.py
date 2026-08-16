@@ -522,3 +522,77 @@ def test_a_resolvable_prose_role_still_reaches_the_documented_node(fixture_graph
         str(n).endswith("solve_attenuation") and str(n).startswith("py:func:")
         for n in fixture_graph
     ), "the resolvable role forged a phantom beside the documented node"
+
+
+# ---------------------------------------------------------------------------
+# The equation namespace holds declared labels, not LaTeX fragments
+# ---------------------------------------------------------------------------
+#
+# `:eq:`X`` REFERENCES a labelled equation; `:math:`X`` TYPESETS X and
+# references nothing. Nexus forgives the common slip of writing the first
+# where the second was meant — but its guard was a BLOCKLIST (reject `\`, `{`,
+# `}`) while the Python branch three lines below asked the opposite, stronger
+# question (is this a well-formed name?). Ordinary inline math clears a
+# blocklist trivially.
+#
+# ``[M]`` 2026-08-16, ORPHEUS: of 1860 `math:equation:*` nodes, 956 were
+# unresolved — the namespace was 51% LaTeX. 12 of the 13 ids in the entire
+# graph containing a newline were inline math wrapped across docstring lines.
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    ["k > 1", "k = 1", "[0, R]", "a_0\n> 0"],
+)
+def test_inline_math_does_not_become_an_equation_node(fixture_graph, fragment):
+    """Each fragment is a `:math:` body in ``solve_keff``'s docstring."""
+    assert f"math:equation:{fragment}" not in fixture_graph
+
+
+def test_no_graph_id_carries_whitespace_it_did_not_earn(fixture_graph):
+    """Glossary terms legitimately contain spaces (``std:term:angular flux``);
+    a NEWLINE inside an id never is — it is docstring line-wrap that reached
+    the id builder raw."""
+    offenders = sorted(n for n in fixture_graph if isinstance(n, str) and "\n" in n)
+    assert not offenders, f"ids built from wrapped raw text: {offenders!r}"
+
+
+def test_a_math_role_naming_a_DECLARED_label_still_references_it(fixture_graph):
+    """Positive control for the legs above.
+
+    They assert nodes are ABSENT, which is equally true of a pass that
+    dropped every `:math:` reference (vv-principles #19). The forgiving route
+    is the feature; only its CONDITION changed, so a `:math:` body that names
+    a real declared label must still produce the edge.
+    """
+    refs = {
+        t for s, t, d in fixture_graph.edges(data=True)
+        if d.get("reftype") == "math" and str(t).startswith("math:equation:")
+    }
+    assert "math:equation:fixture-balance" in refs, sorted(refs)
+    assert "math:equation:fixture-keff" in refs, sorted(refs)
+
+
+def test_every_surviving_equation_node_is_a_declared_label(fixture_graph):
+    """The namespace-level statement the two legs above make case by case."""
+    undeclared = sorted(
+        n for n, d in fixture_graph.nodes(data=True)
+        if str(n).startswith("math:equation:") and d.get("type") != "equation"
+    )
+    assert not undeclared, f"equation namespace holds non-labels: {undeclared!r}"
+
+
+def test_a_wrapped_role_in_PROSE_is_normalised_like_one_in_a_docstring(
+    fixture_graph
+):
+    """``theory/balance.rst`` wraps a `:meth:` body across source lines.
+
+    Sphinx collapses that when it RESOLVES; when it cannot, the raw text
+    reaches the id builder. The docstring scanner has always collapsed it —
+    the doctree walker had not, so this leg is the witness for that half.
+    Distinct from the newline legs above, which enter by the AST path.
+    """
+    wrapped = "py:method:solver_pkg.helpers.Mesh.absent_wrapped_method"
+    assert wrapped in fixture_graph, sorted(
+        n for n in fixture_graph if "wrapped" in str(n)
+    )

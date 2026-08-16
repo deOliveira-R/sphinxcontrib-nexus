@@ -32,5 +32,20 @@ def solve_balance(leakage, absorption, source):
 
 
 def solve_keff(nu_sigma_f, sigma_a):
-    """Compute :math:`fixture-keff` for a homogeneous medium."""
+    """Compute :math:`fixture-keff` for a homogeneous medium.
+
+    The medium multiplies when :math:`k > 1`, is critical at :math:`k = 1`,
+    and the flux lives on :math:`[0, R]`. Those three are inline MATH: they
+    typeset an expression and name no equation, so none may become a
+    reference. None carries a backslash or a brace, which is exactly why the
+    old blocklist admitted all three.
+
+    A body that wraps across source
+    lines like :math:`a_0
+    > 0` is the same thing with a newline in it, and is how an id came to
+    carry whitespace.
+
+    The control is :math:`fixture-balance`, which names a label that really
+    is declared — the forgiving route must keep working for it.
+    """
     return nu_sigma_f / sigma_a
