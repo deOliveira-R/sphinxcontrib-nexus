@@ -47,17 +47,39 @@ def merge_graphs(
     # Step 1 & 2: merge nodes
     for node_id, ast_attrs in ag.nodes(data=True):
         if node_id in sg:
-            # Enrich existing Sphinx node with AST metadata.
-            # ``in_test_file`` / ``is_test`` are facts about the FILE a
-            # symbol was defined in, which only the AST side can know —
-            # the Sphinx side has no opinion on them. Without copying
-            # them, any test symbol that is also autodoc'd loses the
-            # flag, and the rule that stops test helpers absorbing
-            # production references silently stops applying to it.
-            for key in ("file_path", "lineno", "end_lineno",
-                        "in_test_file", "is_test"):
-                if key in ast_attrs:
-                    sg.nodes[node_id][key] = ast_attrs[key]
+            # Enrich the existing Sphinx node with everything the AST
+            # knows. The AST wins per key because it read the source;
+            # keys only Sphinx has (docname, anchor, display_name) are
+            # untouched because they are simply absent here.
+            #
+            # ⚠ This was a FIVE-KEY WHITELIST until 2026-08-16
+            # (file_path / lineno / end_lineno / in_test_file / is_test),
+            # which silently dropped every other thing the AST knew about
+            # a symbol Sphinx had also seen: `decorators`,
+            # `decorator_lineno`, `body_shingles`, `body_ntokens`, and
+            # the pytest markers `vv_level` / `verifies` / `catches`.
+            #
+            # [M] on ORPHEUS the population is exact: of the 312 nodes
+            # that are `source=both` AND carry a `docname` — i.e. genuine
+            # AST ∩ Sphinx — **0** carried `decorators`. It cost 36 of
+            # 420 declared `@pytest.mark.verifies` markers their `tests`
+            # edge, and the affected symbols are precisely the documented,
+            # public ones most likely to be cited in a V&V audit. The
+            # `else` branch below always did the right thing, which is
+            # why every single-source fixture looked fine. (nexus #71)
+            # ⚠ An UNSET field is not knowledge. `GraphNode` defaults
+            # `display_name` / `domain` / `docname` / `anchor` to `""`,
+            # so every AST node carries all four whether or not the AST
+            # has any opinion — and only Sphinx ever knows a `docname`.
+            # Copying blindly would blank it. An empty value therefore
+            # never displaces a non-empty one; `False` is a real value
+            # and passes (`is_test=False` must cross).
+            for key, value in ast_attrs.items():
+                if key == "type":          # arbitrated below
+                    continue
+                if value in ("", None) and sg.nodes[node_id].get(key) not in ("", None):
+                    continue
+                sg.nodes[node_id][key] = value
             sg.nodes[node_id]["source"] = "both"
             # Upgrade type when AST has a more concrete one. This
             # rescues Sphinx-side placeholders from ``extract_references``

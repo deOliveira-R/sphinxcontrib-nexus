@@ -660,3 +660,108 @@ def test_unmarked_test_node_is_still_inferred():
     assert _implements_targets(
         kg.nxgraph, "py:class:tests.test_slab.TestSlabPolar",
     )
+
+
+# ---------------------------------------------------------------------------
+# What the AST knows survives a symbol Sphinx has also seen (nexus #71)
+# ---------------------------------------------------------------------------
+
+
+def _both_producers_saw(node_id: str, **ast_extra):
+    """A Sphinx node and an AST node for the SAME symbol.
+
+    ⚠ This configuration is why the whitelist survived: every other
+    merge fixture here is single-source, so the `else` branch — which
+    always copied the whole attribute dict — is the one they exercise.
+    The bug lived exclusively in the branch no fixture reached.
+    """
+    sphinx_kg = KnowledgeGraph()
+    sphinx_kg.add_node(GraphNode(
+        id=node_id, type=NodeType.METHOD, name="pkg.C.prop",
+        display_name="prop", domain="py", docname="api/pkg",
+    ))
+    ast_kg = KnowledgeGraph()
+    ast_kg.add_node(GraphNode(
+        id=node_id, type=NodeType.METHOD, name="pkg.C.prop", domain="py",
+        metadata={"file_path": "/p/pkg.py", "lineno": 10, **ast_extra},
+    ))
+    merge_graphs(sphinx_kg, ast_kg)
+    return sphinx_kg.nxgraph.nodes[node_id]
+
+
+def test_pytest_markers_survive_a_documented_symbol():
+    """The consequence that made #71 worth fixing.
+
+    [M] on ORPHEUS, 36 of 420 declared `@pytest.mark.verifies` markers
+    produced no `tests` edge, because the symbol was also autodoc'd and
+    the marker was dropped at merge. The affected symbols are the
+    documented, public ones — exactly those a V&V audit cites.
+    """
+    attrs = _both_producers_saw(
+        "py:method:pkg.C.prop",
+        verifies=("transport-balance",), catches=("ERR-051",), vv_level="L1",
+    )
+    assert attrs["verifies"] == ("transport-balance",)
+    assert attrs["catches"] == ("ERR-051",)
+    assert attrs["vv_level"] == "L1"
+
+
+def test_decorators_survive_a_documented_symbol():
+    attrs = _both_producers_saw(
+        "py:method:pkg.C.prop", decorators=("property",), decorator_lineno=9,
+    )
+    assert attrs["decorators"] == ("property",)
+    assert attrs["decorator_lineno"] == 9
+
+
+def test_the_ast_still_wins_where_it_knows_better():
+    attrs = _both_producers_saw("py:method:pkg.C.prop")
+    assert attrs["file_path"] == "/p/pkg.py"
+    assert attrs["lineno"] == 10
+    assert attrs["source"] == "both"
+
+
+def test_an_unset_ast_field_does_not_blank_a_sphinx_one():
+    """`GraphNode` defaults `docname` to `""`, so every AST node carries
+    the key whether or not the AST has an opinion — and only Sphinx ever
+    knows a docname. A union that ignored this would blank it, which is
+    how the first version of the fix broke `test_merge_enriches_existing_node`.
+    """
+    attrs = _both_producers_saw("py:method:pkg.C.prop")
+    assert attrs["docname"] == "api/pkg"
+    assert attrs["display_name"] == "prop"
+
+
+def test_a_false_value_still_crosses():
+    """`False` is a real value, not an absence — `is_test=False` must
+    reach the merged node or the test-helper rule stops applying."""
+    attrs = _both_producers_saw("py:method:pkg.C.prop", is_test=False)
+    assert attrs["is_test"] is False
+
+
+def test_a_false_value_OVERRIDES_a_truthy_one():
+    """The discriminating case for "empty" versus "falsy".
+
+    The guard skips an AST value that is `""`/`None` — an unset
+    dataclass field. Writing it `not value` instead would also skip
+    `False`, and an AST correction from True to False would be silently
+    dropped: the AST READ THE SOURCE, so it wins.
+
+    ⚠ Constructed deliberately, because `test_a_false_value_still_crosses`
+    above CANNOT see this — it leaves the Sphinx side without the key, so
+    `.get()` returns `None` and the guard's second half is false either
+    way. [M] the `not value` mutation left every other gate in this file
+    green; this is its only witness.
+    """
+    sphinx_kg = KnowledgeGraph()
+    sphinx_kg.add_node(GraphNode(
+        id="py:method:pkg.C.m", type=NodeType.METHOD, name="pkg.C.m",
+        domain="py", docname="api/pkg", metadata={"is_test": True},
+    ))
+    ast_kg = KnowledgeGraph()
+    ast_kg.add_node(GraphNode(
+        id="py:method:pkg.C.m", type=NodeType.METHOD, name="pkg.C.m",
+        domain="py", metadata={"is_test": False, "file_path": "/p/pkg.py"},
+    ))
+    merge_graphs(sphinx_kg, ast_kg)
+    assert sphinx_kg.nxgraph.nodes["py:method:pkg.C.m"]["is_test"] is False
