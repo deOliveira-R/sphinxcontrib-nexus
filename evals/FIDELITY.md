@@ -245,6 +245,47 @@ callers); issues #72–#80 filed, one per class above.
 are F1-by-dispatch (#76) and untouched; everything else unchanged until
 its issue is worked.
 
+### 2026-08-17 · nexus 0.17.0 · ORPHEUS @ `107ec901`
+
+First round against a **rebuilt** graph (22 923 nodes / 207 131 edges),
+so the previous row's numbers were measured on a graph built before
+`8fafd18`. Both predictions **CONFIRMED**:
+
+| probe | previous | now | verdict |
+|---|---|---|---|
+| F1 `mistyped` | 195 | **0** | ✅ predicted 0 |
+| F1 zero-callers | 7421 / 10207 (72.7 %) | **7402 / 10207 (72.5 %)** | ✅ predicted flat (−19) |
+| F1 dispatch-suspect | 781 | 777 | open, #76/#16 |
+| F2 untested equations | 2441 / 4040 (60.4 %) | 2441 / 4040 (60.4 %) | unchanged, as predicted |
+| F3 eq labels as ids | 0 / 50 | 0 / 50 | unchanged |
+| F4 brief, test files | 0 / 6 | 0 / 6 | unchanged |
+| F5 declared : inferred | 1 : 10.0 | 1 : 10.0 | unchanged |
+| F6 payload | 181–197 B/entry | 181–197 B/entry | unchanged |
+| F8 chains closed | 0 / 4 | 0 / 4 | unchanged |
+
+**Reading the confirmation honestly.** F1 `mistyped` → 0 says the fix
+reached the graph. It does **not** say the false-zero problem shrank:
+the zero-caller total moved by 19 of 7402, i.e. the typing repair was
+worth **0.3 %** of the population, and the remaining 7402 are dominated
+by the dispatch mechanism nobody has touched. A round can confirm its
+prediction and still leave the headline number where it was; recording
+both is what stops "prediction confirmed" reading as "problem solved".
+
+**What changed as a result:** ORPHEUS `107ec901` refreshed a deployed
+skill catalogue that listed 29 of 40 tools (nexus#65 re-diagnosed — the
+shipped copy was already correct; the installer's manifest cannot
+classify 10 of 13 tracked files, so a stale file is indistinguishable
+from a field-tested one and never gets refreshed).
+
+⚠ **Harness lesson, logged under Part 5 rule 3.** The "before" graph
+copied for this comparison turned out to be **post-fix** — an
+incremental Sphinx build had rewritten the DB about a minute after a
+check reported it stale, so the comparison compared a graph to itself
+and printed a confident `0 → 0`. The written baseline is what rescued
+the round. ⟹ **a scoreboard row is the reference, not a file you copied
+aside**; and never trust a graph's freshness from one reading taken
+while a build is in flight.
+
 ---
 
 ## Part 5 — Standing rules, each earned
