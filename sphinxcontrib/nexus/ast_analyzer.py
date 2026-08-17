@@ -796,6 +796,12 @@ class CodeVisitor(ast.NodeVisitor):
         # (only ``ast.walk``-ed for calls), so these visitors cannot
         # fire at function scope.
         self._class_depth = 0
+        # Indices into `_scope` that are CLASS scopes. The structural
+        # answer to "am I inside a class?", which `_current_class` used
+        # to guess from capitalisation — see its docstring for what that
+        # cost. `_class_depth` counts; this one remembers WHERE, which
+        # is what naming the enclosing class requires.
+        self._class_scopes: list[int] = []
         # Classes defined in THIS module: local name → qualified name.
         # Used to bind ``Cls.attr = ...`` statements that appear after
         # the class body back onto the class they extend. Restricted to
@@ -828,12 +834,34 @@ class CodeVisitor(ast.NodeVisitor):
 
     @property
     def _current_class(self) -> str | None:
-        """Return the current class name if inside a class scope."""
-        for i in range(len(self._scope) - 1, 0, -1):
-            # Check if scope[i] looks like a class (starts uppercase)
-            if self._scope[i][0:1].isupper():
-                return ".".join(self._scope[: i + 1])
-        return None
+        """The innermost enclosing CLASS scope, or ``None`` outside one.
+
+        ⛔ This used to answer "is this scope a class?" with
+        ``scope[i][0:1].isupper()`` — a NAMING CONVENTION standing in
+        for a structural fact the visitor already holds, since
+        :meth:`visit_ClassDef` is what pushed the scope. Any class whose
+        name does not start with a capital was invisible, and a leading
+        underscore is the common case: `[M]` on ORPHEUS 2026-08-16 it
+        cost **195** methods their type. They were emitted as
+        ``py:function:pkg._Private.meth``, and because the call resolver
+        forms method edges only into ``py:method:`` ids, **191 of the
+        195 had zero incoming calls**.
+
+        The damage was not confined to typing. ``callers`` answered 0
+        for `_OneDimScanWalk._run`, which is called one frame away at
+        ``loss_representation/__init__.py:2986``; an explorer asking
+        "what breaks if the per-cell operator's signature changes" got
+        **0 of ~10** production sites from the graph and all of them
+        from grep. ``dead_functions`` lists such a method as a removal
+        candidate, and ``retest`` walks a cone that cannot reach it.
+
+        ⚠ A zero that means UNRESOLVABLE must never print identically to
+        a zero that means UNCALLED — this one did, in the direction that
+        reads as "safe to delete".
+        """
+        if not self._class_scopes:
+            return None
+        return ".".join(self._scope[: self._class_scopes[-1] + 1])
 
     def visit_Module(self, node: ast.Module) -> None:
         """Visit only direct body statements of the module.
@@ -1145,6 +1173,7 @@ class CodeVisitor(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scope.append(node.name)
+        self._class_scopes.append(len(self._scope) - 1)
         qname = self._qualified_name
         class_id = self._node_id("class", qname)
         # Register before visiting the body so a later ``Cls.attr = ...``
@@ -1235,6 +1264,7 @@ class CodeVisitor(ast.NodeVisitor):
         for child in node.body:
             self.visit(child)
         self._class_depth -= 1
+        self._class_scopes.pop()
         self._scope.pop()
         self._current_class_pytest_meta = prev_class_meta
 

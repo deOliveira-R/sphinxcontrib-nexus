@@ -1065,3 +1065,42 @@ def test_only_line_wrap_whitespace_is_collapsed(raw, expected, why):
     from sphinxcontrib.nexus._mappings import _normalize_wrapped_target
 
     assert _normalize_wrapped_target(raw) == expected, why
+
+
+def test_a_private_class_method_is_a_METHOD_and_receives_its_calls(tmp_path):
+    """⛔ `_current_class` decided "am I in a class?" by testing whether
+    the scope segment starts with a capital — a naming convention
+    standing in for a fact the visitor already had.
+
+    A leading underscore is the common case, so every method of every
+    private class was typed `py:function:`, and the call resolver forms
+    method edges only into `py:method:` ids. `[M]` on ORPHEUS this hit
+    110 methods under `orpheus/`, 108 of them left with ZERO incoming
+    calls — a false zero pointing the way that reads as "dead code".
+    `callers(_OneDimScanWalk._run)` answered 0 for a method called one
+    frame away in the same file.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import analyze_directory
+
+    (tmp_path / "m.py").write_text(
+        "class _Private:\n"
+        "    def helper(self): return 1\n"
+        "    def run(self): return self.helper()\n"
+        "\n"
+        "class Public:\n"
+        "    def helper(self): return 2\n"
+    )
+    g = analyze_directory(tmp_path, project_root=tmp_path).nxgraph
+
+    assert "py:method:m._Private.helper" in g, sorted(
+        n for n in g.nodes if "helper" in n
+    )
+    assert "py:method:m.Public.helper" in g
+    assert not [n for n in g.nodes if n.startswith("py:function:m._Private")]
+
+    # ...and the point of the typing: the call edge now lands.
+    callers = [
+        u for u, _, d in g.in_edges("py:method:m._Private.helper", data=True)
+        if d.get("type") == "calls"
+    ]
+    assert callers == ["py:method:m._Private.run"], callers
