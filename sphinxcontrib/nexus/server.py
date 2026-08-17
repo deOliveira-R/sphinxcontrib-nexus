@@ -1065,6 +1065,13 @@ def dead_functions(exclude: str = "", limit: int = 0) -> str:
     function with no caller — is ranked first. Dunders are excluded (invoked
     implicitly).
 
+    ⚠ `unresolved_calls > 0` means calls NAMING this function landed on
+    unresolved nodes — evidence it is called and the resolver lost the
+    edge. Those rows sort LAST, below every other flag: `public` and
+    `decorated` say "being uncalled is expected", this says "it is
+    probably called and I could not see it". Measured on a real project,
+    26 % of candidates carry one.
+
     Args:
         exclude: Comma-separated substrings; a function OR a caller whose id
             contains any is ignored, on top of the built-in is_test flag.
@@ -1781,6 +1788,17 @@ def callers(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
 
     Returns a clean list of caller nodes. Set transitive=True to walk
     the call graph up to max_depth.
+
+    ⚠ An empty list does NOT mean "nothing calls this". When calls
+    naming this symbol landed on unresolved nodes, the reply carries an
+    ``unresolved`` block with the count and the spellings: the resolver
+    mints one node per receiver spelling, so ``quad.foo()`` and
+    ``q.foo()`` become different phantoms and neither is the real
+    ``foo``.
+
+    Its ABSENCE is not a completeness guarantee either — dispatch
+    through an annotated attribute (``self.scheme.step()``) leaves no
+    same-named phantom to find. Before calling anything dead, grep.
 
     Args:
         node_id: Node ID of the function to query.

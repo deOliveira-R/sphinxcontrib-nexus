@@ -215,6 +215,14 @@ class DeadFunctionResult:
     """Carries a decorator — often registry/route/property/dispatch
     machinery that invokes it indirectly (invisible to the call graph)."""
 
+    unresolved_calls: int = 0
+    """Calls naming this function that landed on an unresolved node.
+
+    Non-zero means the zero-caller finding rests on a resolver the
+    graph can see failing: somebody calls something by this name and it
+    was not placed. `[M]` such a row is a false positive far more often
+    than a real one — treat it as *"look here"*, never as *"delete"*."""
+
 
 @dataclass
 class ProtocolConformerResult:
@@ -631,6 +639,32 @@ class MigrationResult:
 
 
 @dataclass
+class UnresolvedCallers:
+    """Calls that NAME this symbol but landed nowhere real.
+
+    The resolver mints a node per receiver SPELLING (#55), so
+    ``quad.foo()``, ``q.foo()`` and ``good.foo()`` become three
+    different unresolved nodes and none of them is the real ``foo``.
+    Those call edges exist — they are parked where the target cannot
+    see them.
+
+    This is what turns an empty answer from a claim into a lead. Not
+    "possibly incomplete", but: `[M]` on ORPHEUS,
+    ``Quadrature.ordinate_permutation`` has **0** resolved callers and
+    **40** calls sitting on five same-named phantoms.
+    """
+
+    count: int
+    """``calls`` edges arriving at same-named unresolved nodes."""
+
+    spellings: list[str]
+    """The unresolved node ids carrying them, most-called first."""
+
+    note: str = ""
+    """One line a reader can act on without knowing the internals."""
+
+
+@dataclass
 class CallersResult:
     """Callers (or callees) of a function."""
 
@@ -638,6 +672,13 @@ class CallersResult:
     direction: str  # "callers" or "callees"
     nodes: list[NodeResult]
     total: int
+    unresolved: UnresolvedCallers | None = None
+    """Present only when the resolver may be blind here.
+
+    ⚠ Its ABSENCE is not a completeness guarantee — it means this one
+    mechanism found nothing. Annotation-mediated dispatch (#16) leaves
+    no same-named phantom behind, so a call through
+    ``self.scheme.step()`` is invisible to this check too."""
 
 
 @dataclass
@@ -982,6 +1023,67 @@ class GraphQuery:
 
         return results
 
+    @cached_property
+    def _unresolved_calls_by_leaf(self) -> dict[str, list[tuple[int, str]]]:
+        """leaf name → [(call count, unresolved node id)], most-called first.
+
+        Built once per query, because ``dead_functions`` asks this of
+        every candidate and a per-call scan of 22 k nodes would make an
+        O(N·M) sweep out of an O(N) question. The object is its own
+        cache key: the graph is immutable once loaded, and every reload
+        or workspace switch builds a new :class:`GraphQuery`.
+        """
+        index: dict[str, list[tuple[int, str]]] = {}
+        placeholders = self.placeholder_types
+        for node, attrs in self._g.nodes(data=True):
+            if attrs.get("type") not in placeholders:
+                continue
+            n = sum(
+                1 for _, _, d in self._g.in_edges(node, data=True)
+                if d.get("type") == "calls"
+            )
+            if n:
+                index.setdefault(node.rsplit(".", 1)[-1], []).append((n, node))
+        for entries in index.values():
+            entries.sort(reverse=True)
+        return index
+
+    def unresolved_callers(self, node_id: str) -> UnresolvedCallers | None:
+        """Calls naming this symbol that the resolver could not place.
+
+        ⚠ An empty caller list is the graph's most dangerous answer,
+        because it reads as a licence to delete and there is no way to
+        tell it from *"the resolver is blind here"*. `[M]` on ORPHEUS,
+        17.2 % of all ``calls`` edges terminate on unresolved nodes, and
+        ``Quadrature.ordinate_permutation`` — which has real production
+        callers — reports **0** while **40** of its calls sit on five
+        phantoms named for the CALLER's variable
+        (``quad.``, ``q.``, ``good.``, ``broken.``, ``quadrature.``).
+
+        Matching on the leaf name is deliberately loose: a same-named
+        method on an unrelated class will match too. That is the right
+        trade — this exists to stop a confident zero, and a lead worth
+        checking beats silence that reads as proof. The reply says
+        "may be", never "is".
+        """
+        leaf = node_id.rsplit(".", 1)[-1]
+        if not leaf or ":" in leaf:          # a module or bare-name node
+            return None
+        found = self._unresolved_calls_by_leaf.get(leaf)
+        if not found:
+            return None
+        total = sum(n for n, _ in found)
+        return UnresolvedCallers(
+            count=total,
+            spellings=[c for _, c in found],
+            note=(
+                f"{total} call(s) to a receiver spelled {leaf!r} did not "
+                f"resolve and may belong here — the resolver mints one node "
+                f"per receiver spelling. Confirm with grep before treating "
+                f"an empty caller list as 'uncalled'."
+            ),
+        )
+
     def callers(
         self,
         node_id: str,
@@ -992,6 +1094,10 @@ class GraphQuery:
 
         Returns a deduplicated list of caller nodes. If transitive=True,
         walks the call graph up to max_depth.
+
+        Carries :attr:`CallersResult.unresolved` when calls naming this
+        symbol landed on unresolved nodes, so an empty list cannot be
+        read as "nothing calls this".
         """
         if node_id not in self._g:
             return CallersResult(target=node_id, direction="callers", nodes=[], total=0)
@@ -1005,6 +1111,7 @@ class GraphQuery:
                     nodes.append(self._node_result(src))
             return CallersResult(
                 target=node_id, direction="callers", nodes=nodes, total=len(nodes),
+                unresolved=self.unresolved_callers(node_id),
             )
 
         # Transitive: BFS on calls edges only
@@ -1021,7 +1128,8 @@ class GraphQuery:
             all_nodes.extend(self._node_result(n) for n in layer)
 
         return CallersResult(
-            target=node_id, direction="callers", nodes=all_nodes, total=len(all_nodes),
+            target=node_id, direction="callers", nodes=all_nodes,
+            unresolved=self.unresolved_callers(node_id), total=len(all_nodes),
         )
 
     def callees(
@@ -3392,16 +3500,25 @@ class GraphQuery:
             leaf = _leaf_name(self._g, node_id)
             if _is_dunder(leaf):
                 continue
+            blind = self.unresolved_callers(node_id)
             out.append(DeadFunctionResult(
                 function=self._node_result(node_id),
                 is_method=ntype == NodeType.METHOD,
                 public=not leaf.startswith("_"),
                 decorated=bool(attrs.get("decorators")),
+                unresolved_calls=blind.count if blind else 0,
             ))
 
-        # private → undecorated → plain function first (strongest dead signal);
-        # name as a stable tiebreak.
-        out.sort(key=lambda r: (r.public, r.decorated, r.is_method, r.function.name))
+        # Rows the resolver may simply have lost go LAST: an unresolved
+        # call naming this function is evidence AGAINST deleting it, and
+        # it outranks every other flag here — `public`/`decorated` say
+        # "being uncalled is expected", while this says "it is probably
+        # called and I could not see it". Then private → undecorated →
+        # plain function (strongest dead signal), name as a tiebreak.
+        out.sort(key=lambda r: (
+            bool(r.unresolved_calls), r.public, r.decorated,
+            r.is_method, r.function.name,
+        ))
         return out if limit <= 0 else out[:limit]
 
     def protocol_conformers(
