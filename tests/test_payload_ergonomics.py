@@ -221,3 +221,51 @@ def test_god_nodes_answers_about_the_project_not_about_python():
         n.type == "external"
         for n in q.god_nodes(top_n=10, include_placeholders=True)
     )
+
+
+# ── "nothing found" vs "you asked the wrong run" (lessons-L56) ──────
+
+
+class _Run:
+    """A stored run carrying only the families its kind can fill."""
+
+    def __init__(self, name, kind, **families):
+        self.name, self.kind = name, kind
+        for f in ("calls", "edges", "coverage", "timeline"):
+            setattr(self, f, families.get(f) or {})
+
+
+def test_a_view_refuses_a_run_that_cannot_carry_it(monkeypatch):
+    """[M] 2026-08-16, four of nexus's own tools returned `[]` here:
+    `runtime_timeline`/`runtime_branches` on a cProfile run, and
+    `runtime_hotspots`/`runtime_edges` on a coverage run — identical to
+    a workload that genuinely exercised nothing. The docstrings even
+    said so, which documents the ambiguity instead of removing it.
+    """
+    import sphinxcontrib.nexus.server as S
+
+    class _Store:
+        def list_runs(self):
+            return [{"name": "prof", "kind": "cprofile"},
+                    {"name": "cov", "kind": "coverage"}]
+
+    monkeypatch.setattr(S, "_get_runtime_store", lambda: _Store())
+    profile_run = _Run("prof", "cprofile", calls={"py:function:a": {}})
+
+    with pytest.raises(ValueError) as excinfo:
+        S._require_family(profile_run, "coverage", "runtime_branches")
+    message = str(excinfo.value)
+    assert "prof" in message and "cprofile" in message      # what you asked
+    assert "coverage" in message                            # what it lacks
+    assert "'cov'" in message                               # what would work
+    assert "not an empty result" in message                 # and that it is not one
+
+
+def test_a_view_the_run_CAN_carry_is_silent(monkeypatch):
+    import sphinxcontrib.nexus.server as S
+
+    monkeypatch.setattr(S, "_get_runtime_store", lambda: None)
+    S._require_family(
+        _Run("prof", "cprofile", calls={"py:function:a": {}}),
+        "calls", "runtime_hotspots",
+    )   # must not raise

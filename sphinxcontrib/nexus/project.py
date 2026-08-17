@@ -71,6 +71,7 @@ TRACES_DIR_NAME = "traces"
 KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     "graph": frozenset({
         "output",
+        "git_timeout_seconds",
         "extra_source_dirs",
         "exclude_patterns",
         "analyze_tests",
@@ -81,6 +82,48 @@ KNOWN_KEYS: Mapping[str, frozenset[str]] = {
     }),
     "scope": frozenset({"prefixes"}),
     "catalog": frozenset({"errors"}),
+    # How much a tool may say. A reply lands in an agent's context and
+    # stays there, so these decide what a session can afford — and they
+    # are exactly the numbers that will want raising as context windows
+    # grow, which is why they are settings rather than constants.
+    "replies": frozenset({
+        "max_characters",
+        "items_per_list",
+        "items_per_brief_line",
+        "neighbors_per_edge_type",
+        "nodes_per_impact_depth",
+    }),
+    # What the session briefing shows. It is produced before anyone has
+    # asked anything, so every session pays for it whether it is read or
+    # not.
+    "briefing": frozenset({
+        "project_hubs",
+        "stale_pages",
+        "symbols_per_stale_page",
+        "coverage_gaps",
+    }),
+}
+
+#: Shipped values for every tunable, in one place, so the default and the
+#: setting that overrides it cannot drift — and so a reader can see what
+#: they get without a config file. Each is `[table].key`.
+#:
+#: `replies.max_characters` is a CHARACTER count because that is what the
+#: code can measure without a tokenizer; at roughly 4 characters a token,
+#: 20000 is about 5000 tokens. It exists because [M] 2026-08-16
+#: `processes()` returned 1,238,013 tokens — several times any context
+#: window — and eight tools exceeded 12,000.
+DEFAULTS: Mapping[str, Any] = {
+    "replies.max_characters": 20_000,
+    "replies.items_per_list": 50,
+    "replies.items_per_brief_line": 3,
+    "replies.neighbors_per_edge_type": 25,
+    "replies.nodes_per_impact_depth": 50,
+    "briefing.project_hubs": 5,
+    "briefing.stale_pages": 5,
+    "briefing.symbols_per_stale_page": 3,
+    "briefing.coverage_gaps": 5,
+    "graph.git_timeout_seconds": 10,
 }
 
 T = TypeVar("T")
@@ -246,6 +289,27 @@ class ProjectConfig:
         if not isinstance(section, dict):
             return None
         return section.get(key)
+
+    def tunable(self, dotted: str) -> Any:
+        """A ``[table].key`` setting, or its shipped default.
+
+        One accessor rather than a property per key, so adding a tunable
+        is a single line in :data:`DEFAULTS` and a single line in
+        :data:`KNOWN_KEYS` — the two places that must agree, and which a
+        test pins to each other. A property per key would be a third
+        place to forget.
+
+        Unlike the ``[graph]`` accessors this does NOT return ``None``
+        for an unset key: these all have a meaningful shipped value, and
+        every caller would otherwise repeat the same ``or DEFAULT``.
+        """
+        if dotted not in DEFAULTS:
+            raise KeyError(
+                f"unknown tunable {dotted!r}; known: {sorted(DEFAULTS)}"
+            )
+        table, key = dotted.split(".", 1)
+        value = self._get(table, key)
+        return DEFAULTS[dotted] if value is None else value
 
     # -- [graph] ---------------------------------------------------------
 

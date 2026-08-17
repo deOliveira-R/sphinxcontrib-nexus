@@ -178,6 +178,22 @@ def _reload_if_stale() -> None:
         )
 
 
+def _list_limit(limit: int) -> int:
+    """A tool's `limit`, with 0 meaning the project's setting.
+
+    `[replies].items_per_list` is the one place to raise every list
+    length at once — the number most likely to want changing as context
+    windows grow. A caller can still pass an explicit value, and -1
+    still means uncapped.
+    """
+    if limit != 0:
+        return limit
+    if _query is None:
+        from sphinxcontrib.nexus.project import DEFAULTS
+        return int(DEFAULTS["replies.items_per_list"])
+    return int(_query.tunable("replies.items_per_list"))
+
+
 def _get_query() -> GraphQuery:
     if _query is None:
         raise RuntimeError("Graph not loaded. Call serve() first.")
@@ -220,6 +236,50 @@ def _load_runs(names: str):
     return load_and_merge(names, _load_run)
 
 
+#: Overlay family → the attribute carrying it, and the ingest kinds that
+#: can produce it. A run is a bag of orthogonal overlays: a `coverage`
+#: ingest fills `coverage`, a `cprofile` ingest fills `calls` and
+#: `edges`, a `viztracer` ingest fills `timeline`.
+_RUNTIME_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "calls": ("calls", ("cprofile",)),
+    "edges": ("edges", ("cprofile",)),
+    "coverage": ("coverage", ("coverage",)),
+    "timeline": ("timeline", ("viztracer",)),
+}
+
+
+def _require_family(run: Any, family: str, view: str) -> None:
+    """Refuse a view of a run that cannot carry it, and say what can.
+
+    Asking a cProfile run for branch coverage used to return ``[]`` —
+    identical to a workload that genuinely exercised nothing. The
+    docstrings even said so ("a coverage run has no timing and returns
+    ``[]``"), which documents the ambiguity rather than removing it.
+
+    `[M]` 2026-08-16, four of nexus's own tools failed this way on
+    ORPHEUS's stored runs: ``runtime_timeline`` and ``runtime_branches``
+    on a cProfile run, ``runtime_hotspots`` and ``runtime_edges`` on a
+    coverage run. Every one answered ``[]``.
+
+    This is ``lessons-L56`` — "nothing found" and "I looked in the wrong
+    place" must not print the same thing — and the remedy is the same
+    one line: name the thing you looked for.
+    """
+    attribute, kinds = _RUNTIME_FAMILIES[family]
+    if getattr(run, attribute, None):
+        return
+    store = _get_runtime_store()
+    usable = [
+        r["name"] for r in store.list_runs() if r.get("kind") in kinds
+    ] or [f"(none — capture one with kind={kinds[0]!r} and runtime_ingest)"]
+    raise ValueError(
+        f"run {run.name!r} was ingested as kind={run.kind!r} and carries no "
+        f"{family!r} data, so {view} has nothing to read — this is not an "
+        f"empty result, it is the wrong run. {family!r} comes from "
+        f"{' or '.join(repr(k) for k in kinds)}; runs that have it: {usable}"
+    )
+
+
 def _active_root() -> Path | None:
     """Project root of the active workspace (``None`` when serving a
     bare database with no known root)."""
@@ -246,13 +306,23 @@ STALE_KEY = "stale"
 #: can destroy the session it was called from is not a usable tool, and
 #: no amount of per-tool care prevents the next one: this is the backstop
 #: that makes the failure bounded instead of fatal.
+#: Fallback when no query (and therefore no checkout, and therefore no
+#: config) is loaded yet. The live value is
+#: `[replies].max_characters` — see `project.DEFAULTS`.
 TOOL_PAYLOAD_BUDGET = 20_000
+
+
+def _reply_budget() -> int:
+    """The active checkout's `[replies].max_characters`."""
+    if _query is None:
+        return TOOL_PAYLOAD_BUDGET
+    return int(_query.tunable("replies.max_characters"))
 
 #: Key carrying what the budget dropped. Present ONLY when something was.
 BUDGET_KEY = "truncated"
 
 
-def _fit_budget(payload: str, tool: str, budget: int = TOOL_PAYLOAD_BUDGET) -> str:
+def _fit_budget(payload: str, tool: str, budget: int | None = None) -> str:
     """Trim an over-budget payload to its largest list, and say so.
 
     Truncating silently would be the worst of both worlds — a partial
@@ -271,6 +341,7 @@ def _fit_budget(payload: str, tool: str, budget: int = TOOL_PAYLOAD_BUDGET) -> s
     If nothing can be trimmed the payload is returned untouched rather
     than mangled — over budget beats invalid.
     """
+    budget = _reply_budget() if budget is None else budget
     if len(payload) <= budget:
         return payload
     try:
@@ -598,7 +669,7 @@ def query(text: str, node_types: str = "", limit: int = 20) -> str:
     """
     q = _get_query()
     types = [t.strip() for t in node_types.split(",") if t.strip()] or None
-    results = q.query(text, node_types=types, limit=limit)
+    results = q.query(text, node_types=types, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
@@ -641,7 +712,7 @@ def node_at(file: str, line: int) -> str:
 
 
 @nexus_tool
-def context(node_id: str, limit_per_type: int = 25) -> str:
+def context(node_id: str, limit_per_type: int = 0) -> str:
     """Get a 360-degree view of a node: its attributes and all connections.
 
     Shows the node's properties plus all incoming and outgoing edges
@@ -655,15 +726,21 @@ def context(node_id: str, limit_per_type: int = 25) -> str:
 
     Args:
         node_id: Node ID (e.g., "py:function:sn_solver.solve_sn").
-        limit_per_type: Max entries per edge-type bucket (default 25).
-            ``0`` means no cap — expect a huge payload on hub nodes.
+        limit_per_type: Max entries per edge-type bucket. Omit to use
+            the project's `[replies].neighbors_per_edge_type` (default
+            25); ``-1`` removes the cap, which on a hub node produces a
+            payload the reply budget will then trim anyway.
     """
     q = _get_query()
     return to_json(
         assemble_context(
             q,
             node_id,
-            per_type_limit=limit_per_type if limit_per_type > 0 else None,
+            per_type_limit=(
+                q.tunable("replies.neighbors_per_edge_type")
+                if limit_per_type == 0
+                else (limit_per_type if limit_per_type > 0 else None)
+            ),
         )
     )
 
@@ -674,7 +751,7 @@ def impact(
     direction: str = "upstream",
     max_depth: int = 3,
     edge_types: str = "",
-    limit_per_depth: int = 50,
+    limit_per_depth: int = 0,
 ) -> str:
     """Analyze blast radius: what depends on this symbol (upstream)
     or what this symbol depends on (downstream).
@@ -694,8 +771,9 @@ def impact(
         max_depth: Maximum traversal depth (default 3).
         edge_types: Comma-separated edge types to follow (e.g., "calls,imports").
                     Empty means all edge types.
-        limit_per_depth: Max nodes per depth bucket (default 50).
-            ``0`` means no cap — expect a huge payload on hub nodes.
+        limit_per_depth: Max nodes per depth bucket. Omit to use the
+            project's `[replies].nodes_per_impact_depth` (default 50);
+            ``-1`` removes the cap.
     """
     if direction not in ("upstream", "downstream"):
         return to_json({
@@ -711,7 +789,11 @@ def impact(
             direction=direction,
             max_depth=max_depth,
             edge_types=types,
-            per_depth_limit=limit_per_depth if limit_per_depth > 0 else None,
+            per_depth_limit=(
+                q.tunable("replies.nodes_per_impact_depth")
+                if limit_per_depth == 0
+                else (limit_per_depth if limit_per_depth > 0 else None)
+            ),
         )
     )
 
@@ -799,7 +881,7 @@ def communities(min_size: int = 3) -> str:
 
 
 @nexus_tool
-def native_place(min_callers: int = 1, exclude: str = "", limit: int = 50) -> str:
+def native_place(min_callers: int = 1, exclude: str = "", limit: int = 0) -> str:
     """Find functions that may belong inside a class (Feature-Envy / 'native place').
 
     A module-level function whose every non-test caller is a method of a
@@ -819,7 +901,7 @@ def native_place(min_callers: int = 1, exclude: str = "", limit: int = 50) -> st
     q = _get_query()
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
     results = q.native_place_candidates(
-        min_callers=min_callers, exclude=toks, limit=limit,
+        min_callers=min_callers, exclude=toks, limit=_list_limit(limit),
     )
     return to_json(to_dict(results))
 
@@ -829,7 +911,7 @@ def twin_paths(
     min_similarity: float = 0.7,
     min_tokens: int = 35,
     exclude: str = "",
-    limit: int = 50,
+    limit: int = 0,
 ) -> str:
     """Find twin paths — independent implementations of the same computation.
 
@@ -858,13 +940,13 @@ def twin_paths(
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
     results = q.twin_paths(
         min_similarity=min_similarity, min_tokens=min_tokens,
-        exclude=toks, limit=limit,
+        exclude=toks, limit=_list_limit(limit),
     )
     return to_json(to_dict(results))
 
 
 @nexus_tool
-def discriminations(min_sites: int = 2, exclude: str = "", limit: int = 50) -> str:
+def discriminations(min_sites: int = 2, exclude: str = "", limit: int = 0) -> str:
     """Find tags discriminated at multiple sites — candidate missing types.
 
     A function that branches on a string/enum tag (`if geometry ==
@@ -886,12 +968,12 @@ def discriminations(min_sites: int = 2, exclude: str = "", limit: int = 50) -> s
     """
     q = _get_query()
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
-    results = q.discriminations(min_sites=min_sites, exclude=toks, limit=limit)
+    results = q.discriminations(min_sites=min_sites, exclude=toks, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
 @nexus_tool
-def dead_functions(exclude: str = "", limit: int = 50) -> str:
+def dead_functions(exclude: str = "", limit: int = 0) -> str:
     """Find functions/methods with no static callers — dead-code candidates.
 
     Zero incoming `calls` edges (from non-test, non-excluded code) = a removal
@@ -910,12 +992,12 @@ def dead_functions(exclude: str = "", limit: int = 50) -> str:
     """
     q = _get_query()
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
-    results = q.dead_functions(exclude=toks, limit=limit)
+    results = q.dead_functions(exclude=toks, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
 @nexus_tool
-def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 50) -> str:
+def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 0) -> str:
     """Find classes that satisfy a Protocol's method-set without declaring it.
 
     Python Protocols are satisfied structurally, but the AST `inherits` edge
@@ -939,7 +1021,7 @@ def protocol_conformers(min_methods: int = 2, exclude: str = "", limit: int = 50
     """
     q = _get_query()
     toks = tuple(t.strip() for t in exclude.split(",") if t.strip())
-    results = q.protocol_conformers(min_methods=min_methods, exclude=toks, limit=limit)
+    results = q.protocol_conformers(min_methods=min_methods, exclude=toks, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
@@ -1052,14 +1134,16 @@ def runtime_hotspots(run: str = "default", by: str = "cumtime", limit: int = 20)
         limit: Max nodes (default 20; 0 = all).
     """
     q = _get_query()
-    results = q.runtime_hotspots(_load_runs(run), by=by, limit=limit)
+    loaded = _load_runs(run)
+    _require_family(loaded, "calls", "runtime_hotspots")
+    results = q.runtime_hotspots(loaded, by=by, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
 @nexus_tool
 def runtime_edges(
     run: str = "default", mode: str = "dynamic_only", node: str = "",
-    substantive_only: bool = False, limit: int = 50,
+    substantive_only: bool = False, limit: int = 0,
 ) -> str:
     """Overlay a run's call edges on the static CALLS edges.
 
@@ -1083,15 +1167,17 @@ def runtime_edges(
         limit: Max edges (default 50; 0 = all).
     """
     q = _get_query()
+    loaded = _load_runs(run)
+    _require_family(loaded, "edges", "runtime_edges")
     results = q.runtime_edges(
-        _load_runs(run), mode=mode, node=node,
-        substantive_only=substantive_only, limit=limit)
+        loaded, mode=mode, node=node,
+        substantive_only=substantive_only, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
 @nexus_tool
 def runtime_branches(
-    run: str = "default", node: str = "", partial_only: bool = True, limit: int = 50,
+    run: str = "default", node: str = "", partial_only: bool = True, limit: int = 0,
 ) -> str:
     """Per-node branch coverage — the accidental-vs-essential / missing-type signal.
 
@@ -1110,13 +1196,15 @@ def runtime_branches(
         limit: Max nodes (default 50; 0 = all).
     """
     q = _get_query()
+    loaded = _load_runs(run)
+    _require_family(loaded, "coverage", "runtime_branches")
     results = q.runtime_branches(
-        _load_runs(run), node=node, partial_only=partial_only, limit=limit)
+        loaded, node=node, partial_only=partial_only, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
 @nexus_tool
-def runtime_timeline(run: str = "default", max_depth: int = -1, limit: int = 50) -> str:
+def runtime_timeline(run: str = "default", max_depth: int = -1, limit: int = 0) -> str:
     """The observed execution sequence — nodes in order of first entry.
 
     The unique thing a `viztracer` run adds over cProfile is *order*: this is
@@ -1131,7 +1219,9 @@ def runtime_timeline(run: str = "default", max_depth: int = -1, limit: int = 50)
         limit: Max nodes (default 50; 0 = all).
     """
     q = _get_query()
-    results = q.runtime_timeline(_load_run(run), max_depth=max_depth, limit=limit)
+    loaded = _load_run(run)
+    _require_family(loaded, "timeline", "runtime_timeline")
+    results = q.runtime_timeline(loaded, max_depth=max_depth, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 
@@ -1234,7 +1324,7 @@ def staleness() -> str:
 
 
 @nexus_tool
-def dead_references(limit: int = 50) -> str:
+def dead_references(limit: int = 0) -> str:
     """Doc/docstring references whose code target no longer exists.
 
     The silent-drift failure: a class/function/attribute/equation was
@@ -1525,7 +1615,7 @@ def processes(
 
 
 @nexus_tool
-def graph_query(pattern: str, limit: int = 50) -> str:
+def graph_query(pattern: str, limit: int = 0) -> str:
     """Execute a structured graph traversal query.
 
     Mini query language for finding edges matching a pattern.
@@ -1547,7 +1637,7 @@ def graph_query(pattern: str, limit: int = 50) -> str:
         limit: Maximum results (default 50).
     """
     q = _get_query()
-    results = q.graph_query(pattern, limit=limit)
+    results = q.graph_query(pattern, limit=_list_limit(limit))
     return to_json(results)
 
 

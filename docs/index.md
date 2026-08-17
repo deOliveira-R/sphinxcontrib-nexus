@@ -14,6 +14,7 @@ and the drift becomes a finding.
 :caption: Guide
 
 guide/authoring
+guide/configuration
 guide/vocabulary
 guide/tools
 guide/cli
@@ -25,6 +26,7 @@ guide/python-api
 | You are | Start at |
 |---|---|
 | Instrumenting a project — writing docstrings, `.rst`, directives | {doc}`guide/authoring` |
+| Tuning what nexus says and how much of it | {doc}`guide/configuration` |
 | Reading a graph someone else built — node ids, edge meanings | {doc}`guide/vocabulary` |
 | Driving the MCP server from an agent | {doc}`guide/tools` |
 | At a terminal, or wiring a hook | {doc}`guide/cli` |

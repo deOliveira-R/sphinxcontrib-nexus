@@ -37,6 +37,8 @@ from sphinxcontrib.nexus.workspace import (
 )
 
 #: Most items a rendered list shows before collapsing to ``+N``.
+#: Fallback for a render with no checkout to ask; the live value is
+#: `[replies].items_per_brief_line`.
 _LIST_BUDGET = 3
 
 
@@ -302,14 +304,14 @@ def file_brief(
     )
 
 
-def _clipped(items: list[str]) -> str:
-    """``a, b, c (+4)`` — never more than ``_LIST_BUDGET`` spelled out."""
-    shown = ", ".join(items[:_LIST_BUDGET])
-    rest = len(items) - _LIST_BUDGET
+def _clipped(items: list[str], budget: int = _LIST_BUDGET) -> str:
+    """``a, b, c (+4)`` — never more than ``budget`` spelled out."""
+    shown = ", ".join(items[:budget])
+    rest = len(items) - budget
     return f"{shown} (+{rest})" if rest > 0 else shown
 
 
-def render_text(brief: FileBrief) -> str:
+def render_text(brief: FileBrief, project_root: Path | None = None) -> str:
     """The ≤6-line ambient form — what a hook prints into a transcript.
 
     Line for line: identity + blast radius; the hub node (the one ID
@@ -317,6 +319,14 @@ def render_text(brief: FileBrief) -> str:
     implements and how tested it is; the doc pages owed an update;
     a staleness flag only when the graph is verifiably behind.
     """
+    budget = _LIST_BUDGET
+    if project_root is not None:
+        from sphinxcontrib.nexus.project import ProjectConfig
+
+        budget = int(
+            ProjectConfig.load(project_root).tunable("replies.items_per_brief_line")
+        )
+
     head = brief.module_id or brief.file_path
     lines = [
         f"nexus: {head} — {len(brief.nodes)} nodes in this file; "
@@ -329,11 +339,11 @@ def render_text(brief: FileBrief) -> str:
         lines.append(f"hub: {hub.id} (degree {hub.degree}){more}")
     if brief.equation_labels:
         lines.append(
-            f"implements: {_clipped(brief.equation_labels)} — "
+            f"implements: {_clipped(brief.equation_labels, budget)} — "
             f"{brief.equation_test_count} tests verify these equations"
         )
     if brief.doc_pages:
-        lines.append(f"docs: {_clipped(brief.doc_pages)}")
+        lines.append(f"docs: {_clipped(brief.doc_pages, budget)}")
     # No per-file staleness line here, deliberately: the ambient form's
     # consumer is the POST-EDIT hook, where "file changed since graph
     # build" is tautologically true (the agent just edited it). Issue

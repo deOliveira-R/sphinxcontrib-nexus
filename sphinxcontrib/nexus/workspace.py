@@ -52,7 +52,31 @@ STAMP_GIT_BRANCH = "git_branch"
 STAMP_GIT_COMMIT = "git_commit"
 STAMP_GIT_DIRTY = "git_dirty"
 
+#: Fallback when no checkout config is readable. The live value is
+#: `[graph].git_timeout_seconds` — how long a git call may take is a
+#: property of the REPOSITORY (its size, its filesystem, whether it is
+#: on a network mount), not of nexus.
 _GIT_TIMEOUT_S = 10
+
+#: root → resolved timeout. `_git` runs on hot paths (the staleness
+#: check runs per file brief), so the config file is read once per
+#: checkout per process rather than once per subprocess.
+_GIT_TIMEOUTS: dict[Path, int] = {}
+
+
+def _git_timeout(root: Path) -> int:
+    cached = _GIT_TIMEOUTS.get(root)
+    if cached is None:
+        from sphinxcontrib.nexus.project import ProjectConfig
+
+        try:
+            cached = int(
+                ProjectConfig.load(root).tunable("graph.git_timeout_seconds")
+            )
+        except Exception:          # unreadable config must never break git
+            cached = _GIT_TIMEOUT_S
+        _GIT_TIMEOUTS[root] = cached
+    return cached
 
 
 class WorkspaceLayoutError(ValueError):
@@ -77,7 +101,7 @@ def _git(root: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(root), *args],
-            capture_output=True, text=True, timeout=_GIT_TIMEOUT_S,
+            capture_output=True, text=True, timeout=_git_timeout(root),
         )
     except (subprocess.SubprocessError, OSError):
         return None

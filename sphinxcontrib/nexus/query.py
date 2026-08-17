@@ -787,6 +787,25 @@ class GraphQuery:
         return root
 
     @cached_property
+    def settings(self) -> Any:
+        """This checkout's ``.nexus/config.toml``, loaded on first use.
+
+        A :func:`~functools.cached_property` for the same reason as
+        :attr:`positions`: the config is a pure function of the workspace
+        root, and a query is a pure function of the same, so the object
+        IS the cache key. A rootless query — a bare ``--db`` server —
+        gets an empty config, whose ``tunable`` calls all return the
+        shipped defaults.
+        """
+        from sphinxcontrib.nexus.project import ProjectConfig
+
+        return ProjectConfig.load(self.project_root or Path.cwd())
+
+    def tunable(self, dotted: str) -> Any:
+        """A ``[table].key`` setting from this checkout, or its default."""
+        return self.settings.tunable(dotted)
+
+    @cached_property
     def positions(self) -> PositionIndex:
         """This graph's ``(file, line)`` → node index, built on first use.
 
@@ -2419,17 +2438,6 @@ class GraphQuery:
     # Feature 4: Session Briefing
     # ------------------------------------------------------------------
 
-    #: Symbols listed per stale page in the BRIEFING. The full list is
-    #: what `staleness()` is for; here the count in `stale_reason` is the
-    #: triage signal and the names are examples. [M] 2026-08-16 the
-    #: uncapped lists were 55% of the whole briefing — 123 names for one
-    #: page — on the one reply that loads at every session start.
-    _BRIEFING_SYMBOL_EXAMPLES = 3
-
-    #: Coverage gaps shown in the briefing. Enough to see the shape;
-    #: `verification_audit()` has them all.
-    _BRIEFING_GAPS = 5
-
     def session_briefing(self) -> BriefingResult:
         """Orientation for an agent starting a session.
 
@@ -2439,23 +2447,25 @@ class GraphQuery:
         by every session whether or not it is used — `[M]` 2026-08-16 it
         was **10,564 tokens**, of which 82% were two uncapped lists.
         """
+        # Every count here is a `[briefing]` setting — see
+        # `project.DEFAULTS`. They are the numbers most likely to want
+        # changing as context windows grow, so they belong in a config
+        # file rather than in this function.
+        symbols_per_page = self.tunable("briefing.symbols_per_stale_page")
         stats_result = self.stats()
-        top_nodes = self.god_nodes(top_n=5)
+        top_nodes = self.god_nodes(top_n=self.tunable("briefing.project_hubs"))
 
         stale_result = self.staleness()
         stale_docs = [
-            replace(
-                entry,
-                affected_symbols=entry.affected_symbols[
-                    : self._BRIEFING_SYMBOL_EXAMPLES
-                ],
-            )
-            for entry in stale_result.stale_docs[:5]
+            replace(entry, affected_symbols=entry.affected_symbols[:symbols_per_page])
+            for entry in stale_result.stale_docs[
+                : self.tunable("briefing.stale_pages")
+            ]
         ]
 
         # Coverage gaps (equations with code but no tests)
         coverage = self.verification_coverage(status_filter="implemented")
-        gaps = coverage.entries[: self._BRIEFING_GAPS]
+        gaps = coverage.entries[: self.tunable("briefing.coverage_gaps")]
 
         # Recent changes
         changes_result = DetectChangesResult(
@@ -2503,7 +2513,7 @@ class GraphQuery:
             "stale_docs": (
                 f"{len(stale_docs)} of {len(stale_result.stale_docs)} drifted "
                 f"pages, each showing up to "
-                f"{self._BRIEFING_SYMBOL_EXAMPLES} of its affected symbols — "
+                f"{symbols_per_page} of its affected symbols — "
                 f"`staleness()` for all of both"
             ),
             "coverage_gaps": (

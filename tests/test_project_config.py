@@ -324,3 +324,84 @@ def test_the_retired_db_key_is_reported_not_silently_obeyed(tmp_path, caplog):
     assert "unknown key 'db'" in caplog.text
     # …and the declaration has NO effect: the store is still the convention.
     assert cfg.resolved_db() == (tmp_path / CONFIG_DIR / GRAPH_DB_NAME).resolve()
+
+
+# ---------------------------------------------------------------------------
+# Tunables — the numbers that decide what a session can afford
+# ---------------------------------------------------------------------------
+#
+# Context windows grow; the right reply size in 2026 is not the right one
+# in 2028. These live in `.nexus/config.toml` so raising them is one line
+# in a file, not an edit to the code.
+
+
+def test_every_default_is_a_declared_key_and_vice_versa():
+    """The two places that must agree. `DEFAULTS` gives the shipped
+    value, `KNOWN_KEYS` decides whether a config file mentioning it is
+    accepted or warned about as a typo — so a key in one and not the
+    other is either an unsettable default or a setting with no value."""
+    from sphinxcontrib.nexus.project import DEFAULTS, KNOWN_KEYS
+
+    declared = {f"{t}.{k}" for t, keys in KNOWN_KEYS.items() for k in keys}
+    assert set(DEFAULTS) <= declared, set(DEFAULTS) - declared
+
+
+def test_a_tunable_falls_back_to_its_shipped_value(tmp_path):
+    from sphinxcontrib.nexus.project import DEFAULTS, ProjectConfig
+
+    (tmp_path / ".nexus").mkdir()
+    cfg = ProjectConfig.load(tmp_path)
+    for dotted, shipped in DEFAULTS.items():
+        assert cfg.tunable(dotted) == shipped, dotted
+
+
+def test_a_config_file_overrides_the_shipped_value(tmp_path):
+    from sphinxcontrib.nexus.project import ProjectConfig
+
+    (tmp_path / ".nexus").mkdir()
+    (tmp_path / ".nexus" / "config.toml").write_text(
+        "[replies]\nmax_characters = 4000\n\n[briefing]\nproject_hubs = 2\n"
+    )
+    cfg = ProjectConfig.load(tmp_path)
+    assert cfg.tunable("replies.max_characters") == 4000
+    assert cfg.tunable("briefing.project_hubs") == 2
+    # untouched keys keep their shipped values
+    assert cfg.tunable("briefing.coverage_gaps") == 5
+
+
+def test_an_unknown_tunable_is_refused_by_name():
+    """A typo must not read as "unset, use the default" — that is the
+    silent-misconfiguration shape (lessons-L56) in the settings layer."""
+    from sphinxcontrib.nexus.project import ProjectConfig
+
+    with pytest.raises(KeyError, match="unknown tunable"):
+        ProjectConfig(root=Path("/x"), source=None, data={}).tunable("replies.nope")
+
+
+def test_a_query_reads_its_own_checkouts_settings(tmp_path):
+    """The query already knows which checkout it answers about, so the
+    settings hang off the same object — no second resolution path."""
+    import networkx as nx
+
+    from sphinxcontrib.nexus.query import GraphQuery
+    from sphinxcontrib.nexus.workspace import Workspace
+
+    (tmp_path / ".nexus").mkdir()
+    (tmp_path / ".nexus" / "config.toml").write_text(
+        "[replies]\nitems_per_list = 7\n"
+    )
+    q = GraphQuery(
+        nx.MultiDiGraph(),
+        workspace=Workspace(db_path=tmp_path / ".nexus" / "graph.db", root=tmp_path),
+    )
+    assert q.tunable("replies.items_per_list") == 7
+
+
+def test_a_rootless_query_still_gets_the_defaults():
+    """A bare `--db` server has a graph but no checkout, so it has no
+    config — and must still work."""
+    import networkx as nx
+
+    from sphinxcontrib.nexus.query import GraphQuery
+
+    assert GraphQuery(nx.MultiDiGraph()).tunable("replies.max_characters") == 20_000
