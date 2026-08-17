@@ -263,27 +263,39 @@ audiences.
 - Version single-sourced in `sphinxcontrib/nexus/__init__.py`;
   `pyproject.toml` declares it `dynamic`.
 
-## Evals — two axes, and neither is the test suite
+## Evals — two batteries, neither of them the test suite
 
 `pytest` proves the code does what it says. It cannot tell you whether
-what it says is worth saying. Both batteries live in `evals/`:
+what it says is worth saying. Two batteries live in `evals/`, and they
+differ in **what is under test**, which decides what you change to
+improve a score:
 
-| axis | asks | run it |
-|---|---|---|
-| **routing** ([README](evals/README.md)) | did the agent reach the right tool? | `./evals/run_evals.py --project <p> --model haiku` |
-| **fidelity** ([FIDELITY.md](evals/FIDELITY.md)) | is the answer true, usable, complete? | `./evals/fidelity_probes.py --project <p>` |
+| battery | subject | improve by | model-dep? | run |
+|---|---|---|---|---|
+| **tool-selection** ([README](evals/README.md)) | the instruction surface | rewording skills / rules | **yes** | `./evals/run_evals.py --project <p> --model haiku` |
+| **responses** ([FIDELITY.md](evals/FIDELITY.md)) | **Nexus itself** | changing Nexus's code and replies | **no** | `./evals/fidelity_probes.py --project <p>` |
 
-They are orthogonal and both are needed: routing grades the **journal**,
-so a tool that is reached and then lies scores a clean HIT. A 2026-08-16
-field trial found nine such defects — `provenance_chain` returning 112
-equations of the wrong granularity, `callers` returning `0` for a method
-called one frame away — every one of which the routing battery would
-have passed.
+Do not try to fix one with the other's lever: rewording a skill cannot
+make a reply truer, and no amount of Nexus code makes an unmentioned
+tool discoverable.
 
-**Before extending either, load `.claude/skills/eval-authoring`.** Before
-a release that changes tool behaviour or output shape, run the fidelity
-probes and append a scoreboard row; before one that changes skills,
-rules or tool descriptions, run the routing battery.
+The response battery is agent-independent and free, so **run it on every
+commit that changes tool behaviour or output shape** and append a
+scoreboard row. The selection battery costs money and is model-tuned —
+run it per model release, or when skills, rules or tool descriptions
+change. **Before extending either, load `.claude/skills/eval-authoring`.**
+
+Why both: selection grades the **journal**, so a tool that is reached
+and then lies scores a clean HIT. A 2026-08-16 field trial found nine
+such defects — `provenance_chain` returning 112 equations of the wrong
+granularity, `callers` returning `0` for a method called one frame away
+— every one of which the selection battery would have passed.
+
+A response is graded on **signal** (do you get what you need?) and
+**ergonomics** (can you reach this tool, *and* the one it chains to?).
+`[M]` the founding round scored **0 of 4 chains closed** while every
+individual tool worked — per-tool scores can be all-green while no
+*question* can be answered.
 
 ⚠ The fidelity taxonomy (F1–F7) is the part to read first even if you
 never run a probe: it names the shapes a graph tool fails in — false

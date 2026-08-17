@@ -1,8 +1,21 @@
-# Fidelity evals — is the ANSWER true, usable and complete?
+# Response evals — is what Nexus GIVES BACK useful?
 
-> Sibling of [README.md](README.md), which measures the other axis. Read
-> both before extending either; they are one battery with two questions,
-> not two batteries.
+> A **separate battery** from [README.md](README.md), not a second axis
+> of it. They share a directory and nothing else: different subject
+> under test, different thing you change to improve the score, different
+> reason to re-run.
+
+|  | tool-selection ([README](README.md)) | **responses (this file)** |
+|---|---|---|
+| **subject under test** | the instruction surface — skills, rules, agent definitions | **Nexus itself** |
+| **improve the score by** | rewording instructions | changing Nexus's code and what it returns |
+| **model-dependent?** | **yes** — the skills are tuned for Claude, not Codex or Grok | **no** — agent-independent |
+| **re-run when** | a model ships | Nexus's behaviour changes |
+| **cost / cadence** | ~$6–60, per model release | free, **every commit** |
+
+That last row is the practical consequence of agent-independence: this
+battery needs no model, no API key and no headless session, so it can
+gate a merge the way `pytest` does. The routing battery cannot.
 
 `run_evals.py` asks **"did the agent reach the right tool?"** and grades
 the *journal* — which tools were called, in what order. That is the
@@ -17,11 +30,36 @@ It cannot see whether the tool then told the truth.
 > and the answer was `0` for a method called one frame away in its own
 > file. Routing was perfect. The instrument was lying.
 
-This file is the second axis. It exists because a knowledge graph fails
-**silently and in the reassuring direction**: every defect found so far
-returned a `0`, a large flattering number, or silence — never an error.
-That is the failure mode that survives longest, because nothing prompts
-anyone to look.
+It exists because a knowledge graph fails **silently and in the
+reassuring direction**: every defect found so far returned a `0`, a
+large flattering number, or silence — never an error. That is the
+failure mode that survives longest, because nothing prompts anyone to
+look.
+
+## The two things a response is graded on
+
+Every probe and every finding belongs to one of these. Keep them
+separate: they have different fixes, and a reply can be perfect on one
+and useless on the other.
+
+**SIGNAL — do you get what you need?** Is the answer true, at the right
+granularity, complete, and free enough of noise to act on? A reply that
+is correct but buries the decisive row under 110 irrelevant ones has
+failed on signal just as surely as a wrong one.
+
+**ERGONOMICS — can you reach this tool, *and* the tool it chains to?**
+Two halves, and the second is the one that gets forgotten. Reachability
+is whether the tool can be called at all for the situation you are in —
+`file_brief` fails here, because it arrives only by a hook and has no
+MCP twin. **Chainability** is whether the answer hands you the next
+call: a reply that names an equation but not in a form you can paste
+into the next tool has broken the chain, and a chain that needs a hand
+transform, a `grep`, or a fresh lookup at any hop does not close.
+
+⟹ `F8` measures chains end to end, because a battery of per-tool scores
+can be all-green while no *question* can actually be answered: each hop
+is fine and no hop connects. `[M]` 2026-08-16 the founding project
+scored **0 of 4 chains closed** while every individual tool worked.
 
 ---
 
@@ -147,15 +185,16 @@ your own check disagrees, suspect your fixture first.
 The durable output of the founding round. Classify every finding; a
 class with no probe is the next probe to write.
 
-| id | class | the tell | founding case |
-|---|---|---|---|
-| **F1** | **False zero** — *unresolvable* printed as *absent* | a `0` that grep contradicts | `callers(_OneDimScanWalk._run)` = 0; called one frame away. A capitalisation heuristic decided "is this a class?" |
-| **F2** | **Flattering aggregate** — the count hides its own refutation | a big number summed over members, no member list | "91 tests verify these equations" for a module with **15 of 24** equations uncovered |
-| **F3** | **Unaddressable handle** — the reply names what it will not let you use | a string that needs a transform the emitter knows | equation labels emitted bare; must be prefixed `math:equation:` by hand. `[M]` **0 of 50** usable as ids |
-| **F4** | **Silent knowledge** — the graph holds it, no tool says it | an agent opening the DB directly | `vv_level` / `verifies` / `catches` on every test node; the test-file brief carries **0** of them |
-| **F5** | **Undeclared inference** — a guess rendered as a fact | two edge kinds, one font | `tests` (declared, from a marker) and `implements` (name-matched) look identical. `[M]` 1 : 10 |
-| **F6** | **Push-only surface** — arrives unbidden, cannot be requested | a hook with no MCP twin | `file_brief`: deduped once per session, unrecoverable after a compaction |
-| **F7** | **Structurally degenerate answer** — a result that cannot vary | 100 % of rows in one bucket | `verification_audit(group_by="level")`: gaps are *defined* by having no test, and the grouping keys on the nearest test's level |
+| id | graded on | class | the tell | founding case |
+|---|---|---|---|---|
+| **F1** | signal | **False zero** — *unresolvable* printed as *absent* | a `0` that grep contradicts | `callers(_OneDimScanWalk._run)` = 0; called one frame away. A capitalisation heuristic decided "is this a class?" |
+| **F2** | signal | **Flattering aggregate** — the count hides its own refutation | a big number summed over members, no member list | "91 tests verify these equations" for a module with **15 of 24** equations uncovered |
+| **F3** | ergonomics | **Unaddressable handle** — the reply names what it will not let you use | a string that needs a transform the emitter knows | equation labels emitted bare; must be prefixed `math:equation:` by hand. `[M]` **0 of 50** usable as ids |
+| **F4** | signal | **Silent knowledge** — the graph holds it, no tool says it | an agent opening the DB directly | `vv_level` / `verifies` / `catches` on every test node; the test-file brief carries **0** of them |
+| **F5** | signal | **Undeclared inference** — a guess rendered as a fact | two edge kinds, one font | `tests` (declared, from a marker) and `implements` (name-matched) look identical. `[M]` 1 : 10 |
+| **F6** | ergonomics | **Push-only surface** — arrives unbidden, cannot be requested | a hook with no MCP twin | `file_brief`: deduped once per session, unrecoverable after a compaction |
+| **F7** | signal | **Structurally degenerate answer** — a result that cannot vary | 100 % of rows in one bucket | `verification_audit(group_by="level")`: gaps are *defined* by having no test, and the grouping keys on the nearest test's level |
+| **F8** | ergonomics | **Broken chain** — every hop works, the question still cannot be answered | a hop needing a hand transform, a `grep`, or a fact the reply withheld | `symbol → doc page → section`: `[M]` **680** sections and **0** `section→equation` edges, so recovery ends in `awk` over a line range |
 
 Two properties make this list worth keeping. Every class is **stated as
 a shape, not as a bug**, so it can be recognised in a tool nobody has
@@ -185,6 +224,16 @@ live value, not a regression.
 | **F4** brief answers its file's question | production **4 / 6**, **test 0 / 6** | the test-side brief is silent by construction |
 | **F5** declared : inferred | **1 : 10.0** (2748 / 27 395) | |
 | **F6** payload | **181–197 B/entry**; `BC` 417 entries folded from 1699 edges | post-#67 |
+| **F8** chains closed | **0 / 4** | every hop works; no question closes |
+
+The F8 rows, since the aggregate hides which hop fails:
+
+| chain | breaks at | class |
+|---|---|---|
+| `file → node → callers` | hop 1 — no file-addressed MCP tool; `node_at` needs a line you do not have yet | F6 |
+| `equation → tests → pytest invocation` | hop 3 — 34 equations reach their tests, **0** hand over a runnable id | F3 |
+| `symbol → doc page → section` | hop 3 — 680 sections, **0** `section→equation` edges | F8 |
+| `brief label → graph node` | hop 1 — **0/50** labels paste directly as ids | F3 |
 
 **What changed as a result:** `8fafd18` (F1 — class scope decided
 structurally, 110 methods retyped, 14 callers recovered);

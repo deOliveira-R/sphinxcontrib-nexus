@@ -5,14 +5,23 @@
 > ways an eval returns a confident wrong answer — most of them do not look
 > like errors, they look like results.
 
-> ⭐ **This is one of two axes.** This battery asks *"did the agent reach
-> the right tool?"* and grades the **journal** — so a tool that is reached
-> and then answers wrongly scores a clean HIT. [FIDELITY.md](FIDELITY.md)
-> asks the other half, *"is the answer true, usable and complete?"*, and
-> is where a field trial's findings and the failure taxonomy live. A
-> 2026-08-16 trial found nine defects that this battery would have scored
-> as nine passes. Extend the axis that matches your finding; they share
-> the `evals/` directory and nothing else.
+> ⭐ **There are two batteries here, and this is the one about
+> INSTRUCTIONS.** Its subject is the instruction surface — skills, rules,
+> agent definitions — so you improve its score by rewording them, and its
+> answer is **model-dependent** (these skills are tuned for Claude, not
+> Codex or Grok). It grades the **journal**, so a tool that is reached
+> and then answers wrongly scores a clean HIT.
+>
+> [FIDELITY.md](FIDELITY.md) is the other battery, and its subject is
+> **Nexus itself**: is the response useful — signal, and ergonomics
+> including whether it chains to the next tool. You improve that score by
+> changing Nexus's code, it is **agent-independent**, and it costs
+> nothing, so it can gate every commit while this one runs per model
+> release. A 2026-08-16 field trial found nine defects that this battery
+> would have scored as nine passes.
+>
+> They share the `evals/` directory and nothing else. Extend the one
+> whose subject matches your finding.
 
 Skills and the routing rule are load-bearing instructions, and whether they
 work is an **empirical question that changes as models change**. This suite

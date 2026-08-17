@@ -245,6 +245,87 @@ def probe_handle_addressability(project: Path, db: Path, g) -> dict:
     }
 
 
+def probe_chains(g) -> dict:
+    """F8 — does an answer hand you the NEXT call?
+
+    Ergonomics is not only "can I reach this tool". It is "can I reach
+    the tool this one chains to, using what this one gave me". A chain
+    closes when every hop's output is directly acceptable as the next
+    hop's input; it is BROKEN when a hop needs a hand transform, an
+    external tool, or a fact the reply withheld.
+
+    Each chain below is a question a real session asked in the founding
+    round. `closes` is the metric; `blocked_by` names the class.
+    """
+    chains = []
+
+    # 1. "I am editing this file — who breaks?"  file -> node -> callers
+    #    There is no file-addressed MCP tool: `node_at` needs a LINE.
+    has_file_tool = False           # no `file_brief` in the MCP registry
+    chains.append({
+        "chain": "file -> node -> callers",
+        "asks": "I am editing this file; who breaks?",
+        "closes": has_file_tool,
+        "blocked_by": None if has_file_tool else
+        "F6: no file-addressed tool; node_at needs a line you do not have yet",
+    })
+
+    # 2. "What verifies this equation, and can I run it?"
+    eqs = [n for n, a in g.nodes(data=True) if a.get("type") == "equation"]
+    reachable = 0
+    runnable = 0
+    for eq in eqs[:200]:
+        tests = [u for u, _, d in g.in_edges(eq, data=True)
+                 if d.get("type") == "tests"]
+        if not tests:
+            continue
+        reachable += 1
+        # runnable == the reply hands over a pytest node id. It does not;
+        # every consumer re-derives it from file_path + the dotted name.
+        emits_pytest_id = False
+        runnable += bool(emits_pytest_id)
+    chains.append({
+        "chain": "equation -> tests -> pytest invocation",
+        "asks": "what pins this equation, and can I run it?",
+        "closes": runnable == reachable and reachable > 0,
+        "measured": f"{reachable} equations reach their tests, "
+                    f"{runnable} hand over a runnable id",
+        "blocked_by": None if runnable == reachable else
+        "F3: node ids are emitted, pytest ids are not (one string-join short)",
+    })
+
+    # 3. "What documents this symbol — which SECTION do I open?"
+    sections = {n for n, a in g.nodes(data=True) if a.get("type") == "section"}
+    eq_to_section = sum(
+        1 for u, v, d in g.edges(data=True)
+        if d.get("type") == "contains" and u in sections and v in set(eqs)
+    )
+    chains.append({
+        "chain": "symbol -> doc page -> section",
+        "asks": "what documents this, and where exactly?",
+        "closes": eq_to_section > 0,
+        "measured": f"{len(sections)} sections, {eq_to_section} section->equation edges",
+        "blocked_by": None if eq_to_section else
+        "F8: `contains` does not nest; an equation does not know its anchor",
+    })
+
+    # 4. "A brief named an equation — ask the graph about it."
+    labels = [a.get("name") for n, a in g.nodes(data=True)
+              if a.get("type") == "equation" and a.get("name")][:50]
+    pasteable = sum(1 for lab in labels if lab in g)
+    chains.append({
+        "chain": "brief label -> graph node",
+        "asks": "the injection named this; tell me about it",
+        "closes": bool(labels) and pasteable == len(labels),
+        "measured": f"{pasteable}/{len(labels)} labels paste directly as ids",
+        "blocked_by": None if pasteable == len(labels) else
+        "F3: bare label needs a `math:equation:` prefix the reader must guess",
+    })
+
+    closed = sum(1 for c in chains if c["closes"])
+    return {"closed": f"{closed}/{len(chains)}", "chains": chains}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--project", required=True, type=Path)
@@ -272,6 +353,7 @@ def main() -> int:
         "F6_answer_payload": probe_answer_payload(q, g),
         "F4_brief_by_file_kind": probe_brief_by_file_kind(project, db, g),
         "F3_handle_addressability": probe_handle_addressability(project, db, g),
+        "F8_chains": probe_chains(g),
     }
 
     if args.json:
@@ -306,6 +388,15 @@ def main() -> int:
     print(f"F3 handles          eq labels usable as ids "
           f"{f3['equation_labels_usable_as_ids']}; docnames resolvable "
           f"{f3['docnames_resolvable_without_guessing_ext']}")
+    f8 = report["F8_chains"]
+    print(f"F8 chains close     {f8['closed']}")
+    for c in f8["chains"]:
+        mark = "OK  " if c["closes"] else "BREAK"
+        print(f"                    {mark} {c['chain']}")
+        if c.get("measured"):
+            print(f"                          {c['measured']}")
+        if c.get("blocked_by"):
+            print(f"                          ⤷ {c['blocked_by']}")
     return 0
 
 
