@@ -40,6 +40,19 @@ fresh, so its presence is the signal.
 | `callees` | What does this call? | `node_id`, `transitive`, `max_depth` |
 | `shortest_path` | How do these two things connect at all? | `source`, `target`, `max_hops` |
 
+`context` and `neighbors` serve the same relations two ways. `context`
+**groups** them by edge type and direction, and adds the node's own
+record — read it when you want to understand one symbol. `neighbors`
+returns one **flat, ranked** entry per neighbour (`id`, `edge_type`,
+`direction`, `degree`) — filter it with `edge_types=` when you want a
+complete single-relation list, which is the one thing `context`'s
+per-bucket cap will not give you.
+
+Two things a `neighbors` entry deliberately omits. Parallel edges (three
+`isinstance` calls) collapse into one entry carrying `times`, and no
+entry carries `file_path`/`lineno` — adjacency is not location, so ask
+`context` or `node_at` about the one neighbour you go on to open.
+
 ## Understanding the shape of the codebase
 
 | Tool | Answers | Key args |

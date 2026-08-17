@@ -97,7 +97,20 @@ def _compact_node(node: Any) -> dict:
             d.pop("type", None)
         if d.get("display_name") in (name, name.rsplit(".", 1)[-1]):
             d.pop("display_name", None)
+        # A doc node's `docname` IS its name segment
+        # (`std:file:api/geometry` → `api/geometry`). On an equation or
+        # a section it is the PAGE that contains it, which the id does
+        # not say — so this drops the copy and keeps the container.
+        if d.get("docname") == name:
+            d.pop("docname", None)
     return d
+
+
+#: Where a symbol lives answers "where is this defined?" — the question
+#: `context` and `node_at` exist for. In a flat adjacency dump it is
+#: `[M]` 26% of the payload (72 B of 278 per neighbour on `solve_sn`),
+#: spent on every neighbour to serve the one or two you will open.
+_POSITION_FIELDS = frozenset({"file_path", "lineno"})
 
 
 #: Fallback when no query is at hand. The live set comes from the
@@ -117,15 +130,46 @@ def _dedupe_parallel(entries: list[dict]) -> list[dict]:
     The repetition is not noise in itself — "this function tests types
     three times" is a real signal — so it becomes ``times``, kept only
     when it is more than one.
+
+    Two entries are the same edge repeated exactly when they are the
+    same dict — so the ENTRY is its own identity key, and this needs no
+    caller to tell it what identifies one. That matters because the two
+    callers disagree about it: in ``context`` the bucket has already
+    fixed the edge type and direction, so ``id`` alone would do, while
+    in ``neighbors`` the entry carries both and a node reached by
+    ``calls`` AND ``type_uses`` is genuinely two facts. Keying on the
+    content is correct for both without a flag deciding which.
     """
-    seen: dict[str, dict] = {}
+    seen: dict[tuple, dict] = {}
     for e in entries:
-        first = seen.get(e["id"])
+        key = tuple(sorted(e.items()))
+        first = seen.get(key)
         if first is None:
-            seen[e["id"]] = dict(e)
+            seen[key] = dict(e)
         else:
             first["times"] = first.get("times", 1) + 1
     return list(seen.values())
+
+
+def _rank_entries(entries: list[dict], placeholders: frozenset[str]) -> None:
+    """Order entries so a TRUNCATED answer keeps the useful half.
+
+    Project symbols first, placeholders last, most-connected first
+    within each. A MEASURED problem, not a preference: "what does
+    solve_sn call?" answered with `float`, `isinstance` ×3, `type`,
+    `tuple`, `getattr`, `TypeError` — `[M]` 8 of 16 entries were Python
+    builtins, and they outrank project symbols on raw degree. They are
+    real edges and stay; they must not be what a truncated answer keeps.
+
+    Sorts in place. ``.get`` throughout because :func:`_compact_node`
+    strips a zero degree as absent, and ``type`` survives only ON a
+    placeholder — which is exactly the flag this sorts by.
+    """
+    entries.sort(key=lambda e: (
+        e.get("type", "") in placeholders,
+        -e.get("degree", 0),
+        e["id"],
+    ))
 
 
 # ------------------------------------------------------------------
@@ -149,11 +193,11 @@ def assemble_context(
     context serializes to megabytes of JSON, far beyond what a tool
     consumer can usefully read.
 
-    Entries are compact node dicts: in this grouped view an edge dict
-    would be pure redundancy (its type is the bucket key, its
-    direction the outgoing/incoming key, and its endpoints the queried
-    node and the entry itself). ``neighbors`` serves the flat
-    node+edge view.
+    Entries are compact node dicts: in this grouped view the edge's
+    type is the bucket key and its direction the outgoing/incoming key,
+    so nothing about it needs restating per entry. ``neighbors`` serves
+    the same relations as one flat, ranked list, naming each entry's
+    edge type and direction on the entry itself.
     """
     node = q.get_node(node_id)
     if node is None:
@@ -173,21 +217,7 @@ def assemble_context(
     for direction_name, buckets in (("outgoing", outgoing), ("incoming", incoming)):
         for edge_type, entries in list(buckets.items()):
             entries = _dedupe_parallel(entries)
-            # Project symbols first, placeholders last. A MEASURED
-            # problem, not a preference: "what does solve_sn call?"
-            # answered with `float`, `isinstance` ×3, `type`, `tuple`,
-            # `getattr`, `TypeError` — [M] 8 of 16 entries were Python
-            # builtins. They are real edges and stay, but they must not
-            # be what a truncated answer keeps.
-            #
-            # .get: _compact_node strips a zero degree as absent, and
-            # `type` survives only ON a placeholder, which is exactly
-            # the flag this sorts by.
-            entries.sort(key=lambda e: (
-                e.get("type", "") in placeholders,
-                -e.get("degree", 0),
-                e["id"],
-            ))
+            _rank_entries(entries, placeholders)
             buckets[edge_type] = entries
             if per_type_limit is not None and len(entries) > per_type_limit:
                 omitted.setdefault(direction_name, {})[edge_type] = (
@@ -266,12 +296,60 @@ def assemble_neighbors(
     direction: Literal["in", "out", "both"] = "both",
     edge_types: list[str] | None = None,
 ) -> list[dict]:
-    """Direct connections as list of {node, edge} dicts."""
+    """Direct connections, one flat entry per neighbour.
+
+    A neighbour is three facts — WHICH node, by WHAT relation, in WHICH
+    direction — and an entry carries only the ones this query did not
+    already fix. Ask ``direction="out"`` and every entry would say
+    ``"out"``; ask ``edge_types=["calls"]`` and every entry would say
+    ``"calls"``. A field the caller pinned in the question is not an
+    answer, so it is omitted rather than repeated N times.
+
+    `[M]` 2026-08-16 on ORPHEUS, ``solve_sn``'s 374 neighbours: the
+    reply was **479 B per neighbour**, of which the edge dict was 46 %
+    and carried one bit of information::
+
+        "edge": {"source": "…solve_sn",     ← the node you asked about
+                 "target": "py:class:dict", ← the id on the line above
+                 "type": "type_uses",       ← the only content here
+                 "key": "0"}                ← a MultiDiGraph internal
+
+    ``source``/``target`` existed only because DIRECTION was otherwise
+    unrecoverable — naming the direction is what lets both endpoints
+    go. ``key`` distinguishes parallel edges, which
+    :func:`_dedupe_parallel` now folds into ``times``.
+
+    Entries carry no ``file_path``/``lineno``: adjacency is not
+    location, and `[M]` position was 26 % of this reply — paid on every
+    neighbour to serve the one or two you go on to open. Ask ``context``
+    or ``node_at`` about that one.
+
+    Entries are ranked (:func:`_rank_entries`) because the boundary
+    budget truncates: on a hub node the ordering decides what survives,
+    so an unranked list would drop an arbitrary tail.
+    """
     results = q.neighbors(node_id, direction=direction, edge_types=edge_types)
-    return [
-        {"node": to_dict(n), "edge": to_dict(e)}
-        for n, e in results
-    ]
+
+    show_direction = direction == "both"
+    show_edge_type = not (edge_types and len(set(edge_types)) == 1)
+
+    entries = []
+    for neighbor, edge in results:
+        entry = {
+            k: v for k, v in _compact_node(neighbor).items()
+            if k not in _POSITION_FIELDS
+        }
+        if show_edge_type:
+            entry["edge_type"] = edge.type
+        if show_direction:
+            # A self-loop reports "out"; it is both, and the pair is one
+            # edge, so one of the two names has to win.
+            entry["direction"] = "out" if edge.source == node_id else "in"
+        entries.append(entry)
+
+    entries = _dedupe_parallel(entries)
+    _rank_entries(entries, getattr(q, "placeholder_types", _PLACEHOLDER_TYPES))
+    return entries
 
 
 def assemble_communities(q: GraphQuery, min_size: int = 3) -> list[dict]:

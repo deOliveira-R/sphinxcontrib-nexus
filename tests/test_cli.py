@@ -126,9 +126,14 @@ class TestJsonCli:
             capsys,
         )
         assert isinstance(data, list)
+        # One flat entry per neighbour: the node, plus the relation and
+        # which way it points. The `{"node": …, "edge": …}` pair this
+        # replaced spent 46 % of the reply restating the question.
+        assert data, "fixture produced no neighbours"
         for entry in data:
-            assert "node" in entry
-            assert "edge" in entry
+            assert {"id", "edge_type", "direction"} <= set(entry), entry
+            assert entry["direction"] in ("in", "out")
+            assert not {"node", "edge", "source", "target", "key"} & set(entry)
 
     def test_neighbors_direction(self, small_graph, capsys):
         data = _cli_json(
@@ -137,6 +142,10 @@ class TestJsonCli:
             capsys,
         )
         assert isinstance(data, list)
+        # The CLI passes `direction` through, so the field the caller
+        # pinned is not repeated on every entry.
+        assert data, "fixture produced no outgoing neighbours"
+        assert all("direction" not in e for e in data), data
 
     def test_god_nodes(self, small_graph, capsys):
         data = _cli_json(

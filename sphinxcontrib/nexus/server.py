@@ -820,7 +820,17 @@ def neighbors(
     direction: str = "both",
     edge_types: str = "",
 ) -> str:
-    """Get direct connections of a node.
+    """Get direct connections of a node, as one flat entry each.
+
+    An entry is the neighbouring node plus ``edge_type`` and
+    ``direction`` — and only the ones your query left open: filter to a
+    single edge type, or ask for one direction, and that field is
+    omitted rather than repeated on every entry. Parallel edges (three
+    ``isinstance`` calls) collapse into one entry carrying ``times``.
+    Entries are ranked project-symbols-first, most-connected-first, so a
+    budget-truncated answer keeps the useful half.
+
+    Use ``context`` for the same relations grouped by edge type.
 
     Args:
         node_id: Node ID to query.
