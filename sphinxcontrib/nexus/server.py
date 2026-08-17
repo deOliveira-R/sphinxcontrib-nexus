@@ -808,6 +808,7 @@ def file_brief(file: str) -> str:
     from dataclasses import asdict
 
     from sphinxcontrib.nexus.brief import file_brief as build_brief
+    from sphinxcontrib.nexus._serialize import _compact_node
 
     # Through the query so the staleness reload runs and the workspace
     # cannot disagree with the graph every other tool answers from —
@@ -827,7 +828,18 @@ def file_brief(file: str) -> str:
                 "and retry."
             ),
         })
-    return to_json(asdict(brief))
+    payload = asdict(brief)
+    # Complete, but not padded. The node list IS what the hook's
+    # "+79 more nodes" expands to, so it must not be clipped — and
+    # `BriefNode` never passed through the reply layer, so it was
+    # re-emitting the redundancy every other tool had already dropped:
+    # `name` reproduces the id's third segment, `type` its second.
+    # `[M]` 2026-08-17 they were 18–29 % of the payload, the node list
+    # 63–81 % of it, and `orpheus/sn/solver.py` came to 20 976 chars
+    # against a 20 000 budget — so the one production file most worth
+    # briefing was the one that arrived truncated.
+    payload["nodes"] = [_compact_node(n) for n in payload["nodes"]]
+    return to_json(payload)
 
 
 @nexus_tool

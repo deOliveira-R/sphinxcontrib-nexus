@@ -18,6 +18,7 @@ from changed (True) from unknowable (None).
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from sphinxcontrib.nexus.graph import (
     KnowledgeGraph,
     NodeType,
 )
+from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.workspace import stamp_provenance
 
 
@@ -347,6 +349,48 @@ def test_a_test_file_reports_its_gates_not_its_fixtures(test_file_db):
     assert gates.equation_ids == ["math:equation:ld-2d"]
     assert gates.catches == ["ERR-062"]
     assert gates.pytest_target == "tests/test_ld.py"
+
+
+def test_the_mcp_tool_returns_every_node_and_pads_none_of_them(test_file_db):
+    """Unclipped is not unshaped.
+
+    The node list IS what the hook's `+79 more nodes` expands to, so
+    clipping it would reopen the dead end it exists to close. But
+    `BriefNode` never passed through the reply layer, so it re-emitted
+    the redundancy every other tool had already dropped — `name`
+    reproduces the id's third segment, `type` its second.
+
+    `[M]` 2026-08-17 through the real MCP surface: those two fields
+    were 18–29 % of the payload and the node list 63–81 % of it, and
+    `orpheus/sn/solver.py` came to **20 976 chars against a 20 000
+    budget** — the one production file most worth briefing was the one
+    that arrived truncated. Compacting the entries: −32 to −41 %.
+
+    Found by CALLING the tool, not by reading it. The hook's text form
+    was fine throughout (median 4 lines), which is exactly why this
+    survived the render tests.
+    """
+    from sphinxcontrib.nexus import server
+    from sphinxcontrib.nexus.export import load_sqlite
+    from sphinxcontrib.nexus.workspace import Workspace
+
+    db, root = test_file_db
+    server._query = GraphQuery(
+        load_sqlite(db), workspace=Workspace(db_path=db, root=root)
+    )
+    try:
+        payload = json.loads(
+            server.file_brief.__wrapped__("tests/test_ld.py")
+        )
+    finally:
+        server._query = None
+
+    brief = file_brief(db, root / "tests" / "test_ld.py", project_root=root)
+    assert len(payload["nodes"]) == len(brief.nodes), "no node may be dropped"
+    for entry in payload["nodes"]:
+        domain, node_type, name = entry["id"].split(":", 2)
+        assert entry.get("name") != name
+        assert entry.get("type") != node_type
 
 
 def test_the_gate_section_survives_extraction_to_render(test_file_db):
