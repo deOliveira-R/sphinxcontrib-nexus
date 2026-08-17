@@ -166,6 +166,35 @@ alone overstates it by 38 %, so filter by node type when the number is
 going to mean something.
 :::
 
+## Edge evidence — declared or guessed
+
+Not every edge is a fact. Each carries a `source` attribute recording
+where it came from, and the difference is the difference between
+evidence and resemblance:
+
+| `source` | means |
+|---|---|
+| `pytest.mark.verifies`, `directive`, registry | **declared** — a human wrote this link |
+| `ast` | read out of the syntax (imports, calls, inheritance) |
+| `inferred` | **guessed** — a code symbol's name shares a token with an equation label |
+
+An inferred edge also carries `confidence` and `shared_tokens`: the
+words that produced the guess.
+
+Replies mark only the guesses — declared is the silent default, since
+annotating it would spend bytes on every entry to say "normal". In
+`context` and `neighbors` an inferred entry gets `inferred: true` and
+`via`; in `verification_coverage`, `code_evidence` says whether a row's
+code side is `declared`, `inferred` or `mixed`.
+
+:::{warning}
+On one real project **14004 of 14004** `implements` edges are inferred —
+not one is declared. So "which code implements this equation?" is
+answered there entirely by shared-word matching, and a reader who
+assumes otherwise is wrong every time. `tests` edges on the same
+project are the opposite: 2748 of 2748 declared.
+:::
+
 ## Provenance
 
 Every graph is a snapshot of **one checkout**. `metadata["provenance"]`

@@ -791,6 +791,13 @@ def context(node_id: str, limit_per_type: int = 0) -> str:
     this, who breaks?" is ``incoming.calls``, one key — the flat
     ``neighbors`` view makes you rebuild that grouping yourself.
 
+    ⚠ An entry marked `inferred: true` is a GUESS, not a fact: nobody
+    declared it, it was minted because two names share a word, and
+    `via` lists the words. Measured on a real project, 14004 of 14004
+    `implements` edges are of this kind — so on the `implements`
+    bucket the guess is the rule, not the exception. Declared edges
+    (a marker, a directive) carry no mark.
+
     Within a bucket, PRODUCTION entries lead and test-tree entries
     follow, then most-connected-first. Tests swamp incoming calls
     (measured: 17 of 18, 22 of 25 on real hubs), so the one caller you
@@ -908,6 +915,10 @@ def neighbors(
     ``isinstance`` calls) collapse into one entry carrying ``times``.
     Entries are ranked project-symbols-first, most-connected-first, so a
     budget-truncated answer keeps the useful half.
+
+    ⚠ An entry marked `inferred: true` is a GUESS — minted from a
+    shared name token, with `via` naming the tokens. Declared edges
+    carry no mark.
 
     Use ``context`` for the same relations grouped by edge type.
 
@@ -1422,6 +1433,15 @@ def verification_coverage(
     offset: int = 0,
 ) -> str:
     """Map verification coverage: equation → code → test chains.
+
+    ⚠ Read `code_evidence` before trusting a row. `declared` means a
+    directive or registry entry links this code to this equation;
+    `inferred` means nobody did, and the link exists because a symbol's
+    NAME shares a token with the equation label. `status` cannot tell
+    you which — an equation "implemented" by a word match reads exactly
+    like one a human declared. Measured on a real project, EVERY row
+    with implementing code is `inferred` (594 verified + 38
+    implemented, 0 declared).
 
     Shows which equations are verified (have code + tests), which are
     implemented but untested, which are documented but unimplemented.

@@ -59,6 +59,29 @@ class EdgeResult:
     target: str
     type: str = ""
     key: str = ""
+    evidence: str = ""
+    """WHERE this edge came from — the difference between a fact and a
+    guess, and until now the graph knew it and no reply said it.
+
+    ``"inferred"`` means nobody declared this: it was minted because a
+    code symbol's name shares a token with an equation label. `[M]` on
+    ORPHEUS **14004 of 14004** ``implements`` edges are inferred — not
+    one is declared — so "which code implements this equation?" has
+    never once been answered from a declaration there, while
+    ``tests`` edges are 2748 of 2748 declared (a real
+    ``@pytest.mark.verifies``).
+
+    Anything else names the declaring mechanism
+    (``pytest.mark.verifies``, ``directive``, ``ast``). Empty means the
+    producer recorded nothing."""
+
+    via: list[str] = field(default_factory=list)
+    """For an inferred edge, the shared tokens that produced the guess.
+
+    The single most decision-relevant field on a weak edge: seeing that
+    ``ScatteringOperator.kernel`` was matched to
+    ``ld-ubld-divv-scale-free-kernel`` on the word ``kernel`` settles in
+    one glance what a confidence number cannot."""
 
 
 @dataclass
@@ -466,6 +489,21 @@ class CoverageEntry:
     equation: NodeResult | None = None
     implementing_code: list[NodeResult] = field(default_factory=list)
     tests: list[TestReference] = field(default_factory=list)
+    code_evidence: str = ""
+    """How the code side was established: ``declared`` / ``inferred`` /
+    ``mixed``, empty when there is no implementing code.
+
+    ⚠ ``status`` does not say this, and the difference is large. An
+    equation whose only ``implements`` edges were minted because a
+    symbol's NAME shares a token with the label reads as
+    ``implemented`` exactly like one a directive declared. `[M]` on
+    ORPHEUS every single one is the first kind — 14004 of 14004 — so
+    the whole code side of that matrix is currently ``inferred`` and
+    the status column cannot say so.
+
+    The test side has carried ``source``/``confidence`` on every
+    :class:`TestReference` since it was written; this is the missing
+    half."""
 
 
 @dataclass
@@ -977,12 +1015,20 @@ class GraphQuery:
     def _edge_result(
         self, source: str, target: str, key: str | int, data: dict,
     ) -> EdgeResult:
-        """Build an EdgeResult from edge data."""
+        """Build an EdgeResult from edge data.
+
+        ⚠ The edge's PROVENANCE is stored under the attribute
+        ``source``, which on this dataclass already means the source
+        NODE. It surfaces as ``evidence`` — the same fact under a name
+        that does not collide.
+        """
         return EdgeResult(
             source=source,
             target=target,
             type=data.get("type", ""),
             key=str(key),
+            evidence=data.get("source", ""),
+            via=list(data.get("shared_tokens") or ()),
         )
 
     def get_node(self, node_id: str) -> NodeResult | None:
@@ -1817,6 +1863,13 @@ class GraphQuery:
         # Index 1: equation → implementing code via IMPLEMENTS edges.
         eq_to_code: dict[str, list[str]] = {}
         code_to_eq: dict[str, list[str]] = {}
+        # …and which of those links nobody declared. The V&V matrix's
+        # code side had no evidence axis at all, while its TEST side has
+        # carried `source`/`confidence` since it was written — so a row
+        # implemented by a shared-word guess read exactly like one
+        # implemented by a declaration. `[M]` on ORPHEUS that is not an
+        # edge case: 14004 of 14004 `implements` edges are inferred.
+        inferred_links: set[tuple[str, str]] = set()
         # Index 2: equation → declared tests via TESTS edges.
         declared_tests: dict[str, list[TestReference]] = {}
         # Index 3: code → direct test callers (1-hop heuristic).
@@ -1840,6 +1893,8 @@ class GraphQuery:
                 _implements_seen.add((src, tgt))
                 eq_to_code.setdefault(tgt, []).append(src)
                 code_to_eq.setdefault(src, []).append(tgt)
+                if data.get("source") == "inferred":
+                    inferred_links.add((src, tgt))
             elif etype == "tests":
                 if (src, tgt) in _declared_seen:
                     continue
@@ -1936,11 +1991,20 @@ class GraphQuery:
             if status_filter and status != status_filter:
                 continue
 
+            declared_n = sum(
+                1 for c in implementing if (c, node_id) not in inferred_links
+            )
             entries.append(CoverageEntry(
                 node=self._node_result(node_id),
                 status=status,
                 implementing_code=[self._node_result(c) for c in implementing],
                 tests=tests,
+                code_evidence=(
+                    "" if not implementing
+                    else "declared" if declared_n == len(implementing)
+                    else "inferred" if declared_n == 0
+                    else "mixed"
+                ),
             ))
             summary[status] += 1
 

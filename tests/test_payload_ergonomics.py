@@ -539,3 +539,89 @@ def test_from_a_TEST_node_nothing_is_demoted():
     # ranked on degree alone, as before — the helper is not sunk
     degrees = [e.get("degree", 0) for e in out["calls"]]
     assert degrees == sorted(degrees, reverse=True), out["calls"]
+
+
+# ── a guess must not read like a fact (#74) ─────────────────────────
+
+
+def _graph_with_mixed_evidence() -> nx.MultiDiGraph:
+    """One equation reached by a DECLARED edge and a GUESSED one."""
+    g = nx.MultiDiGraph()
+    g.add_node("math:equation:scale-free-kernel", type="equation",
+               name="scale-free-kernel", domain="math", docname="theory/ld")
+    g.add_node("py:function:pkg.assemble_ubld", type="function",
+               name="pkg.assemble_ubld", domain="py")
+    g.add_node("py:method:pkg.Scattering.kernel", type="method",
+               name="pkg.Scattering.kernel", domain="py")
+    g.add_node("py:function:tests.t.test_it", type="function",
+               name="tests.t.test_it", domain="py", is_test=True,
+               in_test_file=True)
+
+    # declared: somebody wrote @pytest.mark.verifies("scale-free-kernel")
+    g.add_edge("py:function:tests.t.test_it", "math:equation:scale-free-kernel",
+               type="tests", source="pytest.mark.verifies")
+    # guessed: the name shares a token with the label
+    g.add_edge("py:function:pkg.assemble_ubld", "math:equation:scale-free-kernel",
+               type="implements", source="inferred", confidence=0.7,
+               shared_tokens=["kernel"])
+    g.add_edge("py:method:pkg.Scattering.kernel", "math:equation:scale-free-kernel",
+               type="implements", source="inferred", confidence=0.7,
+               shared_tokens=["kernel"])
+    return g
+
+
+def test_an_inferred_edge_says_so_AND_says_what_it_guessed_from():
+    """[M] on ORPHEUS **14004 of 14004** `implements` edges are
+    inferred — not one is declared — so a reader who assumes the default
+    is wrong every single time. `via` is what settles it: seeing
+    `Scattering.kernel` matched to a scale-free-kernel equation on the
+    word "kernel" needs no further investigation."""
+    from sphinxcontrib.nexus._serialize import assemble_context
+
+    q = GraphQuery(_graph_with_mixed_evidence())
+    inc = assemble_context(q, "math:equation:scale-free-kernel")["incoming"]
+
+    guesses = inc["implements"]
+    assert all(e["inferred"] is True for e in guesses), guesses
+    assert all(tuple(e["via"]) == ("kernel",) for e in guesses), guesses
+
+
+def test_a_DECLARED_edge_is_not_annotated_at_all():
+    """Declared is the silent default. Marking it would spend bytes on
+    every reply to say "normal", and the payload discipline is that a
+    field must say something the reader cannot assume."""
+    from sphinxcontrib.nexus._serialize import assemble_context
+
+    q = GraphQuery(_graph_with_mixed_evidence())
+    inc = assemble_context(q, "math:equation:scale-free-kernel")["incoming"]
+
+    declared = inc["tests"]
+    assert declared, "fixture produced no declared edge"
+    assert all("inferred" not in e and "via" not in e for e in declared), declared
+
+
+def test_the_evidence_survives_to_the_flat_view_too():
+    from sphinxcontrib.nexus._serialize import assemble_neighbors
+
+    q = GraphQuery(_graph_with_mixed_evidence())
+    entries = assemble_neighbors(q, "math:equation:scale-free-kernel")
+
+    by_type = {e["edge_type"]: e for e in entries}
+    assert by_type["implements"]["inferred"] is True
+    assert "inferred" not in by_type["tests"]
+
+
+def test_an_annotated_entry_is_still_HASHABLE_for_the_parallel_fold():
+    """⚠ `_dedupe_parallel` keys an entry on `tuple(sorted(items()))`,
+    so a list value anywhere in an entry raises TypeError on every reply
+    that carries one. `via` is a tuple for exactly this reason — the
+    first version of it was a list and would have crashed `context` on
+    any project with inferred edges, which is all of them."""
+    from sphinxcontrib.nexus._serialize import _dedupe_parallel, assemble_context
+
+    q = GraphQuery(_graph_with_mixed_evidence())
+    entries = assemble_context(q, "math:equation:scale-free-kernel")["incoming"]
+
+    doubled = entries["implements"] + entries["implements"]
+    folded = _dedupe_parallel(doubled)          # must not raise
+    assert all(e.get("times") == 2 for e in folded), folded

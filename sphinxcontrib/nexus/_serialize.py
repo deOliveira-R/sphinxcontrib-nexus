@@ -106,6 +106,40 @@ def _compact_node(node: Any) -> dict:
     return d
 
 
+#: Provenance values that mean "somebody DECLARED this" — a marker, a
+#: directive, a registry entry. They are the default and cost no bytes;
+#: only a guess is worth marking, and marking the guess is the whole
+#: point (#74).
+_INFERRED = "inferred"
+
+
+def _mark_evidence(entry: dict, edge: Any) -> dict:
+    """Flag an entry whose edge is a GUESS, and say what produced it.
+
+    Declared is the silent default: an edge minted from a
+    ``@pytest.mark.verifies`` or a directive needs no annotation, and
+    annotating it would cost bytes on every reply to say "normal".
+
+    An inferred edge is different in kind, not degree — it exists
+    because two names share a word. `[M]` on ORPHEUS **14004 of 14004**
+    ``implements`` edges are inferred, so a reader who assumes the
+    default is wrong every single time; ``via`` is what lets them see it
+    (``ScatteringOperator.kernel`` matched to a UBLD kernel equation on
+    the token ``kernel``).
+
+    ⚠ ``via`` is a TUPLE, not a list: :func:`_dedupe_parallel` keys an
+    entry on ``tuple(sorted(entry.items()))``, so an unhashable value
+    anywhere in an entry makes every reply that carries one raise.
+    JSON renders it as an array either way.
+    """
+    if getattr(edge, "evidence", "") != _INFERRED:
+        return entry
+    entry["inferred"] = True
+    if getattr(edge, "via", None):
+        entry["via"] = tuple(edge.via)
+    return entry
+
+
 #: Where a symbol lives answers "where is this defined?" — the question
 #: `context` and `node_at` exist for. In a flat adjacency dump it is
 #: `[M]` 26% of the payload (72 B of 278 per neighbour on `solve_sn`),
@@ -250,7 +284,9 @@ def assemble_context(
     incoming: dict[str, list[dict]] = {}
     for neighbor, edge in neighbors:
         buckets = outgoing if edge.source == node_id else incoming
-        buckets.setdefault(edge.type, []).append(_compact_node(neighbor))
+        buckets.setdefault(edge.type, []).append(
+            _mark_evidence(_compact_node(neighbor), edge)
+        )
 
     placeholders = getattr(q, "placeholder_types", _PLACEHOLDER_TYPES)
     demote = _test_material(q, node_id, {n.id for n, _ in neighbors})
@@ -387,7 +423,7 @@ def assemble_neighbors(
             # A self-loop reports "out"; it is both, and the pair is one
             # edge, so one of the two names has to win.
             entry["direction"] = "out" if edge.source == node_id else "in"
-        entries.append(entry)
+        entries.append(_mark_evidence(entry, edge))
 
     entries = _dedupe_parallel(entries)
     _rank_entries(
