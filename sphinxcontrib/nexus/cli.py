@@ -1526,7 +1526,11 @@ def _run_impact(args: argparse.Namespace) -> int:
         )
         print(f"  d={depth} ({label}):")
         for n in nodes:
-            print(f"    {n['id']:55s}  type={n['type']}")
+            # The id opens with the type, so `type=function` beside
+            # `py:function:…` restated it. The position is what you act
+            # on next, so that is what earns the column.
+            at = f"  {n['file_path']}:{n['lineno']}" if n.get("file_path") else ""
+            print(f"    {n['id']:55s}{at}")
         if depth in omitted:
             print(f"    ... (+{omitted[depth]} more; --limit-per-depth 0 for all)")
     print(f"\nTotal affected: {result['total_affected']}")

@@ -14,11 +14,22 @@ from sphinxcontrib.nexus.query import GraphQuery
 
 
 def to_dict(obj: Any) -> Any:
-    """Convert dataclass results to JSON-safe dicts."""
+    """Convert dataclass results to JSON-safe dicts.
+
+    Every :class:`~sphinxcontrib.nexus.query.NodeResult` goes through
+    :func:`_compact_node` on the way out — ONE choke point, because a
+    node appears in nearly every reply and only two of the assemblers
+    used to compact it. Everything else serializes whole.
+    """
     if hasattr(obj, "__dataclass_fields__"):
-        return asdict(obj)
+        d = asdict(obj)
+        return _compact_node(d) if type(obj).__name__ == "NodeResult" else {
+            k: to_dict(v) for k, v in d.items()
+        }
     if isinstance(obj, (list, tuple)):
         return [to_dict(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: to_dict(v) for k, v in obj.items()}
     return obj
 
 
@@ -28,15 +39,80 @@ def to_json(data: Any) -> str:
 
 
 def _compact_node(node: Any) -> dict:
-    """Node dict with empty fields omitted.
+    """A node dict where every field says something the id does not.
 
-    ``NodeResult`` carries every field for every node ("" / 0 when
-    absent); in bulk listings the empty fields are pure payload weight
-    (measured ~25% of a context response), so the budgeted assemblers
-    drop them. Consumers must ``.get()`` optional fields — which they
-    already had to, since "" / 0 were sentinel non-values anyway.
+    A node result is the most repeated structure in the whole tool
+    surface, so its redundancy multiplies through everything. The full
+    shape has nine fields and four of them say nothing:
+
+    .. code-block:: json
+
+        {"id": "py:function:orpheus.sn.solver.solve_sn",
+         "type": "function",                            ← id segment 2
+         "name": "orpheus.sn.solver.solve_sn",          ← id segment 3
+         "display_name": "orpheus.sn.solver.solve_sn",  ← == name
+         "domain": "py",                                ← id segment 1
+         "docname": "",                                 ← empty
+         "degree": 374, "file_path": "…", "lineno": 2337}
+
+    Since the strict grammar landed the id IS ``<domain>:<type>:<name>``
+    — `[M]` 2026-08-16, ``name`` and ``domain`` reproduce their segments
+    on **22848 of 22848** nodes. So they go.
+
+    ``type`` is kept, and that is not inconsistency: it matches its
+    segment on only **80%**, and the 20% where it differs is exactly the
+    placeholder case the grammar allows — the id says what the name
+    DENOTES, ``type`` says nothing was found under it. There it is the
+    most informative field in the dict.
+
+    ``display_name`` survives only when it differs from the name, which
+    is the case worth reading (``n_points`` for a method) rather than
+    the case that repeats it.
+
+    Consumers must ``.get()`` optional fields — which they already had
+    to, since ``""``/``0`` were sentinel non-values anyway.
     """
-    return {k: v for k, v in to_dict(node).items() if v}
+    d = {k: v for k, v in to_dict(node).items() if v}
+    parts = d.get("id", "").split(":", 2)
+    if len(parts) == 3:
+        domain, type_segment, name = parts
+        if d.get("name") == name:
+            d.pop("name", None)
+        if d.get("domain") == domain:
+            d.pop("domain", None)
+        if d.get("type") == type_segment:
+            d.pop("type", None)
+        if d.get("display_name") in (name, name.rsplit(".", 1)[-1]):
+            d.pop("display_name", None)
+    return d
+
+
+#: Types that stand for something outside the project — stdlib,
+#: installed packages, and names nexus never found. Real nodes, but
+#: never the answer to "what is this project made of".
+_PLACEHOLDER_TYPES = frozenset({"external", "unresolved"})
+
+
+def _dedupe_parallel(entries: list[dict]) -> list[dict]:
+    """Collapse repeats of one node into a single entry with a count.
+
+    The graph is a MultiDiGraph, so three `isinstance(...)` calls in one
+    function are three edges — correct, and three identical dicts in a
+    reply. `[M]` on `context(solve_sn)`, `isinstance` appeared 3× and
+    `AngularSourceSink.from_isotropic` 2× in a 16-entry bucket.
+
+    The repetition is not noise in itself — "this function tests types
+    three times" is a real signal — so it becomes ``times``, kept only
+    when it is more than one.
+    """
+    seen: dict[str, dict] = {}
+    for e in entries:
+        first = seen.get(e["id"])
+        if first is None:
+            seen[e["id"]] = dict(e)
+        else:
+            first["times"] = first.get("times", 1) + 1
+    return list(seen.values())
 
 
 # ------------------------------------------------------------------
@@ -80,9 +156,24 @@ def assemble_context(
 
     omitted: dict[str, dict[str, int]] = {}
     for direction_name, buckets in (("outgoing", outgoing), ("incoming", incoming)):
-        for edge_type, entries in buckets.items():
-            # .get: _compact_node strips a zero degree as absent
-            entries.sort(key=lambda e: (-e.get("degree", 0), e["id"]))
+        for edge_type, entries in list(buckets.items()):
+            entries = _dedupe_parallel(entries)
+            # Project symbols first, placeholders last. A MEASURED
+            # problem, not a preference: "what does solve_sn call?"
+            # answered with `float`, `isinstance` ×3, `type`, `tuple`,
+            # `getattr`, `TypeError` — [M] 8 of 16 entries were Python
+            # builtins. They are real edges and stay, but they must not
+            # be what a truncated answer keeps.
+            #
+            # .get: _compact_node strips a zero degree as absent, and
+            # `type` survives only ON a placeholder, which is exactly
+            # the flag this sorts by.
+            entries.sort(key=lambda e: (
+                e.get("type", "") in _PLACEHOLDER_TYPES,
+                -e.get("degree", 0),
+                e["id"],
+            ))
+            buckets[edge_type] = entries
             if per_type_limit is not None and len(entries) > per_type_limit:
                 omitted.setdefault(direction_name, {})[edge_type] = (
                     len(entries) - per_type_limit

@@ -1112,12 +1112,32 @@ class GraphQuery:
         results.sort(key=lambda r: r.degree, reverse=True)
         return results[:limit]
 
-    def god_nodes(self, top_n: int = 10) -> list[NodeResult]:
-        """Most connected nodes by total degree."""
-        degree_pairs = sorted(
-            self._g.degree(), key=lambda x: x[1], reverse=True,
-        )
-        return [self._node_result(nid) for nid, _ in degree_pairs[:top_n]]
+    def god_nodes(
+        self, top_n: int = 10, include_placeholders: bool = False,
+    ) -> list[NodeResult]:
+        """The project's most connected symbols — its structural hubs.
+
+        Placeholders are excluded by default, and the default is the
+        whole point of the verb. Degree over the raw graph ranks
+        ``numpy.array``, ``float``, ``int`` and ``numpy.ndarray`` above
+        almost everything a project contains — `[M]` 2026-08-16 on
+        ORPHEUS, **9 of the top 10** were stdlib or installed-package
+        nodes. That answers "what does Python have", which nobody asked.
+
+        Pass ``include_placeholders=True`` for the raw ranking; it is a
+        real question ("what does this project lean on hardest?"), just
+        a different one.
+        """
+        ranked = sorted(self._g.degree(), key=lambda x: x[1], reverse=True)
+        out: list[NodeResult] = []
+        for nid, _degree in ranked:
+            if not include_placeholders:
+                if self._g.nodes[nid].get("type") in self._PHANTOM_NODE_TYPES:
+                    continue
+            out.append(self._node_result(nid))
+            if len(out) >= top_n:
+                break
+        return out
 
     def stats(self) -> StatsResult:
         """Graph-level statistics."""

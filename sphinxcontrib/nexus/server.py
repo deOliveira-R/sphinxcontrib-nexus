@@ -230,6 +230,114 @@ def _active_root() -> Path | None:
 #: can test for it and the tests can pin it.
 STALE_KEY = "stale"
 
+#: Largest payload a tool may return, in characters (~5k tokens).
+#:
+#: A tool's answer lands in an agent's context and stays there. Measured
+#: on ORPHEUS 2026-08-16, BEFORE this existed:
+#:
+#:     processes()            1,238,013 tokens
+#:     verification_audit()      41,901
+#:     staleness()               27,529
+#:     callers(transitive)       20,089
+#:     impact()                  15,886
+#:
+#: `processes()` alone is several times any context window — it defaulted
+#: to `limit=None`, meaning "every call chain in the graph". A tool that
+#: can destroy the session it was called from is not a usable tool, and
+#: no amount of per-tool care prevents the next one: this is the backstop
+#: that makes the failure bounded instead of fatal.
+TOOL_PAYLOAD_BUDGET = 20_000
+
+#: Key carrying what the budget dropped. Present ONLY when something was.
+BUDGET_KEY = "truncated"
+
+
+def _fit_budget(payload: str, tool: str, budget: int = TOOL_PAYLOAD_BUDGET) -> str:
+    """Trim an over-budget payload to its largest list, and say so.
+
+    Truncating silently would be the worst of both worlds — a partial
+    answer that reads as complete (``lessons-L56``). So the reply keeps
+    the head of the dominant list and carries a ``truncated`` block
+    naming the tool, what was dropped, and the argument that would have
+    returned it.
+
+    Repeatedly shortens whichever list is currently largest — anywhere
+    in the structure — until the whole reply fits. Trimming only the
+    single biggest one is not enough: ``impact`` spreads across
+    ``by_depth`` and ``context`` across one bucket per edge type, so a
+    single cut leaves the rest of the payload intact and still oversized
+    (measured: 63k and 48k characters against a 20k budget).
+
+    If nothing can be trimmed the payload is returned untouched rather
+    than mangled — over budget beats invalid.
+    """
+    if len(payload) <= budget:
+        return payload
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return payload
+
+    def lists_in(obj: Any, path: str = "") -> list[tuple[Any, Any, str]]:
+        """(container, key, path) for every list, at any depth."""
+        found: list[tuple[Any, Any, str]] = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                here = f"{path}.{k}" if path else str(k)
+                if isinstance(v, list):
+                    found.append((obj, k, here))
+                found.extend(lists_in(v, here))
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                found.extend(lists_in(v, f"{path}[]"))
+        return found
+
+    root = {"results": data} if isinstance(data, list) else data
+    if not isinstance(root, dict):
+        return payload
+    slots = lists_in(root)
+    if not slots:
+        return payload
+
+    original = {path: len(c[k]) for c, k, path in slots}
+    # Cut the current largest by a third each pass. Converges quickly and
+    # spreads the loss across whichever lists are actually heavy, rather
+    # than gutting one and leaving another untouched.
+    for _ in range(200):
+        if len(to_json(root)) <= budget - 500:      # room for the note
+            break
+        biggest = max(slots, key=lambda s: len(to_json(s[0][s[1]])))
+        container, key, _path = biggest
+        current = container[key]
+        if len(current) <= 1:
+            remaining = [s for s in slots if len(s[0][s[1]]) > 1]
+            if not remaining:
+                break
+            slots = remaining
+            continue
+        container[key] = current[: max(1, len(current) * 2 // 3)]
+
+    dropped = {
+        path: {"kept": len(c[k]), "of": original[path]}
+        for c, k, path in slots
+        if len(c[k]) < original[path]
+    }
+    if not dropped:
+        return to_json(root)
+    root[BUDGET_KEY] = {
+        "tool": tool,
+        "lists": dropped,
+        "why": (
+            f"the reply exceeded the {budget}-character tool budget, which "
+            f"exists so one call cannot fill an agent's context"
+        ),
+        "how_to_get_the_rest": (
+            "narrow the query, or use this tool's own limit/offset "
+            "arguments — the counts above are the true totals"
+        ),
+    }
+    return to_json(root)
+
 
 def _mark_stale_positions(payload: str) -> str:
     """Flag every position in ``payload`` whose file has changed since
@@ -436,7 +544,11 @@ def nexus_tool(fn):
         )
 
     def annotate(result: Any) -> Any:
-        return _mark_stale_positions(result) if isinstance(result, str) else result
+        if not isinstance(result, str):
+            return result
+        # Budget LAST: staleness adds keys, so fitting before it could
+        # push the reply back over.
+        return _fit_budget(_mark_stale_positions(result), fn.__name__)
 
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
@@ -644,16 +756,25 @@ def neighbors(
 
 
 @nexus_tool
-def god_nodes(top_n: int = 10) -> str:
-    """Get the most connected nodes in the graph.
+def god_nodes(top_n: int = 10, include_placeholders: bool = False) -> str:
+    """The project's structural hubs — its most connected symbols.
 
-    These are the central concepts/symbols with the most relationships.
+    These are the concepts everything else hangs off, so they are where
+    a change costs the most and where an unfamiliar codebase is best
+    entered.
+
+    stdlib and installed-package nodes are excluded by default: ranking
+    the raw graph puts `numpy.array`, `float` and `int` at the top,
+    which describes Python rather than the project.
 
     Args:
         top_n: Number of nodes to return (default 10).
+        include_placeholders: Include stdlib/installed/unresolved nodes.
+            A different and also-real question — "what does this project
+            lean on hardest?"
     """
     q = _get_query()
-    results = q.god_nodes(top_n=top_n)
+    results = q.god_nodes(top_n=top_n, include_placeholders=include_placeholders)
     return to_json(to_dict(results))
 
 
