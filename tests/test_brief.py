@@ -27,6 +27,7 @@ from sphinxcontrib.nexus.ast_analyzer import analyze_directory
 from sphinxcontrib.nexus.brief import (
     BriefNode,
     FileBrief,
+    GateSummary,
     file_brief,
     render_text,
 )
@@ -259,12 +260,108 @@ def rich_db(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_brief_equations_tests_and_docs(rich_db):
+    """Ids, not labels. `[M]` 0 of 50 rendered labels pasted into any
+    tool, because each needed a `math:equation:` prefix the emitter had
+    and dropped — an unaddressable handle, in the one reply that
+    arrives unasked and so cannot be re-queried for the real one."""
     db, root = rich_db
     brief = file_brief(db, root / "solver.py", project_root=root)
     assert brief is not None
-    assert brief.equation_labels == ["balance"]
+    assert brief.equation_ids == ["math:equation:balance"]
     assert brief.equation_test_count == 2
-    assert brief.doc_pages == ["theory/balance"]
+    assert brief.doc_page_ids == ["std:file:theory/balance"]
+
+
+def test_a_file_with_no_gates_has_no_gate_section(rich_db):
+    """Presence, not a file-KIND flag: nothing here asks whether this
+    is a test file, so a file that both implements equations and
+    contains gates would report both."""
+    db, root = rich_db
+    brief = file_brief(db, root / "solver.py", project_root=root)
+    assert brief.gates is None
+
+
+@pytest.fixture()
+def test_file_db(tmp_path: Path) -> tuple[Path, Path]:
+    """(db, root): one test file with two gates, a fixture, and a
+    module-level constant.
+
+    The constant is the point. The analyzer flags every node in a test
+    module ``is_test``, including data it can never collect (`[M]` 935
+    such nodes on ORPHEUS), so a fixture with only real gates in it
+    could not tell a correct count from one inflated by them.
+    """
+    root = tmp_path
+    path = str(root / "tests" / "test_ld.py")
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(
+        id="py:module:tests.test_ld", type=NodeType.MODULE,
+        name="tests.test_ld", domain="py", metadata={"file_path": path},
+    ))
+    kg.add_node(GraphNode(
+        id="math:equation:ld-2d", type=NodeType.EQUATION,
+        name="ld-2d", domain="math", docname="theory/ld",
+    ))
+    for name, level, catches in (
+        ("test_order", "L1", ["ERR-062"]),
+        ("test_value", "", []),
+    ):
+        node_id = f"py:function:tests.test_ld.{name}"
+        kg.add_node(GraphNode(
+            id=node_id, type=NodeType.FUNCTION,
+            name=f"tests.test_ld.{name}", domain="py",
+            metadata={
+                "file_path": path, "lineno": 10, "is_test": True,
+                "in_test_file": True, "vv_level": level, "catches": catches,
+            },
+        ))
+        kg.add_edge(GraphEdge(
+            source=node_id, target="math:equation:ld-2d", type=EdgeType.TESTS,
+        ))
+    kg.add_node(GraphNode(
+        id="py:function:tests.test_ld._mesh", type=NodeType.FUNCTION,
+        name="tests.test_ld._mesh", domain="py",
+        metadata={"file_path": path, "lineno": 3, "in_test_file": True},
+    ))
+    kg.add_node(GraphNode(
+        id="py:data:tests.test_ld.CASES", type=NodeType.DATA,
+        name="tests.test_ld.CASES", domain="py",
+        metadata={
+            "file_path": path, "lineno": 1,
+            "is_test": True, "in_test_file": True,
+        },
+    ))
+    db = root / "graph.db"
+    write_sqlite(kg, db)
+    return db, root
+
+
+def test_a_test_file_reports_its_gates_not_its_fixtures(test_file_db):
+    db, root = test_file_db
+    brief = file_brief(db, root / "tests" / "test_ld.py", project_root=root)
+    assert brief is not None and brief.gates is not None
+    gates = brief.gates
+    assert gates.count == 2, "a constant pytest cannot collect is not a gate"
+    assert gates.helpers == 2, "the fixture AND the constant"
+    assert gates.levels == {"": 1, "L1": 1}
+    assert gates.equation_ids == ["math:equation:ld-2d"]
+    assert gates.catches == ["ERR-062"]
+    assert gates.pytest_target == "tests/test_ld.py"
+
+
+def test_the_gate_section_survives_extraction_to_render(test_file_db):
+    """Every other gate-render assertion hands `render_text` a
+    hand-built `GateSummary`, so all of them are blind to whether
+    extraction produces one at all — measured: killing `_gate_summary`
+    reddened exactly one test. This is the leg that joins the halves.
+    """
+    db, root = test_file_db
+    text = render_text(
+        file_brief(db, root / "tests" / "test_ld.py", project_root=root)
+    )
+    assert "gates: 2 (" in text
+    assert "verifies: math:equation:ld-2d" in text
+    assert 'run: pytest "tests/test_ld.py"' in text
 
 
 def test_brief_staleness_unknowable_without_git(rich_db):
@@ -333,7 +430,7 @@ def test_brief_other_files_changing_does_not_flag(stamped_repo):
 
 
 # ---------------------------------------------------------------------------
-# Rendering — the ≤6-line contract
+# Rendering — the ambient-size contract
 # ---------------------------------------------------------------------------
 
 
@@ -351,17 +448,51 @@ def _synthetic_brief(**overrides) -> FileBrief:
                       "solver.aux", 9, 1),
         ],
         external_caller_count=4,
-        equation_labels=["a", "b", "c", "d", "e"],
+        equation_ids=["a", "b", "c", "d", "e"],
         equation_test_count=12,
-        doc_pages=["theory/x"],
+        doc_page_ids=["std:file:theory/x"],
+        gates=None,
         build_commit="abc1234",
         changed_since_build=True,
     )
     return replace(base, **overrides)
 
 
-def test_render_stays_within_six_lines():
+def _synthetic_gates(**overrides) -> GateSummary:
+    from dataclasses import replace
+
+    base = GateSummary(
+        count=14,
+        helpers=23,
+        levels={"": 3, "L0": 2, "L1": 9},
+        equation_ids=["math:equation:ld-cartesian-2d"],
+        catches=["ERR-062"],
+        pytest_target="tests/sn/test_ld.py",
+    )
+    return replace(base, **overrides)
+
+
+def test_render_stays_ambient_sized():
+    """This is an INJECTION on every edit, so its size is a cost paid
+    whether or not it is read.
+
+    Two different claims, both pinned. The RENDERER's worst case is 8
+    lines — every section present and clipped. What ORPHEUS actually
+    contains is smaller: `[M]` 2026-08-17 over all 858 briefable files,
+    median 4 lines / 367 chars, p90 5, max 7 / 811. Neither number
+    substitutes for the other, and the first is the one a new section
+    has to be checked against.
+    """
+    everything = render_text(_synthetic_brief(gates=_synthetic_gates()))
+    assert len(everything.splitlines()) <= 8
+    assert len(everything) <= 900
+    # the common shapes, which is what the median is made of
     assert len(render_text(_synthetic_brief()).splitlines()) <= 6
+    with_gates = render_text(_synthetic_brief(
+        equation_ids=[], equation_test_count=0, doc_page_ids=[],
+        gates=_synthetic_gates(),
+    ))
+    assert len(with_gates.splitlines()) <= 6
 
 
 def test_render_hub_is_the_top_non_module_node():
@@ -375,9 +506,22 @@ def test_render_clips_lists_to_three_with_remainder():
     assert "d" not in text.split("implements:")[1].split("—")[0]
 
 
+def test_a_clipped_list_names_the_tool_that_returns_the_rest():
+    """`(+2)` on its own is a fact the reader cannot act on, and this
+    reply arrives unasked — there is no prompt at which to ask for the
+    members, and after a compaction it is gone."""
+    text = render_text(_synthetic_brief())
+    assert 'file_brief("solver.py")' in text
+
+
+def test_nothing_clipped_means_no_follow_up_line():
+    text = render_text(_synthetic_brief(equation_ids=["a"]))
+    assert "file_brief(" not in text
+
+
 def test_render_omits_empty_sections():
     text = render_text(_synthetic_brief(
-        equation_labels=[], equation_test_count=0, doc_pages=[],
+        equation_ids=[], equation_test_count=0, doc_page_ids=[],
         changed_since_build=False,
     ))
     assert "implements" not in text
@@ -389,7 +533,22 @@ def test_render_omits_empty_sections():
 def test_render_module_only_file_has_no_hub_line():
     text = render_text(_synthetic_brief(
         nodes=[BriefNode("py:module:solver", "module", "solver", 0, 2)],
-        equation_labels=[], equation_test_count=0, doc_pages=[],
+        equation_ids=[], equation_test_count=0, doc_page_ids=[],
         changed_since_build=None,
     ))
     assert "hub:" not in text
+
+
+def test_a_test_file_says_what_it_VERIFIES_and_how_to_run_it():
+    """The founding defect: a test module's brief named its
+    highest-degree node — always a fixture — and said nothing about the
+    claim the file exists to make. It was SHORTEST for the one file
+    kind whose whole purpose is a verification claim."""
+    text = render_text(_synthetic_brief(gates=_synthetic_gates()))
+    assert "gates: 14 (" in text
+    assert "L1 9" in text
+    assert "no level in source 3" in text
+    assert "23 helpers" in text
+    assert "catches ERR-062" in text
+    assert "verifies: math:equation:ld-cartesian-2d" in text
+    assert 'run: pytest "tests/sn/test_ld.py"' in text

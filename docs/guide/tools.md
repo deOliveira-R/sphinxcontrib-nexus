@@ -26,6 +26,7 @@ fresh, so its presence is the signal.
 | Tool | Answers | Key args |
 |---|---|---|
 | `query` | Which symbols match this keyword? | `text`, `node_types`, `limit` |
+| `file_brief` | What does the graph know about this FILE? The one tool addressed by a path rather than a node id — every list unclipped, every handle a pastable id | `file` |
 | `node_at` | Which node encloses this file position? Takes an LSP result or a stack-trace frame | `file`, `line` |
 | `stats` | How big is this graph, and of what? | — |
 | `session_briefing` | What should I know before starting? | — |

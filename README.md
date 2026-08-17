@@ -184,10 +184,11 @@ nexus_source_exclude_patterns = ["scratch/*"]
 | `derives_from` | Specialization → the parent it was reduced from | Directive |
 | `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
-## MCP Tools (41)
+## MCP Tools (42)
 
 ### Exploration
 - **`query`** — keyword search across node names
+- **`file_brief`** — what the graph knows about one FILE: the module node, the hub, the equations it is accountable to, the doc pages owed an update, and — for a test file — what its gates verify and the command that runs them. The entry point when all you have is a path
 - **`node_at`** — map a file position (LSP result, stack trace) to the innermost enclosing graph node
 - **`context`** — 360-degree view of a symbol: connections grouped by type, each bucket most-connected-first and token-budgeted (`limit_per_type`, default 25; honest `omitted` counts — a hub node's full context is megabytes)
 - **`neighbors`** — direct connections with direction and type filtering

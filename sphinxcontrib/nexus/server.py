@@ -781,6 +781,56 @@ def node_at(file: str, line: int) -> str:
 
 
 @nexus_tool
+def file_brief(file: str) -> str:
+    """What the graph knows about one FILE — the entry point when all
+    you have is a path.
+
+    Every other tool here is addressed by node id, and ``node_at``
+    needs a line number you do not have before you have read the file.
+    So this is where a session starts from an editor, a diff, or a
+    stack trace: hand it a path, get the module node, the hub worth
+    feeding to ``context``/``impact``, the equations the file is
+    accountable to, the doc pages owed an update when it changes, and
+    — for a test file — what its gates verify and the command that
+    runs them.
+
+    Everything it names is addressable: equation and doc-page entries
+    are node ids that paste straight into ``context`` /
+    ``provenance_chain``, and no list is clipped here (the ambient
+    hook's rendering clips; this does not).
+
+    ``null`` means the file is not in the graph at all: a new file, an
+    excluded tree, or a build that predates it.
+
+    Args:
+        file: File path, absolute or relative to the project root.
+    """
+    from dataclasses import asdict
+
+    from sphinxcontrib.nexus.brief import file_brief as build_brief
+
+    # Through the query so the staleness reload runs and the workspace
+    # cannot disagree with the graph every other tool answers from —
+    # the brief then reads that same database directly, as it does for
+    # the hook.
+    ws = _get_query().workspace
+    if ws is None or not Path(ws.db_path).is_file():
+        return to_json({"error": "No graph database for the active workspace"})
+    brief = build_brief(Path(ws.db_path), file, project_root=ws.root)
+    if brief is None:
+        return to_json({
+            "error": f"{file} is not in the graph",
+            "file_path": file,
+            "hint": (
+                "A new file, an excluded tree, or a graph built before "
+                "it existed — rebuild (sphinx-build / nexus analyze) "
+                "and retry."
+            ),
+        })
+    return to_json(asdict(brief))
+
+
+@nexus_tool
 def context(node_id: str, limit_per_type: int = 0) -> str:
     """Get a 360-degree view of a node: its attributes and all connections.
 

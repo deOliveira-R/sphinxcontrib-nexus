@@ -14,11 +14,21 @@ read-only) — no NetworkX graph load, no server round-trip. The whole
 brief is a handful of indexed SQL aggregations plus at most one git
 subprocess for the staleness check.
 
-Content principle (token-budgeted, ≤6 rendered lines): node IDs are
-copy-pasteable into the MCP tools (``context``, ``impact``,
-``provenance_chain``), lists never show more than three items
-(``+N`` counts the rest), and absence of a section means absence of
-data — the brief never pads.
+Content principle: everything the brief names is a HANDLE — node ids
+that paste into ``context`` / ``impact`` / ``provenance_chain``, and a
+pytest target that runs. Lists show three items and then name the tool
+that returns the rest, because this arrives as an injection and there
+is no prompt at which to ask. Absence of a section means absence of
+data; the brief never pads.
+
+Size, `[M]` 2026-08-17 over all 858 briefable ORPHEUS files (456 of
+them holding gates): median **4 lines / 367 chars**, p90 5, max
+**7 / 811**. The renderer's own worst case is 8 — a file carrying
+equations AND docs AND gates AND catches, all clipped — which ORPHEUS
+happens not to contain; those are two different claims and both are
+pinned in ``test_brief.py``. This is paid on every edit whether or not
+it is read, so that distribution is the budget: a new section has to
+earn its line, and ``catches`` did not (it rides on the gates line).
 """
 
 from __future__ import annotations
@@ -27,8 +37,10 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sphinxcontrib.nexus.export import get_connection, read_sqlite_metadata
+from sphinxcontrib.nexus.position import COLLECTABLE_TYPES
 from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
     GitProvenance,
@@ -54,6 +66,48 @@ class BriefNode:
 
 
 @dataclass(frozen=True)
+class GateSummary:
+    """What the graph knows about the GATES in one file.
+
+    A test file's brief used to read like a production file's: its
+    "hub" was whichever fixture had the highest degree, and the line
+    that would say what the file VERIFIES did not exist — so the brief
+    was shortest exactly where a verification claim lives. That is not
+    a data gap: the graph carries a ``tests`` edge per claim and a
+    level, a ``verifies`` list and a ``catches`` list per gate.
+
+    Present iff the file contains at least one gate. There is no
+    "kind of file" flag anywhere here, deliberately: a file that
+    contains gates gets this section and a file that implements
+    equations gets those, and a file doing both reports both. Branching
+    on a file KIND would be a conditional standing in for a type, and
+    it would be wrong for the file that is both.
+    """
+
+    count: int
+    """Gates — nodes pytest would collect."""
+
+    helpers: int
+    """Nodes in the test tree that pytest collects nothing from:
+    fixtures, builders, constants. `[M]` ORPHEUS carries 2225 of them,
+    and one of them is what the old brief called the file's "hub"."""
+
+    levels: dict[str, int]
+    """``vv_level`` → gate count. The ``""`` key counts gates whose
+    SOURCE TEXT carries no level, which is not the same as untagged —
+    see :attr:`~.query.TestFacts.vv_level`."""
+
+    equation_ids: list[str]
+    """Equations the file's gates claim, most-claimed first."""
+
+    catches: list[str]
+    """Catalogued defect ids the file's gates claim to catch."""
+
+    pytest_target: str | None
+    """The whole file as one pytest invocation, when derivable."""
+
+
+@dataclass(frozen=True)
 class FileBrief:
     """What the graph knows about one source file.
 
@@ -75,17 +129,27 @@ class FileBrief:
     """``calls`` edges arriving from OUTSIDE the file — the blast
     radius an edit here propagates to."""
 
-    equation_labels: list[str]
-    """Labels of equations any in-file node ``implements`` — the
-    math this file is accountable to."""
+    equation_ids: list[str]
+    """Equations any in-file node ``implements`` — the math this file
+    is accountable to.
+
+    Node IDS, not labels. The brief used to render the label it had
+    just looked up, which is a handle the reader cannot use: `[M]`
+    **0 of 50** pasted into any tool, because every one needed a
+    ``math:equation:`` prefix the emitter knew and withheld."""
 
     equation_test_count: int
     """``tests`` edges landing on those equations: the verification
     chain runs code → equation → test, not code → test."""
 
-    doc_pages: list[str]
-    """Docnames documenting in-file nodes, most-referencing first —
-    the pages owed an update when this file's behavior changes."""
+    doc_page_ids: list[str]
+    """Doc pages documenting in-file nodes, most-referencing first —
+    the pages owed an update when this file's behavior changes. Node
+    ids for the same reason as :attr:`equation_ids`; a bare docname
+    additionally hid which extension the source file carries."""
+
+    gates: GateSummary | None
+    """Present iff the file contains tests — see :class:`GateSummary`."""
 
     build_commit: str | None
     """Commit the graph's provenance stamp records, when present."""
@@ -187,13 +251,23 @@ def file_brief(
                 f"SELECT id, type, name FROM nodes WHERE id IN ({ph})", ids
             )
         }
-        linenos = {
-            row["node_id"]: int(json.loads(row["value"]))
-            for row in conn.execute(
-                f"SELECT node_id, value FROM node_attrs "
-                f"WHERE key = 'lineno' AND node_id IN ({ph})",
-                ids,
+        # One fetch for every per-node attribute the brief reads.
+        # Fetching them together keeps the hook to a fixed number of
+        # indexed queries no matter how many facts a section wants.
+        attrs: dict[str, dict[str, Any]] = {}
+        for row in conn.execute(
+            f"SELECT node_id, key, value FROM node_attrs "
+            f"WHERE key IN ('lineno', 'is_test', 'in_test_file', "
+            f"'vv_level', 'catches') AND node_id IN ({ph})",
+            ids,
+        ):
+            attrs.setdefault(row["node_id"], {})[row["key"]] = json.loads(
+                row["value"]
             )
+        linenos = {
+            node_id: int(a["lineno"])
+            for node_id, a in attrs.items()
+            if a.get("lineno") is not None
         }
 
         # The file's whole edge neighborhood in two index-backed
@@ -244,22 +318,8 @@ def file_brief(
             row["source"] for row in incoming if row["type"] == "documents"
         )
 
-        # One name lookup for everything outside the file the brief
-        # mentions: equations and doc pages.
-        foreign_ids = equation_ids + list(doc_page_refs)
-        names = {
-            row["id"]: row["name"]
-            for row in conn.execute(
-                f"SELECT id, name FROM nodes "
-                f"WHERE id IN ({_placeholders(foreign_ids)})",
-                foreign_ids,
-            )
-        } if foreign_ids else {}
-        equation_labels = sorted(
-            names.get(eq_id) or eq_id for eq_id in equation_ids
-        )
-        doc_pages = [
-            names.get(doc_id) or doc_id
+        doc_page_ids = [
+            doc_id
             for doc_id, _ in sorted(
                 doc_page_refs.items(), key=lambda kv: (-kv[1], kv[0])
             )
@@ -276,6 +336,10 @@ def file_brief(
                 )
                 if row["type"] == "tests"
             )
+
+        gates = _gate_summary(
+            core, attrs, outgoing, file_path, project_root,
+        )
     finally:
         conn.close()
 
@@ -296,12 +360,92 @@ def file_brief(
         module_id=module_id,
         nodes=nodes,
         external_caller_count=external_callers,
-        equation_labels=equation_labels,
+        equation_ids=equation_ids,
         equation_test_count=equation_test_count,
-        doc_pages=doc_pages,
+        doc_page_ids=doc_page_ids,
+        gates=gates,
         build_commit=prov.commit if prov is not None else None,
         changed_since_build=changed_since_build,
     )
+
+
+def _gate_summary(
+    core: dict[str, tuple[str, str]],
+    attrs: dict[str, dict[str, Any]],
+    outgoing: list,
+    file_path: Path | str,
+    project_root: Path | None,
+) -> GateSummary | None:
+    """The gate section, or ``None`` when the file holds no gates.
+
+    A gate is ``is_test`` AND a kind pytest collects. The type check is
+    not redundant: the analyzer sets ``is_test`` on module-level data
+    and attributes too (`[M]` 1214 on ORPHEUS), and counting a constant
+    as a gate would inflate the one number this section exists to
+    report. See :data:`~.position.COLLECTABLE_TYPES`.
+
+    Claims come from the ``tests`` EDGE rather than the ``verifies``
+    attribute, so what lands in the brief is an equation node id the
+    reader can paste. ``catches`` has no edge to read (nexus#63), so it
+    is the attribute, and it is a bare defect id by nature.
+    """
+    gate_ids = {
+        node_id
+        for node_id, (node_type, _) in core.items()
+        if attrs.get(node_id, {}).get("is_test")
+        and node_type in COLLECTABLE_TYPES
+    }
+    if not gate_ids:
+        return None
+
+    helpers = sum(
+        1
+        for node_id in core
+        if node_id not in gate_ids
+        and attrs.get(node_id, {}).get("in_test_file")
+    )
+    levels = Counter(
+        attrs.get(node_id, {}).get("vv_level") or "" for node_id in gate_ids
+    )
+    claimed = Counter(
+        row["target"]
+        for row in outgoing
+        if row["type"] == "tests" and row["source"] in gate_ids
+    )
+    catches = Counter(
+        err
+        for node_id in gate_ids
+        for err in (attrs.get(node_id, {}).get("catches") or ())
+    )
+    return GateSummary(
+        count=len(gate_ids),
+        helpers=helpers,
+        levels=dict(sorted(levels.items())),
+        equation_ids=[eq for eq, _ in claimed.most_common()],
+        catches=[err for err, _ in catches.most_common()],
+        pytest_target=_relative_target(file_path, project_root),
+    )
+
+
+def _relative_target(
+    file_path: Path | str, project_root: Path | None,
+) -> str | None:
+    """The whole file as one pytest target, or ``None``.
+
+    A file is always a legal invocation (``pytest tests/x.py`` runs
+    every gate in it), so this needs none of
+    :func:`~.position.pytest_selector`'s name checks — only the same
+    root-relative projection, since pytest ids are relative.
+    """
+    path = Path(file_path)
+    if project_root is None:
+        return path.as_posix() if not path.is_absolute() else None
+    try:
+        return canonical_path(path, project_root).relative_to(
+            project_root.resolve()
+        ).as_posix()
+    except ValueError:
+        return None
 
 
 def _clipped(items: list[str], budget: int = _LIST_BUDGET) -> str:
@@ -311,13 +455,52 @@ def _clipped(items: list[str], budget: int = _LIST_BUDGET) -> str:
     return f"{shown} (+{rest})" if rest > 0 else shown
 
 
+def _gate_lines(gates: GateSummary, budget: int) -> list[str]:
+    """The test-side lines — what this file VERIFIES, and how to run it.
+
+    The old brief had none of these. It reported a test module by its
+    highest-degree node, which in a test file is always a fixture, so
+    the one file kind whose whole purpose is a verification claim got
+    the shortest and least relevant brief of any.
+    """
+    levels = " · ".join(
+        f"{level or 'no level in source'} {n}"
+        for level, n in gates.levels.items()
+    )
+    # `catches` rides on this line rather than owning one: it is
+    # usually one short id, and it belongs with the levels as "what
+    # these gates say about themselves". `verifies` earns its own line
+    # because its entries are pastable node ids, not tags.
+    caught = f"; catches {_clipped(gates.catches, budget)}" if gates.catches else ""
+    lines = [
+        f"gates: {gates.count} ({levels}); {gates.helpers} helpers{caught}"
+    ]
+    if gates.equation_ids:
+        lines.append(f"verifies: {_clipped(gates.equation_ids, budget)}")
+    if gates.pytest_target:
+        lines.append(f'run: pytest "{gates.pytest_target}"')
+    return lines
+
+
+def _was_clipped(brief: FileBrief, budget: int) -> bool:
+    """Whether any rendered list showed fewer members than it has."""
+    lists = [brief.equation_ids, brief.doc_page_ids]
+    if brief.gates is not None:
+        lists += [brief.gates.equation_ids, brief.gates.catches]
+    return any(len(items) > budget for items in lists)
+
+
 def render_text(brief: FileBrief, project_root: Path | None = None) -> str:
-    """The ≤6-line ambient form — what a hook prints into a transcript.
+    """The ambient form — what a hook prints into a transcript.
 
     Line for line: identity + blast radius; the hub node (the one ID
     most worth feeding to ``impact``/``context``); the math the file
-    implements and how tested it is; the doc pages owed an update;
-    a staleness flag only when the graph is verifiably behind.
+    implements and how tested it is; the doc pages owed an update; and,
+    when the file holds gates, what they claim and how to run them.
+
+    Every clipped list ends in a follow-up naming the tool that returns
+    the members. A bare ``(+45)`` is a fact the reader cannot act on,
+    and this arrives as an INJECTION — there is no prompt to ask at.
     """
     budget = _LIST_BUDGET
     if project_root is not None:
@@ -337,13 +520,20 @@ def render_text(brief: FileBrief, project_root: Path | None = None) -> str:
         others = len(brief.nodes) - 2 if brief.module_id else len(brief.nodes) - 1
         more = f"; +{others} more nodes" if others > 0 else ""
         lines.append(f"hub: {hub.id} (degree {hub.degree}){more}")
-    if brief.equation_labels:
+    if brief.equation_ids:
         lines.append(
-            f"implements: {_clipped(brief.equation_labels, budget)} — "
+            f"implements: {_clipped(brief.equation_ids, budget)} — "
             f"{brief.equation_test_count} tests verify these equations"
         )
-    if brief.doc_pages:
-        lines.append(f"docs: {_clipped(brief.doc_pages, budget)}")
+    if brief.doc_page_ids:
+        lines.append(f"docs: {_clipped(brief.doc_page_ids, budget)}")
+    if brief.gates is not None:
+        lines.extend(_gate_lines(brief.gates, budget))
+    if _was_clipped(brief, budget):
+        lines.append(
+            f'full lists: file_brief("{brief.file_path}") — every member, '
+            f"unclipped"
+        )
     # No per-file staleness line here, deliberately: the ambient form's
     # consumer is the POST-EDIT hook, where "file changed since graph
     # build" is tautologically true (the agent just edited it). Issue

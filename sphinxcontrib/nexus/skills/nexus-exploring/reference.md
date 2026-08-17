@@ -3,12 +3,13 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (41)
+## Tools (42)
 
 ### Exploration
 | Tool | What it answers | Key args |
 |------|----------------|----------|
 | `query` | Find symbols by keyword | `text`, `node_types`, `limit` |
+| `file_brief` | What the graph knows about one FILE — module node, hub, equations it implements, doc pages owed an update, and for a test file what its gates verify plus the pytest command. Start here when all you have is a path | `file` |
 | `node_at` | Map a file position (LSP result, stack trace) to the innermost enclosing node; warns when the file changed since the graph was built | `file`, `line` |
 | `context` | 360-degree view of a symbol | `node_id` |
 | `neighbors` | Direct connections | `node_id`, `direction`, `edge_types` |
