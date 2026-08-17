@@ -3,7 +3,7 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (42)
+## Tools (43)
 
 ### Exploration
 | Tool | What it answers | Key args |
@@ -29,6 +29,7 @@ This file is shared across all nexus-* skills.
 | `impact` | Blast radius analysis | `target`, `direction`, `max_depth`, `edge_types` |
 | `detect_changes` | Git diff → graph mapping | `scope` |
 | `retest` | Minimum test set after changes | `scope` |
+| `doc_impact` | `retest`'s dual — documented claims a change to this symbol puts in question, with `page:line#anchor` and a verified flag | `node_id`, `limit` |
 | `rename` | Safe multi-file rename | `old_name`, `new_name`, `dry_run` |
 
 ### Architecture Smells (missing-abstraction family)

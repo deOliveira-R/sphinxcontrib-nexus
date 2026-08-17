@@ -444,6 +444,22 @@ def main(argv: list[str] | None = None) -> int:
         "--db", type=Path, default=None,
     )
 
+    # --- doc-impact ---
+    doc_cmd = sub.add_parser(
+        "doc-impact",
+        help="Which documented claims a change to this symbol puts in question",
+    )
+    doc_cmd.add_argument(
+        "target",
+        help="Node ID of the symbol being changed.",
+    )
+    doc_cmd.add_argument("--db", type=Path, default=None)
+    doc_cmd.add_argument("--project-root", type=Path, default=None)
+    doc_cmd.add_argument(
+        "--unverified-only", action="store_true",
+        help="Only claims no test declares it verifies.",
+    )
+
     # --- retest ---
     retest_cmd = sub.add_parser(
         "retest",
@@ -959,6 +975,7 @@ def main(argv: list[str] | None = None) -> int:
         "context": _run_context,
         "neighbors": _run_neighbors,
         "trace": _run_trace,
+        "doc-impact": _run_doc_impact,
         "retest": _run_retest,
         "changes": _run_changes,
         "communities": _run_communities,
@@ -1479,6 +1496,27 @@ def _run_file_brief(args: argparse.Namespace) -> int:
         print(json.dumps(asdict(brief), indent=2))
     else:
         print(render_text(brief))
+    return 0
+
+
+def _run_doc_impact(args: argparse.Namespace) -> int:
+    q = _load_query(args)
+    result = q.doc_impact(args.target)
+    claims = [c for c in result.claims if not (args.unverified_only and c.verified)]
+    if not claims and not result.pages:
+        print(f"No documented claim reachable from {args.target}")
+        return 0
+    for c in claims:
+        mark = " " if c.verified else "!"
+        guess = "  (inferred)" if c.inferred else ""
+        print(f"  {mark} {c.location:58s} {c.equation.name}{guess}")
+        print(f"      via {c.implemented_by.name}  (depth {c.depth})")
+    if result.pages:
+        print("\n  pages documenting the cone (no anchor — page-level edge):")
+        for p in result.pages:
+            print(f"      {p.id}")
+    print(f"\nCone: {result.cone_size} symbols; claims: {len(result.claims)}"
+          f" ({result.unverified} unverified, marked !)")
     return 0
 
 

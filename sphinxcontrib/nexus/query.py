@@ -399,15 +399,88 @@ class MarkedTestResult:
     markers: dict[str, Any]
     pytest_ids: list[str]
 
-    @property
-    def invocation(self) -> str:
-        """A copy-pasteable ``pytest`` command for this node.
+    invocation: str = ""
+    """A copy-pasteable ``pytest`` command — the join that turns "which
+    tests pin this" into something a caller can act on.
 
-        The one join that turns "which tests pin this" into something a
-        caller can act on. Every consumer measured so far re-derived
-        this transform by hand from ``file_path`` plus the dotted name.
-        """
-        return "pytest " + " ".join(f'"{i}"' for i in self.pytest_ids)
+    ⚠ A FIELD, not a property, and that distinction is the whole point:
+    the serializer walks ``fields()``, so a property is invisible to
+    every JSON reply. This WAS a property until 2026-08-17, while the
+    ``runtime_markers`` docstring told callers that "each result carries
+    ``pytest_ids`` and an ``invocation``" — true of the Python API,
+    false of the JSON, which is the surface nearly every consumer reads.
+    A derived value a reply should carry has to be a field.
+    """
+
+    def __post_init__(self) -> None:
+        self.invocation = "pytest " + " ".join(
+            f'"{i}"' for i in self.pytest_ids
+        )
+
+
+@dataclass
+class DocClaim:
+    """One documented claim that a change can falsify.
+
+    An equation is a claim about what the code does. When a symbol in
+    the change's blast radius says it implements one, that equation's
+    prose is a candidate for having just become false — and the reader
+    needs to be able to OPEN it, which is what ``location`` is for.
+    """
+
+    equation: NodeResult
+    implemented_by: NodeResult
+    """The symbol in the cone that carries the claim."""
+
+    depth: int
+    """Hops from the queried symbol. 0 means the symbol itself."""
+
+    docname: str
+    anchor: str = ""
+    """Enclosing section's anchor, empty when the equation sits outside
+    every section or the graph predates the nesting pass."""
+
+    lineno: int = 0
+    verified: bool = False
+    """Whether any test declares it verifies this equation. An
+    unverified claim is the one to read first: nothing would catch it
+    becoming false."""
+
+    inferred: bool = True
+    """Whether the ``implements`` link is a GUESS. `[M]` on ORPHEUS all
+    14004 of them are, so this is the rule and not the exception — an
+    inferred claim may simply not be about your symbol at all."""
+
+    location: str = ""
+    """``page:line#anchor`` — one string that says where to read it.
+
+    A field rather than a property: the serializer walks ``fields()``,
+    so a property never reaches a JSON reply."""
+
+    def __post_init__(self) -> None:
+        where = f"{self.docname}:{self.lineno}" if self.lineno else self.docname
+        self.location = f"{where}#{self.anchor}" if self.anchor else where
+
+
+@dataclass
+class DocImpactResult:
+    """What documentation a change puts in question — ``retest``'s dual.
+
+    Same cone, different terminal set: ``retest`` collects the tests
+    that exercise the changed code, this collects the doc claims that
+    describe it.
+    """
+
+    target: str
+    claims: list[DocClaim] = field(default_factory=list)
+    pages: list[NodeResult] = field(default_factory=list)
+    """Pages that ``document`` some symbol in the cone. The COARSE half
+    of the answer — a ``documents`` edge lands on the page, not on a
+    section, so these carry no anchor and no line."""
+
+    cone_size: int = 0
+    unverified: int = 0
+    dependence_edges: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -3104,6 +3177,107 @@ class GraphQuery:
             safe_to_skip=max(0, safe_to_skip),
             dependence_edges=list(self._RETEST_DEPENDENCE_EDGES),
             cone_depth=deepest,
+        )
+
+    def doc_impact(self, node_id: str) -> DocImpactResult:
+        """Which documented claims does changing this symbol put in
+        question — the dual of :meth:`retest`.
+
+        Same cone, same edges, same fixed point; only the terminal set
+        differs. ``retest`` collects the tests that exercise the changed
+        code; this collects the equations that DESCRIBE it, each with
+        where to read it and whether anything would catch it becoming
+        false.
+
+        Before this, that question took four calls and did not close:
+        ``node_at`` → ``context`` → read the ``documents`` page ids →
+        ``neighbors(page, contains)`` to list sections — and then a
+        guess, because a page's sections and its equations arrived as
+        SIBLINGS. On ORPHEUS the right section was found only when it
+        happened to share a name with the equation, which is a
+        coincidence across two different label namespaces; where the
+        coincidence failed, recovery ended in ``awk`` over a line range.
+
+        ⚠ Two honest limits, both visible in the result rather than
+        hidden. ``pages`` is the COARSE half: a ``documents`` edge lands
+        on a page, so those carry no anchor. And most ``implements``
+        links are inferred from a shared name token — every claim says
+        which it is, because a guessed claim may not be about your
+        symbol at all.
+        """
+        if node_id not in self._g:
+            return DocImpactResult(
+                target=node_id,
+                dependence_edges=list(self._RETEST_DEPENDENCE_EDGES),
+            )
+
+        cone = self.impact(
+            node_id,
+            direction="upstream",
+            max_depth=-1,
+            edge_types=list(self._RETEST_DEPENDENCE_EDGES),
+        )
+        depth_of = {node_id: 0}
+        for depth, nodes in cone.by_depth.items():
+            for n in nodes:
+                depth_of.setdefault(n.id, depth)
+
+        claims: list[DocClaim] = []
+        pages: dict[str, NodeResult] = {}
+        for symbol, depth in depth_of.items():
+            for _, target, data in self._g.out_edges(symbol, data=True):
+                if data.get("type") != EdgeType.IMPLEMENTS:
+                    continue
+                claims.append(self._doc_claim(target, symbol, depth, data))
+            for source, _, data in self._g.in_edges(symbol, data=True):
+                if data.get("type") == EdgeType.DOCUMENTS:
+                    pages.setdefault(source, self._node_result(source))
+
+        # Nearest first, then unverified before verified: a claim about
+        # the symbol you just edited, that nothing tests, is the one
+        # worth reading first.
+        claims.sort(key=lambda c: (c.depth, c.verified, c.equation.id))
+        return DocImpactResult(
+            target=node_id,
+            claims=claims,
+            pages=sorted(pages.values(), key=lambda p: p.id),
+            cone_size=len(depth_of),
+            unverified=sum(1 for c in claims if not c.verified),
+            dependence_edges=list(self._RETEST_DEPENDENCE_EDGES),
+        )
+
+    def _doc_claim(
+        self, equation_id: str, symbol: str, depth: int, edge: dict,
+    ) -> DocClaim:
+        """One claim, resolved to somewhere a reader can open."""
+        attrs = self._g.nodes.get(equation_id, {})
+        # The equation's OWN anchor is the precise fragment — the
+        # innermost section it sits in, labelled or not. The containing
+        # section node is the fallback, and it is coarser by
+        # construction: it is the nearest LABELLED ancestor, which on a
+        # real project is often several levels up.
+        anchor = attrs.get("anchor") or ""
+        if not anchor:
+            for source, _, data in self._g.in_edges(equation_id, data=True):
+                if (
+                    data.get("type") == EdgeType.CONTAINS
+                    and self._g.nodes.get(source, {}).get("type")
+                    == NodeType.SECTION
+                ):
+                    anchor = self._g.nodes[source].get("anchor", "")
+                    break
+        return DocClaim(
+            equation=self._node_result(equation_id),
+            implemented_by=self._node_result(symbol),
+            depth=depth,
+            docname=attrs.get("docname", ""),
+            anchor=anchor,
+            lineno=attrs.get("lineno") or 0,
+            verified=any(
+                d.get("type") == EdgeType.TESTS
+                for _, _, d in self._g.in_edges(equation_id, data=True)
+            ),
+            inferred=edge.get("source") == "inferred",
         )
 
     # ------------------------------------------------------------------

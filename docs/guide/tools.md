@@ -105,6 +105,7 @@ function -type_uses-> external WHERE name=numpy*
 | `impact` | What breaks if I change this? | `target`, `direction`, `max_depth`, `edge_types` |
 | `detect_changes` | What did my git diff actually touch, in graph terms? | `scope` |
 | `retest` | What is the minimum test set for these changes? | `scope` |
+| `doc_impact` | Which documented claims did my change put in question? The same cone as `retest`, ending in equations instead of tests | `node_id`, `limit` |
 | `rename` | Rename across files, safely | `old_name`, `new_name`, `dry_run` |
 | `migration_plan` | How do I get from this dependency to that one? | `from_dep`, `to_dep` |
 

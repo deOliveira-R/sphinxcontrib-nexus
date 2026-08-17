@@ -184,7 +184,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 | `derives_from` | Specialization → the parent it was reduced from | Directive |
 | `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
-## MCP Tools (42)
+## MCP Tools (43)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -203,6 +203,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 - **`detect_changes`** — map git diff to affected symbols
 - **`rename`** — safe multi-file rename with confidence tagging
 - **`retest`** — minimum set of tests to re-run after changes
+- **`doc_impact`** — its dual: which documented claims a change puts in question, each with a `page:line#anchor` to open and whether any test would catch it becoming false
 - **`communities`** — detect functional groupings with cohesion scores
 - **`graph_query`** — Cypher-like pattern matching (`"function -calls-> function"`)
 - **`bridges`** — find architectural hotspots connecting communities

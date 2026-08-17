@@ -1773,6 +1773,42 @@ def _switch_workspace(target_root: Path) -> dict[str, Any]:
 
 
 @nexus_tool
+def doc_impact(node_id: str, limit: int = 0) -> str:
+    """Which documented claims does changing this symbol put in question
+    — the dual of ``retest``.
+
+    Same dependence cone, same fixed point; only the terminal set
+    differs. ``retest`` returns the tests that exercise the changed
+    code, this returns the equations that DESCRIBE it — each with a
+    ``location`` (``page:line#anchor``) you can open, and a ``verified``
+    flag saying whether any test would catch it becoming false.
+
+    Sort order is the reading order: nearest first, unverified before
+    verified. A claim about the symbol you just edited that nothing
+    tests is where to start.
+
+    ⚠ Two limits, stated in the reply rather than hidden. ``pages`` is
+    the COARSE half — a ``documents`` edge lands on a page, not a
+    section, so those entries carry no anchor. And a claim marked
+    `inferred` was minted from a shared name token, not declared; `[M]`
+    on a real project that is 14004 of 14004 `implements` edges, so
+    treat an inferred claim as a lead, not a fact.
+
+    Args:
+        node_id: Node ID of the symbol being changed.
+        limit: Max claims to return (0 = the project's list budget).
+    """
+    q = _get_query()
+    result = q.doc_impact(node_id)
+    payload = to_dict(result)
+    kept = _list_limit(limit)
+    if kept and len(payload["claims"]) > kept:
+        payload["omitted"] = len(payload["claims"]) - kept
+        payload["claims"] = payload["claims"][:kept]
+    return to_json(payload)
+
+
+@nexus_tool
 def retest(scope: str = "all") -> str:
     """Compute the minimum set of tests to re-run after changes.
 

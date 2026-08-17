@@ -365,6 +365,60 @@ baseline, not a probe.
 these values, and if either falls the cause is a regression, since
 nothing else is planned to touch them.
 
+---
+
+### 2026-08-17 · nexus `feature/doc-impact` · F8 closes — 4 of 4
+
+| chain | breaks at | now |
+|---|---|---|
+| `symbol → doc page → section` | hop 3 — 680 sections, **0** `section→equation` | ✅ **849** edges; `[M]` 869 of 903 equations carry an anchor and a line |
+
+`contains` attached a page's sections and its equations as SIBLINGS, so
+no claim knew its anchor. The pass that fixes it is additive, and that
+was the load-bearing decision: `merge._infer_implements` finds a page's
+equations through `g.out_edges(doc_id)`, so re-parenting would have
+taken `implements` to **zero** silently. `[M]` 14004 → 14004, and the
+only delta in the whole graph is the 849 new edges.
+
+`doc_impact(symbol)` closes the question the chain existed for. The
+issue's own worked case — `LossKernelBasis`, where the name coincidence
+that rescued every other lookup fails — now answers in ONE call:
+`theory/methods/sn/cartesian_multid:5134#the-gauge-returning-the-canonical-member`,
+with the unverified claim flagged and sorted first. `[M]` 200 symbols,
+10 308 claims, 0.68 s.
+
+| probe | previous | now |
+|---|---|---|
+| **F8** chains closed | 3 / 4 | **4 / 4** |
+
+**Two defects this pass surfaced, both found by measuring rather than
+reading:**
+
+- ⭐ **A property is invisible to the serializer.** `to_dict` walks
+  `fields()`, so `MarkedTestResult.invocation` — added for #61 — never
+  reached a single JSON reply, while the `runtime_markers` docstring
+  told callers "each result carries an `invocation`". True of the
+  Python API, false of the surface nearly every consumer reads. Now a
+  field, and `DocClaim.location` was written as one because of it.
+- ⭐ **A key that exists but is empty defeats `setdefault`.**
+  `GraphNode` gives every node an `anchor` key, `None` for an equation,
+  so the stamp was a silent no-op — `[M]` **0 of 903**.
+
+⚠ **Harness lesson, and it is a REPEAT of round 3's.** Three readings
+of "0 anchors, 266 edges" were taken from a graph a build was still
+writing, and I spent four cycles debugging code that was already
+correct. Round 3 logged exactly this — *never trust a graph's freshness
+from one reading taken while a build is in flight* — and the rule did
+not transfer because the earlier instance was about a file I had
+*copied aside*, not one I was *reading live*. ⟹ the honest form is
+wider: **a graph read during or immediately after a build is not
+evidence about the code that produced it.** Read it after the build
+reports done, and read it twice.
+
+**Expected at the next round:** F8 stays 4 / 4. F5 is the live target
+(`nexus#82`); F1's remaining 7402 zero-callers are the dispatch
+mechanism (`#76`/`#16`) and are untouched.
+
 ## Part 5 — Standing rules, each earned
 
 1. **Evaluate by USING it.** Not one of the nine findings is visible by

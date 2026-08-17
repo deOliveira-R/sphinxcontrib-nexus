@@ -27,6 +27,7 @@ from sphinxcontrib.nexus.graph import (
 )
 
 if TYPE_CHECKING:
+    import networkx as nx
     from sphinx.environment import BuildEnvironment
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,140 @@ def _enrich_proof_nodes(doctree: docutils_nodes.document, graph: KnowledgeGraph)
             attrs["statement"] = statement
 
 
+def _section_anchor_index(graph: KnowledgeGraph) -> dict[str, dict[str, str]]:
+    """``{docname: {anchor: section_node_id}}`` — built once, not per page.
+
+    Section nodes already carry the anchor Sphinx assigned them, which is
+    also one of the ``ids`` docutils puts on the section node in the
+    doctree. That shared spelling is the whole join; nothing here has to
+    re-derive a slug.
+    """
+    index: dict[str, dict[str, str]] = {}
+    for nid, attrs in graph.nxgraph.nodes(data=True):
+        if attrs.get("type") != NodeType.SECTION.value:
+            continue
+        anchor, docname = attrs.get("anchor"), attrs.get("docname")
+        if anchor and docname:
+            index.setdefault(docname, {})[anchor] = nid
+    return index
+
+
+def _enclosing_sections(
+    node: docutils_nodes.Node,
+) -> list[docutils_nodes.Element]:
+    """Every ``section`` containing ``node``, innermost first."""
+    out: list[docutils_nodes.Element] = []
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, docutils_nodes.section):
+            out.append(parent)
+        parent = parent.parent
+    return out
+
+
+def _nest_labelled_statements(
+    doctree: docutils_nodes.document,
+    graph: KnowledgeGraph,
+    anchors: dict[str, str],
+) -> int:
+    """Give every labelled statement on a page its enclosing anchor.
+
+    A page's sections and its equations arrived as SIBLINGS: both were
+    attached straight to the page node, so an equation did not know
+    which anchor it sits under and "which section documents this?"
+    ended in reading an RST line range by hand.
+
+    Two facts land here, both from the doctree the reference pass has
+    already loaded — this adds no build cost beyond one traversal:
+
+    * ``lineno`` on sections and on labelled statements, so an answer
+      can say *page:line* instead of *page*;
+    * a ``contains`` edge from the enclosing section to the statement.
+
+    ⚠ ADDITIVE. The page keeps its direct ``contains`` edge, because
+    containment here is genuinely transitive and because that edge is
+    what ``merge._infer_implements`` reads to find a page's equations —
+    re-parenting would have taken ``implements`` to zero silently. It is
+    also how ``contains`` already behaves for a documented method, which
+    has both its class and its page as parents.
+
+    Note the vocabulary anticipated this: ``[edge.contains]`` has listed
+    ``section`` in its domain since the ontology was written, and no
+    producer had ever emitted one.
+    """
+    g = graph.nxgraph
+    for section in doctree.findall(docutils_nodes.section):
+        for anchor in section.get("ids", ()):
+            nid = anchors.get(anchor)
+            if nid is not None and section.line and not g.nodes[nid].get("lineno"):
+                g.nodes[nid]["lineno"] = section.line
+
+    nested = 0
+    for element in doctree.findall(docutils_nodes.Element):
+        label = element.get("label")
+        if not label or not isinstance(label, str):
+            continue
+        target_id = _labelled_statement_id(label, g)
+        if target_id is None:
+            continue
+        if element.line and not g.nodes[target_id].get("lineno"):
+            g.nodes[target_id]["lineno"] = element.line
+
+        enclosing = _enclosing_sections(element)
+        if not enclosing:
+            continue
+
+        # Two different facts, and conflating them is what made the
+        # first version of this cover only 266 of 869 equations.
+        #
+        # The ANCHOR is where a reader opens the page, and every
+        # section has one whether or not anyone labelled it — most
+        # do not, since `.. _label:` is written where a cross-
+        # reference is wanted, not everywhere. Take the innermost.
+        # ⚠ Not `setdefault`: `GraphNode` gives every node an `anchor`
+        # key that is None for an equation, so the key EXISTS and
+        # `setdefault` is a silent no-op. Measured: 0 of 903 stamped.
+        innermost_ids = enclosing[0].get("ids", ())
+        if innermost_ids and not g.nodes[target_id].get("anchor"):
+            g.nodes[target_id]["anchor"] = innermost_ids[0]
+
+        # The EDGE is graph structure, so it needs a node at the other
+        # end — the nearest ANCESTOR that is one. Walking up rather
+        # than giving up keeps an equation under an unlabelled
+        # subsection attached to its labelled parent, which is true
+        # containment and the answer a reader wants anyway.
+        for section in enclosing:
+            nid = next(
+                (anchors[a] for a in section.get("ids", ()) if a in anchors),
+                None,
+            )
+            if nid is None:
+                continue
+            graph.add_edge(GraphEdge(
+                source=nid, target=target_id, type=EdgeType.CONTAINS,
+            ))
+            nested += 1
+            break
+    return nested
+
+
+def _labelled_statement_id(label: str, g: "nx.MultiDiGraph") -> str | None:
+    """The graph node a labelled doctree element denotes, or ``None``.
+
+    Equations and proof environments both carry a ``label`` and are
+    spelled in different domains, so the lookup tries each rather than
+    branching on the element's CLASS — which would tie this pass to
+    `sphinxcontrib-proof` being importable.
+    """
+    for candidate in (
+        node_id("math", NodeType.EQUATION, label),
+        node_id("prf", NodeType.PROOF_OBJECT, label),
+    ):
+        if candidate in g:
+            return candidate
+    return None
+
+
 def _is_valid_identifier(reftarget: str) -> bool:
     """Check if reftarget looks like a real Python/RST identifier.
 
@@ -352,6 +487,8 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
     enrich_proofs = any(
         isinstance(n, str) and n.startswith("prf:") for n in graph.nxgraph
     )
+    anchors_by_doc = _section_anchor_index(graph)
+    nested = 0
 
     for docname in env.all_docs:
         try:
@@ -362,6 +499,9 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
 
         if enrich_proofs:
             _enrich_proof_nodes(doctree, graph)
+        nested += _nest_labelled_statements(
+            doctree, graph, anchors_by_doc.get(docname, {}),
+        )
 
         source_id = doc_node_id(docname)
         seen_edges: set[tuple[str, str, str]] = set()  # (source, target, edge_type)
@@ -471,6 +611,9 @@ def extract_references(env: BuildEnvironment, graph: KnowledgeGraph) -> None:
                         "reftarget": reftarget,
                     },
                 ))
+
+    if nested:
+        logger.info("Nested %d labelled statement(s) under their section", nested)
 
 
 
