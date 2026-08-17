@@ -110,25 +110,6 @@ def _git(root: Path, *args: str) -> str | None:
     return result.stdout
 
 
-def files_changed_since(root: Path, commit: str) -> set[str] | None:
-    """Repo-relative paths differing between ``commit`` and the WORKING
-    TREE, or ``None`` when the commit cannot be resolved here.
-
-    Diffing a commit (rather than two commits) compares it against the
-    working tree, so uncommitted edits count — which is what a
-    "is my graph still current?" question needs, since a graph is built
-    from files on disk, not from a commit.
-
-    ``None`` is a distinct answer from the empty set: "cannot tell"
-    (deleted unmerged branch, re-cloned tree, different repository)
-    versus "nothing changed".
-    """
-    out = _git(root, "diff", "--name-only", commit)
-    if out is None:
-        return None
-    return {line for line in out.splitlines() if line}
-
-
 # ------------------------------------------------------------------
 # Provenance — stamped at the producer (every graph-write site)
 # ------------------------------------------------------------------

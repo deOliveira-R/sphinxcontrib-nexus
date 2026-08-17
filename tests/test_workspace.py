@@ -602,7 +602,7 @@ def test_an_indexed_file_that_CHANGED_is_the_mismatch(repo, monkeypatch):
     )
     monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
 
-    assert server_mod._indexed_files() == {"kernel.py"}
+    assert server_mod._indexed_files() == {src.resolve()}
     src.write_text("def kernel(): return 42\n")          # the drift
 
     warnings = server_mod._workspace_payload().get("warnings", [])
@@ -617,7 +617,11 @@ def test_an_unresolvable_build_commit_still_warns(server_on_main, monkeypatch):
     is no diff to take, and "cannot tell" must not read as "nothing
     changed". The branch name survives for exactly this case."""
     _restamp_branch(server_on_main, "vanished-branch")
-    monkeypatch.setattr(server_mod, "files_changed_since", lambda *a, **k: None)
+    # UNKNOWN, not "verified unchanged" — the cached property's own
+    # contract. Seeding the cache is how a test says "git could not
+    # answer" without breaking git.
+    assert server_mod._query is not None
+    server_mod._query.__dict__["files_changed_since_build"] = None
 
     warnings = server_mod._workspace_payload().get("warnings", [])
     assert any("vanished-branch" in w for w in warnings), warnings

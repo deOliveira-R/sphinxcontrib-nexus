@@ -44,7 +44,6 @@ from sphinxcontrib.nexus.workspace import (
     WorkspaceResolutionError,
     checkout_containing,
     discover,
-    files_changed_since,
     resolve_checkout_root,
 )
 
@@ -484,23 +483,20 @@ def _mark_stale_positions(payload: str) -> str:
     return to_json(data) if marked else payload
 
 
-def _indexed_files() -> set[str]:
-    """Repo-relative paths of every file the active graph indexed.
+def _indexed_files() -> set[Path]:
+    """Absolute paths of every file the active graph indexed.
 
     The graph knows what it read, so "is this graph still current?" can
     be asked about the files that MATTER rather than against a guessed
-    extension list.
+    extension list. Absolute to match :func:`changed_files`.
     """
-    ws = _active_workspace()
-    if ws is None or _query is None:
+    if _query is None:
         return set()
-    root = str(ws.root).rstrip("/") + "/"
-    paths = set()
-    for _, attrs in _query._g.nodes(data=True):
-        p = attrs.get("file_path")
-        if isinstance(p, str) and p.startswith(root):
-            paths.add(p[len(root):])
-    return paths
+    return {
+        Path(p).resolve()
+        for _, attrs in _query._g.nodes(data=True)
+        if isinstance(p := attrs.get("file_path"), str) and p
+    }
 
 
 def _provenance_warnings(active: Any, prov: GitProvenance) -> list[str]:
@@ -522,7 +518,12 @@ def _provenance_warnings(active: Any, prov: GitProvenance) -> list[str]:
     Same lesson the sibling-graph warning below already learned the
     expensive way: existence is noise, drift is signal.
     """
-    changed = files_changed_since(active.workspace.root, prov.commit)
+    # `GraphQuery.files_changed_since_build` already asks this, cached
+    # for the query's lifetime with the object as its own key. A second
+    # spelling here would be a third copy of one question — the graph
+    # primitive is `workspace.changed_files`, and this property is its
+    # one consumer-facing form.
+    changed = _query.files_changed_since_build if _query is not None else None
     if changed is None:
         # The build commit is unreachable — a deleted branch that was
         # never merged, a re-cloned tree, a different repository. That
@@ -539,7 +540,11 @@ def _provenance_warnings(active: Any, prov: GitProvenance) -> list[str]:
     drifted = sorted(changed & _indexed_files())
     if not drifted:
         return []
-    shown = ", ".join(drifted[:3])
+    root = active.workspace.root
+    shown = ", ".join(
+        str(p.relative_to(root) if p.is_relative_to(root) else p)
+        for p in drifted[:3]
+    )
     more = f" (+{len(drifted) - 3})" if len(drifted) > 3 else ""
     return [
         f"{len(drifted)} indexed file(s) changed since the active graph "
