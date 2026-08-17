@@ -3,7 +3,7 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (40)
+## Tools (41)
 
 ### Exploration
 | Tool | What it answers | Key args |
@@ -47,6 +47,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 | `runtime_runs` | List ingested runs | — |
 | `runtime_hotspots` | Hot path / iteration counts (the dynamic stage DAG) | `run`, `by` (cumtime/ncalls/tottime), `limit` |
 | `runtime_edges` | Fired-vs-static edges: `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only`, `limit` |
+| `runtime_markers` | Tests by marker, **as pytest resolved it** (module-level `pytestmark`, class marks, conftest hooks — invisible to a decorator walk); carries runnable pytest ids | `run`, `marker`, `node`, `limit` |
 | `runtime_branches` | Partial-branch nodes; discriminators ranked first (missing-type suspects) | `run`, `node`, `partial_only`, `limit` |
 | `runtime_timeline` | Observed execution sequence (a viztracer run): nodes by first entry | `run`, `max_depth`, `limit` |
 

@@ -663,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="cProfile/pstats dump, coverage json --branch "
                              "report, or viztracer JSON trace.")
     rt_ing.add_argument("--db", type=Path, default=None)
-    rt_ing.add_argument("--kind", choices=["cprofile", "coverage", "viztracer"],
+    rt_ing.add_argument("--kind", choices=["cprofile", "coverage", "viztracer", "pytest"],
                         default="cprofile")
     rt_ing.add_argument("--run", type=str, default="default",
                         help="Name to store under (re-ingest overwrites).")
@@ -1809,6 +1809,7 @@ def _run_runtime_ingest(args: argparse.Namespace) -> int:
         "cprofile": (rt.ingest_cprofile, lambda r: len(r.calls)),
         "coverage": (rt.ingest_coverage, lambda r: len(r.coverage)),
         "viztracer": (rt.ingest_viztracer, lambda r: len(r.timeline)),
+        "pytest": (rt.ingest_pytest, lambda r: len(r.markers)),
     }
     if not args.artifact.exists():
         print(f"Error: {args.artifact} does not exist", file=sys.stderr)

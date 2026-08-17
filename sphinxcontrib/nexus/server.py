@@ -245,6 +245,7 @@ _RUNTIME_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "edges": ("edges", ("cprofile",)),
     "coverage": ("coverage", ("coverage",)),
     "timeline": ("timeline", ("viztracer",)),
+    "markers": ("markers", ("pytest",)),
 }
 
 
@@ -268,9 +269,17 @@ def _require_family(run: Any, family: str, view: str) -> None:
     attribute, kinds = _RUNTIME_FAMILIES[family]
     if getattr(run, attribute, None):
         return
-    store = _get_runtime_store()
+    # The naming of alternatives is a bonus; the REFUSAL is the point.
+    # Letting a store lookup fail here would replace a precise "wrong
+    # run" message with an AttributeError — turning the one answer that
+    # explains itself into the one that explains nothing.
+    try:
+        store = _get_runtime_store()
+        available = store.list_runs() if store is not None else []
+    except Exception:                       # no workspace, no store, no matter
+        available = []
     usable = [
-        r["name"] for r in store.list_runs() if r.get("kind") in kinds
+        r["name"] for r in available if r.get("kind") in kinds
     ] or [f"(none — capture one with kind={kinds[0]!r} and runtime_ingest)"]
     raise ValueError(
         f"run {run.name!r} was ingested as kind={run.kind!r} and carries no "
@@ -1159,6 +1168,7 @@ def runtime_ingest(
         rt.KIND_CPROFILE: (rt.ingest_cprofile, "calls"),
         rt.KIND_COVERAGE: (rt.ingest_coverage, "coverage"),
         rt.KIND_VIZTRACER: (rt.ingest_viztracer, "timeline"),
+        rt.KIND_PYTEST: (rt.ingest_pytest, "markers"),
     }
     if kind not in ingesters:
         return to_json(
@@ -1287,6 +1297,45 @@ def runtime_branches(
     _require_family(loaded, "coverage", "runtime_branches")
     results = q.runtime_branches(
         loaded, node=node, partial_only=partial_only, limit=_list_limit(limit))
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def runtime_markers(
+    run: str = "default", marker: str = "", node: str = "", limit: int = 0,
+) -> str:
+    """Tests carrying a marker, as pytest RESOLVED it at collection time.
+
+    Nexus's own marker attributes come from AST-parsing decorators, which
+    sees what was *spelled* on a function. pytest resolves more: module-level
+    `pytestmark`, class marks, and whatever a `conftest.py` attaches during
+    collection. Measured on a real project the AST path reports **0** nodes
+    for `foundation`, `cap`, `regression` and `sentinel` while the resolved
+    manifest finds **3709 / 1707 / 111 / 39** — and nothing is enumerated
+    here, so a project's new marker costs no nexus release.
+
+    Needs a `pytest` run, captured with `--collect-only` (nothing executes,
+    seconds to run)::
+
+        pytest --collect-only -q -p sphinxcontrib.nexus.pytest_manifest \\
+               --nexus-manifest=.nexus/traces/markers.json
+        nexus runtime-ingest .nexus/traces/markers.json --kind pytest --run markers
+
+    Each result carries `pytest_ids` and an `invocation` — a runnable
+    command, not graph ids you have to translate. Parametrised cases are
+    several ids on ONE node, and their markers are unioned.
+
+    Args:
+        run: Stored run name, or comma-separated names to union.
+        marker: Keep only tests carrying this marker (empty = all marked).
+        node: Restrict to node ids containing this substring.
+        limit: Max results (default 50; 0 = all).
+    """
+    q = _get_query()
+    loaded = _load_runs(run)
+    _require_family(loaded, "markers", "runtime_markers")
+    results = q.runtime_markers(
+        loaded, marker=marker, node=node, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 

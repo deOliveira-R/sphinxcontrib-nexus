@@ -298,6 +298,34 @@ class TimelineEntry:
 
 
 @dataclass
+class MarkedTestResult:
+    """A test node with the markers pytest RESOLVED for it.
+
+    Different from what a decorator walk sees, and the difference is the
+    whole point: module-level ``pytestmark``, class marks, and marks a
+    ``conftest.py`` attaches during collection all land here and none of
+    them appears in the test's own source text.
+
+    ``pytest_ids`` makes the answer runnable — several of them when the
+    test is parametrised.
+    """
+
+    node: NodeResult
+    markers: dict[str, Any]
+    pytest_ids: list[str]
+
+    @property
+    def invocation(self) -> str:
+        """A copy-pasteable ``pytest`` command for this node.
+
+        The one join that turns "which tests pin this" into something a
+        caller can act on. Every consumer measured so far re-derived
+        this transform by hand from ``file_path`` plus the dotted name.
+        """
+        return "pytest " + " ".join(f'"{i}"' for i in self.pytest_ids)
+
+
+@dataclass
 class BranchCoverageResult:
     """A node's branch coverage in a run — the missing-type signal.
 
@@ -3740,6 +3768,46 @@ class GraphQuery:
             return True
         ln, end = attrs.get("lineno"), attrs.get("end_lineno")
         return bool(ln and end and (end - ln) <= _ACCESSOR_MAX_SPAN)
+
+    def runtime_markers(
+        self,
+        run: "RuntimeRun",
+        marker: str = "",
+        node: str = "",
+        limit: int = 50,
+    ) -> list[MarkedTestResult]:
+        """Tests carrying a marker, as pytest RESOLVED it at collection.
+
+        Reads ``run.markers`` (a ``pytest`` run). The set is not the four
+        names an AST walk knows — it is whatever the project registers,
+        so a new marker costs nothing here. `[M]` on ORPHEUS the AST path
+        reports **0** nodes for ``foundation``, ``cap``, ``regression``
+        and ``sentinel``; this resolves **3709 / 1707 / 111 / 39**.
+
+        ``marker`` filters by name (empty = every marked test);
+        ``node`` restricts to node-ids containing the substring.
+
+        Each result carries the pytest ids that produced it, so
+        :attr:`MarkedTestResult.invocation` is a runnable command rather
+        than a set of graph ids the caller must translate.
+        """
+        out: list[MarkedTestResult] = []
+        for node_id, marks in run.markers.items():
+            if node_id not in self._g:
+                continue
+            if marker and marker not in marks:
+                continue
+            if node and node not in node_id:
+                continue
+            out.append(MarkedTestResult(
+                node=self._node_result(node_id),
+                markers=dict(marks),
+                pytest_ids=list(run.pytest_ids.get(node_id, [])),
+            ))
+        # Most-marked first: a test carrying several claims is the one
+        # worth reading, and it keeps a truncated answer informative.
+        out.sort(key=lambda r: (-len(r.markers), r.node.id))
+        return out if limit <= 0 else out[:limit]
 
     def runtime_branches(
         self,

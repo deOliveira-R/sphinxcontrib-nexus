@@ -52,6 +52,7 @@ from sphinxcontrib.nexus.workspace import canonical_path
 KIND_CPROFILE = "cprofile"
 KIND_COVERAGE = "coverage"
 KIND_VIZTRACER = "viztracer"
+KIND_PYTEST = "pytest"
 KIND_MERGED = "merged"
 
 
@@ -292,6 +293,15 @@ class RuntimeRun:
     #: milliseconds from the start of the trace, min_depth the shallowest
     #: call-stack depth the node appeared at)
     timeline: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: node_id -> {marker name: value}  (pytest) — markers as pytest
+    #: RESOLVED them at collection, which is a different and larger set
+    #: than the decorators an AST walk can see. A test node here may
+    #: carry several pytest ids (parametrisation); the marker set is
+    #: unioned across them, and ``pytest_ids`` keeps the originals so a
+    #: caller can still run one case.
+    markers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: node_id -> [pytest node id, …]  (pytest) — the runnable spelling
+    pytest_ids: dict[str, list[str]] = field(default_factory=dict)
     #: why records did or did not bind — the ingest's own audit trail
     ledger: JoinLedger = field(default_factory=JoinLedger)
 
@@ -331,6 +341,8 @@ class RuntimeRun:
             edges=[tuple(e) for e in data.get("edges", [])],
             coverage=data.get("coverage", {}),
             timeline=data.get("timeline", {}),
+            markers=data.get("markers", {}),
+            pytest_ids=data.get("pytest_ids", {}),
             ledger=ledger,
         )
 
@@ -567,6 +579,84 @@ def ingest_coverage(
     return overlay_coverage(
         cov_json, PositionIndex(graph), name,
         meta=meta, source_prefixes=source_prefixes, root=root,
+    )
+
+
+# ── pytest backend (markers as COLLECTION resolved them) ────────────
+
+
+def overlay_pytest(
+    manifest: dict[str, Any],
+    index: dict[str, list[tuple[int, int, str]]],
+    name: str,
+    meta: dict[str, Any] | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
+) -> RuntimeRun:
+    """Join a collection manifest onto node IDs.
+
+    Produced by ``pytest --collect-only`` under
+    :mod:`sphinxcontrib.nexus.pytest_manifest`. It answers a question an
+    AST walk cannot: what markers does a test ACTUALLY carry, after
+    module-level ``pytestmark``, class marks, and whatever a project's
+    ``conftest.py`` decides during collection.
+
+    `[M]` on ORPHEUS the two answers are not close. The AST path finds
+    four hard-coded marker names and reports **0** nodes for
+    ``foundation``, ``cap``, ``regression`` and ``sentinel``; the
+    manifest resolves **6899 / 2889 / 111 / 39** — and ``regression`` is
+    the one that project's re-baseline adjudication turns on. A new
+    marker used to cost a nexus release; here it costs nothing, because
+    nothing is enumerated.
+
+    ⚠ Parametrisation makes this many-to-one: ``test_foo[a]`` and
+    ``test_foo[b]`` are two pytest ids and ONE graph node. Markers are
+    unioned across them — a parametrised case that carries ``slow`` on
+    one id makes the node ``slow``, which is the conservative reading
+    and the one a scheduler wants.
+    """
+    run = RuntimeRun(name=name, kind=KIND_PYTEST, meta=dict(meta or {}))
+    binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
+
+    for record in manifest.get("tests", []):
+        filename = record.get("file")
+        lineno = record.get("lineno")
+        if not filename or not lineno:
+            continue
+        node_id = binder.node(filename, int(lineno))
+        if node_id is None:
+            continue
+        marks = run.markers.setdefault(node_id, {})
+        for key, value in (record.get("markers") or {}).items():
+            if key not in marks:
+                marks[key] = value
+        ids = run.pytest_ids.setdefault(node_id, [])
+        nodeid = record.get("nodeid")
+        if nodeid and nodeid not in ids:
+            ids.append(nodeid)
+
+    run.ledger = binder.ledger
+    return run
+
+
+def ingest_pytest(
+    artifact: Path | str,
+    graph: KnowledgeGraph | nx.MultiDiGraph,
+    name: str,
+    meta: dict[str, Any] | None = None,
+    source_prefixes: list[str] | None = None,
+    root: Path | str | None = None,
+) -> RuntimeRun:
+    """Load a collection manifest and overlay it."""
+    manifest = json.loads(Path(artifact).read_text())
+    # The manifest records the rootdir pytest used, so unlike a coverage
+    # report it can say where its relative paths came from. Honour an
+    # explicit `root` (a caller who moved the artifact knows better),
+    # then fall back to what the capture recorded.
+    return overlay_pytest(
+        manifest, PositionIndex(graph), name,
+        meta=meta, source_prefixes=source_prefixes,
+        root=root or manifest.get("rootdir"),
     )
 
 

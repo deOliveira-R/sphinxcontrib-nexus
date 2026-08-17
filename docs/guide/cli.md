@@ -88,7 +88,7 @@ nexus migration <from> <to> --db <path>
 ## Runtime overlay
 
 ```bash
-nexus runtime-ingest <artifact> [--kind cprofile|coverage|viztracer] [--run NAME] [--source-prefix PFX ...] [--root DIR]
+nexus runtime-ingest <artifact> [--kind cprofile|coverage|viztracer|pytest] [--run NAME] [--source-prefix PFX ...] [--root DIR]
 nexus runtime-runs --db <path>
 nexus runtime-hotspots --db <path> [--run NAME[,NAME...]] [--by cumtime|ncalls|tottime]
 nexus runtime-edges --db <path> [--mode dynamic_only|fired|dead] [--substantive-only]

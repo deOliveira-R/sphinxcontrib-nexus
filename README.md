@@ -184,7 +184,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 | `derives_from` | Specialization → the parent it was reduced from | Directive |
 | `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
-## MCP Tools (40)
+## MCP Tools (41)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -217,6 +217,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 - **`runtime_runs`** — list ingested runs (name, kind, metadata, node/edge counts)
 - **`runtime_hotspots`** — nodes ranked by an observed metric: `cumtime` is the dominant *observed* call chain (the dynamic stage DAG, better than `processes`' static heuristic for a traced run); `ncalls` the iteration-count / recompute smell (a property called 10k×/run = a caching opportunity); `tottime` self-time
 - **`runtime_edges`** — runtime call edges overlaid on static `calls`: `dynamic_only` are fired edges the static resolver couldn't see — annotation-mediated dispatch through `self`/typed locals and the resolved face of polymorphism (which concrete impl ran); `fired` are static edges confirmed live with counts; `dead` are static edges among run-reachable nodes that never fired. `substantive_only` drops edges where either endpoint is a property/trivial accessor, surfacing the polymorphic dispatch above property-getter noise
+- **`runtime_markers`** — tests carrying a marker **as pytest resolved it at collection** (a `pytest` run): module-level `pytestmark`, class marks and conftest-attached marks all land here, none of which a decorator walk can see. Nothing is enumerated, so a project's own markers work without a nexus release — measured on a real project the AST path reports 0 nodes for `foundation`/`cap`/`regression`/`sentinel` and this resolves 3709/1707/111/39. Each result carries the pytest node ids and a runnable `invocation`
 - **`runtime_branches`** — per-node branch coverage (a `coverage --branch` run): nodes that didn't take every conditional outcome, with those that also `discriminates_on` a tag flagged and ranked first — a discrimination always taken one way is a missing type, the dynamic counterpart of `discriminations`
 - **`runtime_timeline`** — the observed execution sequence from a `viztracer` run: nodes in order of first entry (mesh → discretize → sweep → iterate → result), with a `max_depth` filter for just the high-level stages
 

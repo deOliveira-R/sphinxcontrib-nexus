@@ -140,6 +140,7 @@ with the derived artefacts.
 | `runtime_hotspots` | Where did time and iterations go? | `run`, `by`, `limit` |
 | `runtime_edges` | `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only` |
 | `runtime_branches` | Which branches never fired? Discriminators ranked first | `run`, `node`, `partial_only` |
+| `runtime_markers` | Which tests carry this marker — **as pytest resolved it** | `run`, `marker`, `node` |
 | `runtime_timeline` | In what order did things execute? | `run`, `max_depth`, `limit` |
 
 The query tools accept `run` as one name or a comma-separated list, so a
@@ -200,3 +201,29 @@ Tools degrade rather than raise. Git missing, database corrupt, file
 vanished — you get an error payload and the previous snapshot is kept. A
 tool call never breaks the session, which means an empty result means
 "nothing found", not "something went wrong".
+
+## Markers as pytest resolved them
+
+Nexus lifts markers by AST-parsing decorators, which sees what was
+*spelled* on a function. pytest resolves more: module-level `pytestmark`,
+class marks, and marks a `conftest.py` attaches during collection. On one
+real project the AST path reports **0** nodes for `foundation`, `cap`,
+`regression` and `sentinel`; the resolved manifest finds **3709 / 1707 /
+111 / 39**.
+
+Capture is consumer-side and costs seconds, because nothing executes:
+
+```bash
+pytest --collect-only -q -p sphinxcontrib.nexus.pytest_manifest \
+       --nexus-manifest=.nexus/traces/markers.json
+nexus runtime-ingest .nexus/traces/markers.json --kind pytest --run markers
+```
+
+Then `runtime_markers(run="markers", marker="regression")` answers "which
+tests carry this claim", and each result carries the pytest node ids plus
+a runnable `invocation` — not graph ids you have to translate.
+
+No marker name is enumerated anywhere in nexus, so your own markers work
+without a nexus release. Parametrised cases are several pytest ids on one
+graph node; their markers are unioned, which is the conservative reading
+(if one case is `slow`, running the node is slow).
