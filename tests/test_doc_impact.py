@@ -236,6 +236,24 @@ def test_a_claim_with_no_position_degrades_instead_of_lying():
     assert unplaced.location == "theory/page"
 
 
+def test_a_claim_does_not_repeat_what_its_equation_node_already_says():
+    """`docname` and `lineno` live on the equation node and are embedded
+    in `location`; a third copy says nothing a reader cannot see. `[M]`
+    duplicated on 11 of 11 claims before they became `InitVar`s — found
+    by reading an actual MCP reply, not the code."""
+    from sphinxcontrib.nexus._serialize import to_dict
+
+    payload = to_dict(_q().doc_impact("py:function:pkg.leaf"))
+    for claim in payload["claims"]:
+        assert "docname" not in claim
+        assert "lineno" not in claim
+        # …and nothing was lost: both are still reachable
+        assert claim["equation"]["docname"]
+    near = next(c for c in payload["claims"]
+                if c["equation"]["id"].endswith(":near"))
+    assert near["location"] == "theory/page:12#the-near-part"
+
+
 def test_location_is_a_FIELD_because_a_property_never_reaches_a_reply():
     """`to_dict` walks `fields()`, so a derived value spelled as a
     property is invisible to every JSON reply. `MarkedTestResult`

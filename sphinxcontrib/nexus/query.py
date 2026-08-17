@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -435,12 +435,21 @@ class DocClaim:
     depth: int
     """Hops from the queried symbol. 0 means the symbol itself."""
 
-    docname: str
+    docname: InitVar[str]
+    """Where the equation lives — an ``InitVar``, so it reaches
+    ``__post_init__`` and NOT the reply. ``equation.docname`` already
+    carries it and ``location`` embeds it; a third copy says nothing a
+    reader cannot already see. `[M]` duplicated on 11 of 11 claims
+    before this."""
+
+    lineno: InitVar[int] = 0
+    """Line of the equation — an ``InitVar`` for the same reason."""
+
     anchor: str = ""
     """Enclosing section's anchor, empty when the equation sits outside
-    every section or the graph predates the nesting pass."""
+    every section or the graph predates the nesting pass. A real field:
+    nothing else in the reply says it."""
 
-    lineno: int = 0
     verified: bool = False
     """Whether any test declares it verifies this equation. An
     unverified claim is the one to read first: nothing would catch it
@@ -454,11 +463,13 @@ class DocClaim:
     location: str = ""
     """``page:line#anchor`` — one string that says where to read it.
 
-    A field rather than a property: the serializer walks ``fields()``,
-    so a property never reaches a JSON reply."""
+    A FIELD rather than a property; the two ``InitVar``s above are the
+    same lesson from the other side. The serializer walks ``fields()``,
+    so a property never reaches a reply and an ordinary field always
+    does — whether or not it earns the bytes."""
 
-    def __post_init__(self) -> None:
-        where = f"{self.docname}:{self.lineno}" if self.lineno else self.docname
+    def __post_init__(self, docname: str, lineno: int) -> None:
+        where = f"{docname}:{lineno}" if lineno else docname
         self.location = f"{where}#{self.anchor}" if self.anchor else where
 
 
