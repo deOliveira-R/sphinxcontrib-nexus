@@ -14,15 +14,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Node types the ontology declares. An id's type segment must be one of
-#: these — see :func:`node_id`.
-_DECLARED_TYPES: frozenset[str] = frozenset(t.value for t in NodeType)
-
-#: (domain, type) pairs already reported as undeclared, so the warning
-#: fires once per spelling rather than once per node.
-_WARNED_UNDECLARED: set[tuple[str, str]] = set()
-
-
 def node_id(domain: str, node_type: "NodeType | str", name: str) -> str:
     """Spell a node id: ``<domain>:<type>:<name>``.
 
@@ -42,23 +33,16 @@ def node_id(domain: str, node_type: "NodeType | str", name: str) -> str:
     ``section``, and the id took the first while the node took the
     second. It is also how one page came to have two nodes.
 
-    An undeclared type WARNS (once per spelling) rather than raising: an
-    unmapped objtype should be visible to whoever authors the docs —
-    that is what a declared vocabulary is for — but it must not break
-    their build over a node nexus can still record.
+    ⚠ This spells; it does not JUDGE. Whether a type is declared is a
+    question for the ONTOLOGY, which a project extends with its own
+    ``[node.…]`` entries — and this function has no project to ask.
+    Checking against ``graph.NodeType`` here (as it briefly did) answers
+    the narrower "does nexus ship this type?" and warns at a project for
+    declaring exactly what the extension tier exists to let it declare.
+    The check lives in :func:`~sphinxcontrib.nexus.merge.check_node_types`,
+    which runs once per build with the project's ontology loaded.
     """
     value = node_type.value if isinstance(node_type, NodeType) else str(node_type)
-    if value not in _DECLARED_TYPES:
-        key = (domain, value)
-        if key not in _WARNED_UNDECLARED:
-            _WARNED_UNDECLARED.add(key)
-            logger.warning(
-                "node id %r uses type %r, which the ontology does not "
-                "declare — the node is recorded, but no query that "
-                "filters by type will find it. Declare it in "
-                "ontology.toml, or map (%r, %r) in DOMAIN_TYPE_MAP.",
-                f"{domain}:{value}:{name}", value, domain, value,
-            )
     return f"{domain}:{value}:{name}"
 
 

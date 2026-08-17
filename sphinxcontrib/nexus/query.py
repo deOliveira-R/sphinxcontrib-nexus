@@ -806,6 +806,38 @@ class GraphQuery:
         return self.settings.tunable(dotted)
 
     @cached_property
+    def ontology(self) -> Any:
+        """The vocabulary in force here — base plus this project's own."""
+        from sphinxcontrib.nexus.ontology import Ontology
+
+        return Ontology.load(self.project_root)
+
+    @cached_property
+    def _undefined_types(self) -> frozenset[str]:
+        """Placeholders PLUS the untyped node — "no definition found".
+
+        ⚠ Deliberately not :attr:`placeholder_types`. ``""`` means two
+        opposite things depending on where you read it: on a stored node
+        it is a node with no type at all, and in a COMPACTED result dict
+        it means the type equalled the id segment and was dropped as
+        redundant — i.e. a perfectly concrete node. Folding the two cost
+        a green suite exactly once: result ranking started sorting every
+        project symbol below the builtins it exists to demote.
+        """
+        return self.placeholder_types | {""}
+
+    @cached_property
+    def placeholder_types(self) -> frozenset[str]:
+        """Types meaning "no concrete definition found", per the ontology.
+
+        A project that declares its own placeholder kind is honoured by
+        every consumer at once — ranking, ``god_nodes``,
+        ``dead_references``' phantom set — instead of by whichever call
+        sites remembered to name it.
+        """
+        return self.ontology.placeholder_types
+
+    @cached_property
     def positions(self) -> PositionIndex:
         """This graph's ``(file, line)`` → node index, built on first use.
 
@@ -1156,7 +1188,7 @@ class GraphQuery:
         out: list[NodeResult] = []
         for nid, _degree in ranked:
             if not include_placeholders:
-                if self._g.nodes[nid].get("type") in self._PHANTOM_NODE_TYPES:
+                if self._g.nodes[nid].get("type") in self.placeholder_types:
                     continue
             out.append(self._node_result(nid))
             if len(out) >= top_n:
@@ -2141,7 +2173,12 @@ class GraphQuery:
         {"references", "documents", "type_uses", "equation_ref"}
     )
 
-    #: Node types that mean "no concrete definition found".
+    #: Fallback for a query with no checkout to ask. The live set is
+    #: :attr:`placeholder_types`, read from the ontology — including a
+    #: project's own — so "no concrete definition found" is declared in
+    #: one file rather than re-typed in each module that cares.
+    #: ``""`` is not an ontology type: it is a node with no type at all,
+    #: which is likewise not a definition.
     _PHANTOM_NODE_TYPES = frozenset({"unresolved", "external", ""})
 
     #: Un-analyzed base classes that are known to add no user-visible
@@ -2253,7 +2290,7 @@ class GraphQuery:
         # Every dotted name that has a concrete (non-phantom) node.
         concrete_names: set[str] = set()
         for _, attrs in g.nodes(data=True):
-            if attrs.get("type", "") not in self._PHANTOM_NODE_TYPES:
+            if attrs.get("type", "") not in self._undefined_types:
                 name = attrs.get("name")
                 if name:
                     concrete_names.add(name)
@@ -2273,7 +2310,7 @@ class GraphQuery:
             # check above already excludes them. Until 2026-08-16 they
             # were typed `unresolved` and a `domain == "citation"` test
             # sat here to undo that — the type now carries the fact.
-            if tattrs.get("type", "") not in self._PHANTOM_NODE_TYPES:
+            if tattrs.get("type", "") not in self._undefined_types:
                 continue
             reftype = str(data.get("reftype", ""))
             if tgt.startswith("math:equation:"):
@@ -2402,7 +2439,7 @@ class GraphQuery:
                 visited.add(base)
                 battrs = g.nodes.get(base, {})
                 bname = battrs.get("name") or base.split(":", 2)[-1]
-                if battrs.get("type", "") in self._PHANTOM_NODE_TYPES:
+                if battrs.get("type", "") in self._undefined_types:
                     if bname not in self._TRANSPARENT_BASES:
                         saw_opaque_base = True
                     continue

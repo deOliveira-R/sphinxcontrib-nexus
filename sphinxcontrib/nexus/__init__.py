@@ -302,6 +302,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     )
     from sphinxcontrib.nexus.merge import (
         _infer_implements,
+        check_node_types,
         drop_inline_math_references,
         reconcile_unresolved,
         write_catches_edges,
@@ -338,6 +339,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     # node and warns when it is missing, so a declaration that has
     # not landed yet is indistinguishable from a typo.
     apply_declared_nodes(app.env, graph.nxgraph)
+    check_node_types(graph.nxgraph, project_root=settings.project.root)
     write_verifies_edges(graph.nxgraph)
     write_catches_edges(graph.nxgraph)
     apply_pending_edges(app.env, graph.nxgraph)

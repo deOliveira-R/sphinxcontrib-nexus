@@ -129,6 +129,32 @@ class Ontology:
     #: Files this was assembled from, base first.
     sources: tuple[Path, ...] = ()
 
+    # -- the vocabulary, as questions other modules used to answer alone --
+
+    @property
+    def node_types(self) -> frozenset[str]:
+        """Every declared node type, INCLUDING a project's own.
+
+        The authority for "is this a real type?". Asking the
+        ``graph.NodeType`` enum instead answers a narrower question —
+        "is this a type nexus SHIPS?" — and gets a project-declared type
+        wrong, which is the entire point of the extension tier.
+        """
+        return frozenset(self.nodes)
+
+    @property
+    def placeholder_types(self) -> frozenset[str]:
+        """Types standing for something outside the project.
+
+        Declared by ``placeholder = true``, so a project that adds its
+        own placeholder kind is honoured everywhere this is consulted —
+        result ranking, ``god_nodes``, ``dead_references``' phantom set
+        — rather than at whichever call sites remembered to name it.
+        """
+        return frozenset(
+            name for name, spec in self.nodes.items() if spec.placeholder
+        )
+
     # -- construction ----------------------------------------------------
 
     @classmethod

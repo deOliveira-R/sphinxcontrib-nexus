@@ -100,9 +100,9 @@ def _compact_node(node: Any) -> dict:
     return d
 
 
-#: Types that stand for something outside the project — stdlib,
-#: installed packages, and names nexus never found. Real nodes, but
-#: never the answer to "what is this project made of".
+#: Fallback when no query is at hand. The live set comes from the
+#: ontology via `GraphQuery.placeholder_types`, so a project that
+#: declares its own placeholder kind is ranked correctly too.
 _PLACEHOLDER_TYPES = frozenset({"external", "unresolved"})
 
 
@@ -167,6 +167,8 @@ def assemble_context(
         buckets = outgoing if edge.source == node_id else incoming
         buckets.setdefault(edge.type, []).append(_compact_node(neighbor))
 
+    placeholders = getattr(q, "placeholder_types", _PLACEHOLDER_TYPES)
+
     omitted: dict[str, dict[str, int]] = {}
     for direction_name, buckets in (("outgoing", outgoing), ("incoming", incoming)):
         for edge_type, entries in list(buckets.items()):
@@ -182,7 +184,7 @@ def assemble_context(
             # `type` survives only ON a placeholder, which is exactly
             # the flag this sorts by.
             entries.sort(key=lambda e: (
-                e.get("type", "") in _PLACEHOLDER_TYPES,
+                e.get("type", "") in placeholders,
                 -e.get("degree", 0),
                 e["id"],
             ))

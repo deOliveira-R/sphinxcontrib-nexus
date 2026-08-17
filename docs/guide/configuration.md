@@ -15,14 +15,47 @@ value for every setting below.
 
 Reply sizes, list lengths and timeouts are settings: the right answer
 depends on your corpus, your machine, and how big a context window is
-this year. Format versions, the id grammar, the fingerprint shingle size
-and the node-type vocabulary are constants: changing one does not tune
-nexus, it makes two nexus installations disagree about what a graph
-says.
+this year. Format versions, the id grammar and the fingerprint shingle
+size are constants — changing one does not tune nexus, it makes two
+installations disagree about what a graph says.
 
 A key nexus does not recognise is **reported**, not ignored — a typo that
 passes silently is the same defect as an empty result that reads like a
 measurement.
+
+### The vocabulary is not here — it is in `ontology.toml`
+
+`config.toml` tunes *behaviour*. Which node types and edge types exist,
+what may connect to what, and which types stand for something outside
+the project are **semantics**, and they live in a file of their own:
+`.nexus/ontology.toml`, described in {doc}`vocabulary`.
+
+That file is an extension point, not a fixed list. A project declares
+its own types and widens the base ones:
+
+```toml
+# .nexus/ontology.toml
+[node.equation_variant]
+description = "A project-specific flavour of equation."
+origin = "sphinx"
+
+[extend.edge.implements]
+range = ["equation_variant"]      # widening only; narrowing is refused
+```
+
+Everything that asks *"is this a real type?"* or *"is this a
+placeholder?"* asks the ontology **with your extension loaded** — the id
+grammar check, result ranking, `god_nodes`, `dead_references`' phantom
+set. So a type you declare is a first-class type everywhere, not merely
+one nexus tolerates.
+
+```{note}
+The base vocabulary's *names* live in `graph.NodeType` / `graph.EdgeType`
+and its *semantics* in the shipped `ontology.toml`; a test pins the two
+to each other so neither can drift. Your project file extends that pair
+— it never replaces it, and widening is monotone, so no pass written
+against the base vocabulary can be invalidated by a project.
+```
 
 ## `[replies]` — how much a tool may say
 

@@ -482,6 +482,58 @@ def write_verifies_edges(g: "nx.MultiDiGraph") -> int:
     return count
 
 
+def check_node_types(
+    g: "nx.MultiDiGraph", project_root: "Path | None" = None,
+) -> int:
+    """Report every id whose type segment the ontology does not declare.
+
+    The build-time half of the id grammar. ``node_id`` spells an id; this
+    judges it — and it is HERE rather than at the mint site because the
+    question "is this a declared type?" is one only the ontology can
+    answer, and only when it has been loaded with the project's own
+    ``.nexus/ontology.toml``. A project's ``[node.equation_variant]`` is a
+    legitimate type; warning at it would make the extension tier
+    unusable, which is what a mint-time check against ``graph.NodeType``
+    did for the hours it existed.
+
+    Reports once per SPELLING, not once per node: an unmapped objtype
+    produces one wrong type and thousands of nodes carrying it, and a
+    thousand identical warnings is a way of not being read.
+
+    Advisory, never fatal. The node is recorded either way; what it
+    costs is that no type filter will find it, which is precisely the
+    kind of thing an author wants told rather than enforced.
+
+    Returns the number of distinct undeclared types found.
+    """
+    from sphinxcontrib.nexus.ontology import Ontology
+
+    declared = Ontology.load(project_root).node_types
+    offenders: dict[str, tuple[int, str]] = {}
+    for node_id_str in g:
+        if not isinstance(node_id_str, str):
+            continue
+        parts = node_id_str.split(":", 2)
+        if len(parts) < 3:
+            continue
+        segment = parts[1]
+        if segment in declared:
+            continue
+        count, _example = offenders.get(segment, (0, node_id_str))
+        offenders[segment] = (count + 1, node_id_str)
+
+    for segment, (count, example) in sorted(offenders.items()):
+        logger.warning(
+            "%d node id(s) use type %r, which the ontology does not "
+            "declare (e.g. %s) — the nodes are recorded, but no query "
+            "filtering by type will find them. Declare it in your "
+            "project's .nexus/ontology.toml, or map the producer's "
+            "objtype in DOMAIN_TYPE_MAP.",
+            count, segment, example,
+        )
+    return len(offenders)
+
+
 def write_catches_edges(g: "nx.MultiDiGraph") -> int:
     """Write ``EdgeType.CATCHES`` edges from ``@pytest.mark.catches``.
 

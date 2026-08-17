@@ -566,34 +566,69 @@ def test_every_id_segment_is_a_declared_type():
     assert bad == [], bad
 
 
-def test_an_undeclared_type_warns_rather_than_raising(caplog):
+def test_an_undeclared_type_warns_at_build_time(caplog, tmp_path):
     """The build-time signal a doc author needs.
 
     An unmapped objtype must be VISIBLE — that is what a declared
     vocabulary is for — without breaking a build over a node nexus can
-    still record. Once per spelling, not once per node.
+    still record. Once per SPELLING, not once per node: one wrong
+    objtype produces thousands of nodes carrying it.
     """
-    from sphinxcontrib.nexus import _mappings
+    import networkx as nx
 
-    _mappings._WARNED_UNDECLARED.clear()
+    from sphinxcontrib.nexus.merge import check_node_types
+
+    g = nx.MultiDiGraph()
+    for i in range(3):
+        g.add_node(f"py:gizmo:pkg.a{i}", type="gizmo")
+    g.add_node("py:function:pkg.real", type="function")
+
     with caplog.at_level("WARNING"):
-        first = _mappings.node_id("py", "gizmo", "pkg.a")
-        second = _mappings.node_id("py", "gizmo", "pkg.b")
-    assert first == "py:gizmo:pkg.a" and second == "py:gizmo:pkg.b"
+        assert check_node_types(g) == 1          # one SPELLING, not three
     hits = [r for r in caplog.records if "does not declare" in r.getMessage()]
     assert len(hits) == 1, [r.getMessage() for r in hits]
     assert "gizmo" in hits[0].getMessage()
+    assert "3 node id(s)" in hits[0].getMessage()
 
 
-def test_a_declared_type_is_silent(caplog):
-    from sphinxcontrib.nexus import _mappings
+def test_a_PROJECT_declared_type_is_not_an_error(caplog, tmp_path):
+    """The reason this check moved out of the id minter.
 
-    _mappings._WARNED_UNDECLARED.clear()
+    A project extends the vocabulary with its own `[node.…]` entries —
+    that is what the extension tier is FOR. A check against
+    `graph.NodeType` answers the narrower "does nexus SHIP this type?"
+    and warns at a project for doing exactly what it was invited to do.
+    It did, for the hours it existed, with a message telling the author
+    to "declare it in ontology.toml" when they already had.
+    """
+    import networkx as nx
+
+    from sphinxcontrib.nexus.merge import check_node_types
+
+    (tmp_path / ".nexus").mkdir()
+    (tmp_path / ".nexus" / "ontology.toml").write_text(textwrap.dedent("""
+        [node.equation_variant]
+        description = "A project-specific flavour of equation."
+        origin = "sphinx"
+    """))
+    g = nx.MultiDiGraph()
+    g.add_node("math:equation_variant:my-label", type="equation_variant")
+
     with caplog.at_level("WARNING"):
-        assert _mappings.node_id("py", NodeType.FUNCTION, "pkg.f") == (
-            "py:function:pkg.f"
-        )
+        assert check_node_types(g, project_root=tmp_path) == 0
     assert [r for r in caplog.records if "does not declare" in r.getMessage()] == []
+    # …and the same graph IS reported without the project's ontology,
+    # so the gate above is not passing for want of anything to find.
+    assert check_node_types(g) == 1
+
+
+def test_the_ontology_is_the_authority_on_placeholders(tmp_path):
+    """`placeholder = true` is declared once and consulted everywhere —
+    ranking, `god_nodes`, the phantom set — instead of being re-typed as
+    a literal `{"external", "unresolved"}` in each module that cares."""
+    onto = Ontology.load()
+    assert onto.placeholder_types == {"external", "unresolved"}
+    assert onto.placeholder_types <= onto.node_types
 
 
 def test_a_page_does_not_contain_itself():
