@@ -311,6 +311,60 @@ for closing the guesses — `implements` is **0 %** declared, and the goal
 is to move it. A scoreboard row with an owner and a direction is worth
 more than one that merely reports.
 
+---
+
+### 2026-08-17 · nexus `4faacea` · the chains close — 3 of 4
+
+The first round where the headline number moves. F8 was **0 of 4** with
+every individual hop working; it is now **3 of 4**, each verified by
+*walking* the chain against the live ORPHEUS graph rather than by
+reading the diff.
+
+| chain | was | now |
+|---|---|---|
+| `file → node → callers` | hop 1 — no file-addressed MCP tool | ✅ `file_brief` is a tool; hub id → `callers` |
+| `equation → tests → pytest invocation` | hop 3 — 0 tests hand over a runnable id | ✅ `[M]` **5273 / 5273** ids resolve against a full `--collect-only` |
+| `brief label → graph node` | hop 1 — **0 / 50** labels paste as ids | ✅ `[M]` **2936 / 2936** emitted handles resolve via `get_node` |
+| `symbol → doc page → section` | hop 3 — 680 sections, 0 `section→equation` | ❌ unchanged — `nexus#80` |
+
+| probe | previous | now | verdict |
+|---|---|---|---|
+| **F8** chains closed | 0 / 4 | **3 / 4** | ✅ |
+| **F3** handles | eq labels as ids 0 / 50 | **2936 / 2936** from the brief | ✅ |
+| **F4** brief answers its file's question | test **0 / 6** | gates, levels, claims, catches, run | ✅ |
+| **F6** push-only surface | `file_brief` hook-only | askable, unclipped | ✅ |
+| F1 / F2 / F5 | — | untouched | open, per issue |
+
+**What the numbers do NOT say.** F2 (untested equations, 60.4 %) and F5
+(declared : inferred, 1 : 10) did not move and were not addressed;
+`nexus#82` owns F5. And two chains closed by *adding* a surface rather
+than repairing one, so the honest reading is that F8 measured a gap in
+what nexus offered, not a lie in what it said.
+
+**Two defects the work surfaced, both in the flattering direction, both
+found only by measuring on the real graph:**
+
+- `is_test` is set on 1214 nodes pytest cannot collect (`data`,
+  `attribute`). Emitting a pytest command for a constant would be a
+  fabrication — the reply layer now gates on node type, and the
+  producer defect is `nexus#83`. A `class` would have resolved 810 of
+  882: a guess right 92 % of the time is exactly the shape to refuse.
+- A synthesised `"untagged"` level would have stated a falsehood about
+  254 files' worth of gates. The analyzer reads decorators; pytest also
+  resolves module-level `pytestmark`, class marks and conftest marks —
+  `[M]` 1524 against 5273. Absence is now absent, and says whose.
+
+⚠ **The two owed probes are still owed** (F1-honesty, F4-recall). This
+round's F3/F4/F6/F8 numbers were measured by hand, exactly like the
+three fixes the previous round found invisible — so they can regress
+the same way. A hand measurement recorded in a scoreboard row is a
+baseline, not a probe.
+
+**Expected at the next round**, stated so it is falsifiable: F8 stays
+3 / 4 until `#80` lands a `section→equation` edge; F3 and F4 stay at
+these values, and if either falls the cause is a regression, since
+nothing else is planned to touch them.
+
 ## Part 5 — Standing rules, each earned
 
 1. **Evaluate by USING it.** Not one of the nine findings is visible by
