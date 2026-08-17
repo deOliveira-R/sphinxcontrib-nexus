@@ -838,6 +838,7 @@ def impact(
     max_depth: int = 3,
     edge_types: str = "",
     limit_per_depth: int = 0,
+    only: str = "",
 ) -> str:
     """Analyze blast radius: what depends on this symbol (upstream)
     or what this symbol depends on (downstream).
@@ -851,6 +852,11 @@ def impact(
     ``limit_per_depth`` nodes; ``total_affected`` is always the TRUE
     traversal count, and an ``omitted`` block reports per-depth drops.
 
+    ``only="tests"`` answers "which gates cover this?" directly — every
+    returned test carries a ``test`` block with its ``vv_level`` and a
+    runnable ``pytest_id``, so the answer ends in a command rather than
+    a list of names you still have to resolve.
+
     Args:
         target: Node ID of the symbol to analyze.
         direction: "upstream" (what depends on this) or "downstream" (what this depends on).
@@ -860,11 +866,20 @@ def impact(
         limit_per_depth: Max nodes per depth bucket. Omit to use the
             project's `[replies].nodes_per_impact_depth` (default 50);
             ``-1`` removes the cap.
+        only: Keep one role in the returned buckets — ``"tests"`` (what
+            pytest collects) or ``"code"`` (everything else); empty
+            keeps both. This narrows the ANSWER, never the walk:
+            ``total_affected`` still counts every node reached and
+            ``total_in_role`` counts the kept ones.
     """
     if direction not in ("upstream", "downstream"):
         return to_json({
             "error": f"direction must be 'upstream' or 'downstream', "
                      f"got {direction!r}",
+        })
+    if only not in ("", "tests", "code"):
+        return to_json({
+            "error": f"only must be 'tests', 'code', or empty, got {only!r}",
         })
     q = _get_query()
     types = [t.strip() for t in edge_types.split(",") if t.strip()] or None
@@ -880,6 +895,7 @@ def impact(
                 if limit_per_depth == 0
                 else (limit_per_depth if limit_per_depth > 0 else None)
             ),
+            only=only or None,
         )
     )
 

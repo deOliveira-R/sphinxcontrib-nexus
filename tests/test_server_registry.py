@@ -88,6 +88,7 @@ def test_journal_wrapper_preserves_parameter_schemas():
     schemas = {t.name: t.input_schema for t in asyncio.run(_mcp.list_tools())}
     assert set(schemas["impact"]["properties"]) == {
         "target", "direction", "max_depth", "edge_types", "limit_per_depth",
+        "only",
     }
     assert set(schemas["context"]["properties"]) == {
         "node_id", "limit_per_type",

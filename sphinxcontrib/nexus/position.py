@@ -1,7 +1,13 @@
-"""Where a file position lands in the graph — one index, two questions.
+"""How a definition is ADDRESSED outside the graph — positions in,
+selectors out.
 
-A position is a ``(file, line)`` pair in a checkout, and two different
-kinds of asker turn one into a node:
+Every tool that is not nexus names a definition by where it lives, not
+by node id: an editor and a traceback say ``(file, line)``; pytest says
+``path::Class::test``. Both directions of that translation live here,
+so neither is re-derived at a call site.
+
+INBOUND — a position is a ``(file, line)`` pair in a checkout, and two
+different kinds of asker turn one into a node:
 
 **Navigation.** A language server, a stack trace, an editor: *what am I
 looking at?*  The answer is the innermost definition whose extent
@@ -21,6 +27,10 @@ be written twice (``GraphQuery.node_at`` scanning every node,
 ``runtime.build_node_index`` + ``resolve_node`` over a dict of tuples)
 with three different answers to the same position — measured 2026-08-16
 at **3 of 4** probed positions, two of them by design and one a defect.
+
+OUTBOUND — :func:`pytest_selector` projects a node back to the name
+pytest collects it under, which is the last join between "which tests
+pin this symbol?" and a command you can run.
 """
 
 from __future__ import annotations
@@ -46,6 +56,81 @@ EXECUTABLE_TYPES = ("function", "method")
 #: A current graph records the decorator line itself, so the join is an
 #: exact match and never consults this. See :meth:`PositionIndex.defined_at`.
 DECORATOR_WINDOW = 8
+
+#: Node kinds pytest addresses as a runnable ITEM. Measured on ORPHEUS
+#: 2026-08-17 against a full ``--collect-only`` pass: of the nodes the
+#: analyzer flags ``is_test``, methods resolve **2669 / 2669** and
+#: functions **2604 / 2604** — every collected test has a node and
+#: every derived id resolves.
+#:
+#: Nothing else does. ``data`` (**0 / 935**) and ``attribute``
+#: (**0 / 279**) inherit the flag from living in a test module and are
+#: not tests at all: ``pytest tests/_harness/registry.py::TEST_REGISTRY``
+#: matches nothing. ``class`` is the interesting refusal — 810 of 882
+#: ARE valid selectors (a class is a container of items), so an id for
+#: one would be right 92 % of the time, which is precisely the shape
+#: this project refuses to emit: a guess that reads like a fact.
+COLLECTABLE_TYPES = ("function", "method")
+
+
+def pytest_selector(
+    file_path: str | Path,
+    dotted_name: str,
+    node_type: str,
+    project_root: Path | None = None,
+) -> str | None:
+    """The name pytest collects this definition under, or ``None``.
+
+    ``tests/sn/test_alpha.py`` + ``tests.sn.test_alpha.Case.test_dome``
+    becomes ``tests/sn/test_alpha.py::Case::test_dome`` — a
+    copy-pasteable pytest target.
+
+    The transform is mechanical and every consumer measured so far had
+    re-derived it by hand, which is the whole reason it lives in one
+    place. What is NOT mechanical is the guarantee, so this returns
+    ``None`` rather than guessing whenever it cannot prove the answer:
+
+    * ``node_type`` must be one pytest runs — see
+      :data:`COLLECTABLE_TYPES`.
+    * ``dotted_name`` must actually begin with the module path the file
+      implies. A node whose name disagrees with its own file is exactly
+      the case where a fabricated selector would be silently wrong.
+    * Without ``project_root`` an absolute stored path cannot be made
+      relative, and pytest ids are relative.
+    * A node with no ``file_path`` at all has nothing to be relative
+      to. This is not hypothetical: a test node minted from a doc
+      directive or a hand-built graph carries none.
+
+    ⚠ Relative to the PROJECT ROOT, which is pytest's ``rootdir`` in
+    every layout nexus has been run against but is not guaranteed to
+    be. The ids a collection manifest records
+    (:mod:`~sphinxcontrib.nexus.pytest_manifest`) are what pytest
+    actually resolved — including the ``[param]`` suffixes, which no
+    static derivation can know. This is the derivation; that is the
+    fact, and where both exist the fact wins.
+    """
+    if node_type not in COLLECTABLE_TYPES:
+        return None
+    if not file_path or not dotted_name:
+        return None
+    path = Path(file_path)
+    if not path.name:
+        return None
+    if project_root is not None:
+        wanted = canonical_path(path, project_root)
+        try:
+            path = wanted.relative_to(project_root.resolve())
+        except ValueError:
+            return None
+    elif path.is_absolute():
+        return None
+
+    module_dotted = ".".join(path.with_suffix("").parts)
+    prefix = module_dotted + "."
+    if not dotted_name.startswith(prefix):
+        return None
+    tail = dotted_name[len(prefix):].replace(".", "::")
+    return f"{path.as_posix()}::{tail}"
 
 
 @dataclass(frozen=True)

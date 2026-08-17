@@ -272,6 +272,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Max nodes listed per depth bucket, most-connected first "
              "(default: 50; 0 = no cap).",
     )
+    impact_cmd.add_argument(
+        "--only", choices=["tests", "code"], default=None,
+        help="Keep one role in the listing: 'tests' (what pytest "
+             "collects, each with a runnable id) or 'code'. The walk is "
+             "unchanged either way — total_affected still counts every "
+             "node reached.",
+    )
 
     # --- provenance ---
     prov_cmd = sub.add_parser(
@@ -1514,6 +1521,7 @@ def _run_impact(args: argparse.Namespace) -> int:
         direction=args.direction,
         max_depth=args.depth,
         per_depth_limit=args.limit_per_depth if args.limit_per_depth > 0 else None,
+        only=args.only,
     )
     if result["total_affected"] == 0:
         print(f"No {'upstream' if args.direction == 'upstream' else 'downstream'} "
@@ -1528,12 +1536,21 @@ def _run_impact(args: argparse.Namespace) -> int:
         for n in nodes:
             # The id opens with the type, so `type=function` beside
             # `py:function:…` restated it. The position is what you act
-            # on next, so that is what earns the column.
-            at = f"  {n['file_path']}:{n['lineno']}" if n.get("file_path") else ""
+            # on next, so that is what earns the column — and for a test
+            # what you act on next is the command, not the line.
+            test = n.get("test", {})
+            if test.get("pytest_id"):
+                at = f"  {test['pytest_id']}"
+            elif n.get("file_path"):
+                at = f"  {n['file_path']}:{n['lineno']}"
+            else:
+                at = ""
             print(f"    {n['id']:55s}{at}")
         if depth in omitted:
             print(f"    ... (+{omitted[depth]} more; --limit-per-depth 0 for all)")
     print(f"\nTotal affected: {result['total_affected']}")
+    if result.get("only"):
+        print(f"Shown ({result['only']}): {result['total_in_role']}")
     return 0
 
 

@@ -17,7 +17,11 @@ import networkx as nx
 
 from sphinxcontrib.nexus.fingerprint import jaccard
 from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
-from sphinxcontrib.nexus.position import PositionIndex
+from sphinxcontrib.nexus.position import (
+    COLLECTABLE_TYPES,
+    PositionIndex,
+    pytest_selector,
+)
 from sphinxcontrib.nexus.workspace import (
     PROVENANCE_KEY,
     GitProvenance,
@@ -29,6 +33,49 @@ from sphinxcontrib.nexus.workspace import (
 
 if TYPE_CHECKING:
     from sphinxcontrib.nexus.runtime import RuntimeRun
+
+
+@dataclass(frozen=True)
+class TestFacts:
+    """What a node carries BECAUSE it is a test.
+
+    The graph has held all of this per test node since the analyzer
+    learned to read markers, and no tool would say it — an agent
+    auditing verification evidence had to open the SQLite database
+    directly to answer "is this L0 evidence or an L4 cross-check?".
+
+    Grouped rather than spread across four more fields on
+    :class:`NodeResult` because they are one concept with one
+    precondition: they exist iff the node is a test, so their presence
+    IS the answer to "is this a test?", and they cost nothing on the
+    equations, sections and externals that share that record.
+    """
+
+    pytest_id: str = ""
+    """How to run it — :func:`~.position.pytest_selector`'s derivation,
+    empty when the node's name and its file disagree. Selects every
+    parametrised case, since it carries no ``[param]`` suffix."""
+
+    vv_level: str = ""
+    """Evidence level from a ``vv_level`` marker written ON the
+    definition.
+
+    ⚠ Empty means the SOURCE TEXT carries none — not that the test is
+    untagged. Markers reach a test three ways pytest resolves and an
+    AST walk cannot see: module-level ``pytestmark``, class marks, and
+    marks a ``conftest.py`` attaches during collection. `[M]` on
+    ORPHEUS that is the difference between **1524** and **5273**, so a
+    synthesised ``"untagged"`` here would state a falsehood about 254
+    files' worth of gates. ``runtime_markers`` reports what pytest
+    actually resolved; this reports what the analyzer could read."""
+
+    verifies: list[str] = field(default_factory=list)
+    """Equation labels this gate claims to verify — same source and
+    same caveat as ``vv_level``."""
+
+    catches: list[str] = field(default_factory=list)
+    """Catalogued defects this gate claims to catch — same source and
+    same caveat as ``vv_level``."""
 
 
 @dataclass
@@ -49,6 +96,11 @@ class NodeResult:
     nodes, which live in pages, not files."""
     lineno: int = 0
     """1-based definition line in ``file_path``; 0 when unknown."""
+
+    test: TestFacts | None = None
+    """Present iff this node is a test — see :class:`TestFacts`.
+    ``None`` on every other node, and dropped from the reply, so the
+    record does not grow for the 15 000 nodes that are not tests."""
 
 
 @dataclass
@@ -101,6 +153,16 @@ class ImpactResult:
     direction: str
     by_depth: dict[int, list[NodeResult]] = field(default_factory=dict)
     total_affected: int = 0
+    """Nodes the traversal reached — ALWAYS the full count, never
+    narrowed by ``only``, because "how big is the blast radius" and
+    "which of it is tests" are two questions and the first one must
+    not silently change its answer when you ask the second."""
+
+    only: str | None = None
+    """The role filter applied to ``by_depth``, when one was."""
+
+    total_in_role: int | None = None
+    """How many of ``total_affected`` matched ``only``."""
 
 
 @dataclass
@@ -1010,6 +1072,43 @@ class GraphQuery:
             degree=self._g.degree(node_id),
             file_path=attrs.get("file_path", ""),
             lineno=attrs.get("lineno") or 0,
+            test=self._test_facts(attrs),
+        )
+
+    def _test_facts(self, attrs: dict) -> TestFacts | None:
+        """The test block for a node, or ``None`` if it is not a test.
+
+        Two conditions, and the second is not redundant.
+
+        ``is_test`` excludes the helpers: it means a test pytest would
+        COLLECT, where ``in_test_file`` merely means the node lives in
+        the test tree — `[M]` ORPHEUS 9594 vs 7369, and the 2225-node
+        difference is fixtures and builders with no gate to report.
+
+        The TYPE gate exists because ``is_test`` over-claims at the
+        producer: the analyzer sets it on module-level ``data`` and on
+        ``attribute`` nodes too, `[M]` 1214 of them on ORPHEUS, none of
+        which pytest can collect (``TEST_REGISTRY`` is a dict of test
+        metadata, not a test). Calling those tests would state a
+        falsehood in the one field a reader trusts most, so the block
+        follows :data:`~.position.COLLECTABLE_TYPES`. `[M]` this costs
+        nothing: **0** class / data / attribute nodes carry a
+        ``vv_level``, ``verifies`` or ``catches`` marker — all 2657 sit
+        on functions and methods.
+        """
+        node_type = attrs.get("type", "")
+        if not attrs.get("is_test") or node_type not in COLLECTABLE_TYPES:
+            return None
+        return TestFacts(
+            pytest_id=pytest_selector(
+                attrs.get("file_path", ""),
+                attrs.get("name", ""),
+                node_type,
+                self.project_root,
+            ) or "",
+            vv_level=attrs.get("vv_level") or "",
+            verifies=list(attrs.get("verifies") or ()),
+            catches=list(attrs.get("catches") or ()),
         )
 
     def _edge_result(
@@ -1249,11 +1348,19 @@ class GraphQuery:
         direction: Literal["upstream", "downstream"] = "upstream",
         max_depth: int = 3,
         edge_types: list[str] | None = None,
+        only: Literal["tests", "code"] | None = None,
     ) -> ImpactResult:
         """Transitive blast radius via BFS.
 
         - upstream: follow in-edges (what depends on this)
         - downstream: follow out-edges (what this depends on)
+
+        ``only`` narrows what comes BACK, not what is walked: the
+        traversal is unchanged (a test reached through production code
+        must still be reached through it), and ``total_affected`` keeps
+        reporting every node. ``"tests"`` answers "which gates cover
+        this?" — with each one carrying its level and its runnable id —
+        without the production nodes that dominate the count.
 
         ``max_depth=-1`` walks to the FIXED POINT — the same uncapped
         sentinel ``runtime_timeline`` uses. The traversal terminates on
@@ -1283,19 +1390,26 @@ class GraphQuery:
 
         by_depth: dict[int, list[NodeResult]] = {}
         total = 0
+        in_role = 0
         for depth, layer in enumerate(traversal):
             if depth == 0:
                 continue  # skip the target itself
             if max_depth >= 0 and depth > max_depth:
                 break
-            by_depth[depth] = [self._node_result(n) for n in layer]
             total += len(layer)
+            nodes = [self._node_result(n) for n in layer]
+            if only is not None:
+                nodes = [n for n in nodes if (n.test is not None) == (only == "tests")]
+                in_role += len(nodes)
+            by_depth[depth] = nodes
 
         return ImpactResult(
             target=target,
             direction=direction,
             by_depth=by_depth,
             total_affected=total,
+            only=only,
+            total_in_role=in_role if only is not None else None,
         )
 
     def shortest_path(

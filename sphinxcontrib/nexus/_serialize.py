@@ -85,7 +85,16 @@ def _compact_node(node: Any) -> dict:
     Consumers must ``.get()`` optional fields — which they already had
     to, since ``""``/``0`` were sentinel non-values anyway.
     """
-    d = {k: v for k, v in to_dict(node).items() if v}
+    # Emptiness is dropped at EVERY level, not just the top one: a
+    # nested block (``test``) states the same thing about its own
+    # absent fields that the record states about its own, so it obeys
+    # the same rule rather than a special case for one key.
+    d = {}
+    for key, value in to_dict(node).items():
+        if isinstance(value, dict):
+            value = {k: v for k, v in value.items() if v}
+        if value:
+            d[key] = value
     parts = d.get("id", "").split(":", 2)
     if len(parts) == 3:
         domain, type_segment, name = parts
@@ -127,10 +136,9 @@ def _mark_evidence(entry: dict, edge: Any) -> dict:
     (``ScatteringOperator.kernel`` matched to a UBLD kernel equation on
     the token ``kernel``).
 
-    ⚠ ``via`` is a TUPLE, not a list: :func:`_dedupe_parallel` keys an
-    entry on ``tuple(sorted(entry.items()))``, so an unhashable value
-    anywhere in an entry makes every reply that carries one raise.
-    JSON renders it as an array either way.
+    ``via`` is a tuple rather than a list for no reason a reader needs
+    to know: :func:`_dedupe_parallel` no longer requires it (see
+    :func:`_content_key`), and JSON renders either as an array.
     """
     if getattr(edge, "evidence", "") != _INFERRED:
         return entry
@@ -140,17 +148,43 @@ def _mark_evidence(entry: dict, edge: Any) -> dict:
     return entry
 
 
-#: Where a symbol lives answers "where is this defined?" — the question
-#: `context` and `node_at` exist for. In a flat adjacency dump it is
-#: `[M]` 26% of the payload (72 B of 278 per neighbour on `solve_sn`),
-#: spent on every neighbour to serve the one or two you will open.
-_POSITION_FIELDS = frozenset({"file_path", "lineno"})
+#: Fields that describe a node rather than the ADJACENCY, dropped from
+#: the flat `neighbors` view only. Both are answers to "tell me about
+#: this symbol" — the question `context`, `node_at` and `impact` exist
+#: for — and in a flat dump they are paid on every neighbour to serve
+#: the one or two you will actually open. Position measured `[M]` at
+#: 26% of the payload (72 B of 278 per neighbour on `solve_sn`); the
+#: `test` block is the same trade, one node kind later.
+_DOSSIER_FIELDS = frozenset({"file_path", "lineno", "test"})
 
 
 #: Fallback when no query is at hand. The live set comes from the
 #: ontology via `GraphQuery.placeholder_types`, so a project that
 #: declares its own placeholder kind is ranked correctly too.
 _PLACEHOLDER_TYPES = frozenset({"external", "unresolved"})
+
+
+def _content_key(value: Any) -> Any:
+    """A hashable projection of any JSON-shaped value.
+
+    :func:`_dedupe_parallel` identifies an entry by its CONTENT, which
+    means hashing it — and an entry is a JSON object, so its values may
+    legitimately be lists and nested objects, neither of which hashes.
+
+    The invariant "every value an assembler puts in an entry must be
+    hashable" is unenforceable and has now failed twice, both times as
+    a `TypeError` raised from the reply path rather than from the code
+    that broke it: first ``via`` (a list of tokens, fixed by spelling
+    it as a tuple at that one site), then the ``test`` block (a nested
+    object, which no per-field spelling can fix). Two instances is the
+    signal to fix the mechanism instead of the instance — after this,
+    an assembler may put any JSON value in an entry.
+    """
+    if isinstance(value, dict):
+        return tuple(sorted((k, _content_key(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_content_key(v) for v in value)
+    return value
 
 
 def _dedupe_parallel(entries: list[dict]) -> list[dict]:
@@ -174,9 +208,9 @@ def _dedupe_parallel(entries: list[dict]) -> list[dict]:
     ``calls`` AND ``type_uses`` is genuinely two facts. Keying on the
     content is correct for both without a flag deciding which.
     """
-    seen: dict[tuple, dict] = {}
+    seen: dict[Any, dict] = {}
     for e in entries:
-        key = tuple(sorted(e.items()))
+        key = _content_key(e)
         first = seen.get(key)
         if first is None:
             seen[key] = dict(e)
@@ -326,6 +360,7 @@ def assemble_impact(
     max_depth: int = 3,
     edge_types: list[str] | None = None,
     per_depth_limit: int | None = 50,
+    only: Literal["tests", "code"] | None = None,
 ) -> dict:
     """Blast radius with per-depth budgets.
 
@@ -340,7 +375,8 @@ def assemble_impact(
     readable.
     """
     result = q.impact(
-        target, direction=direction, max_depth=max_depth, edge_types=edge_types,
+        target, direction=direction, max_depth=max_depth,
+        edge_types=edge_types, only=only,
     )
 
     by_depth: dict[int, list[dict]] = {}
@@ -352,12 +388,15 @@ def assemble_impact(
             ordered = ordered[:per_depth_limit]
         by_depth[depth] = [_compact_node(n) for n in ordered]
 
-    payload = {
+    payload: dict[str, Any] = {
         "target": result.target,
         "direction": result.direction,
         "by_depth": by_depth,
         "total_affected": result.total_affected,
     }
+    if result.only is not None:
+        payload["only"] = result.only
+        payload["total_in_role"] = result.total_in_role
     if omitted:
         payload["omitted"] = omitted
         payload["hint"] = (
@@ -415,7 +454,7 @@ def assemble_neighbors(
     for neighbor, edge in results:
         entry = {
             k: v for k, v in _compact_node(neighbor).items()
-            if k not in _POSITION_FIELDS
+            if k not in _DOSSIER_FIELDS
         }
         if show_edge_type:
             entry["edge_type"] = edge.type
