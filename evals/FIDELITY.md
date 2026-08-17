@@ -288,6 +288,29 @@ while a build is in flight.
 
 ---
 
+### 2026-08-17 · nexus `c682112` · debts, not numbers
+
+No probe moved, and that is the finding. Three fidelity fixes landed —
+#59 (a zero says when it is blind), #61 (markers as pytest resolved
+them), #74 (a guess is marked as one) — and **the scoreboard is blind to
+all three**, because each changed what a reply *says* rather than a
+quantity a probe counts.
+
+Two probes are therefore owed, per Part 6:
+
+- **F1-honesty** — not "how many false zeros" but "does a zero announce
+  itself". `callers` on a symbol with same-named phantoms must carry
+  `unresolved`; a probe that never fires means #59 regressed silently.
+- **F4-recall** — markers nexus can see vs markers the project uses.
+  Would have caught #61 years earlier: `foundation` at 1515 usages and
+  **0** nodes is a number nobody was looking at.
+
+⭐ And one probe just acquired a TARGET. F5 (`declared : inferred`) was a
+description; as of the 2026-08-17 ruling (`nexus#82`) it is the metric
+for closing the guesses — `implements` is **0 %** declared, and the goal
+is to move it. A scoreboard row with an owner and a direction is worth
+more than one that merely reports.
+
 ## Part 5 — Standing rules, each earned
 
 1. **Evaluate by USING it.** Not one of the nine findings is visible by
