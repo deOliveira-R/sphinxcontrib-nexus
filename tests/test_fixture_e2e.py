@@ -300,6 +300,57 @@ def test_directive_implements_edge_present(fixture_graph):
     ) in directive_edges
 
 
+# ---------------------------------------------------------------------------
+# Declaring stands the guessing down — through a real build (nexus #82)
+# ---------------------------------------------------------------------------
+#
+# The unit tests in `test_merge.py` call `_infer_implements` directly, so
+# they cannot see the assumption the whole design rests on: that every
+# declaration path — directives, registry, `write_verifies_edges` — has
+# already run when the inference starts. Move `_infer_implements` above
+# `apply_pending_edges` in `__init__.py` and every unit test stays green
+# while the stand-down silently stops working on real projects.
+#
+# So this pair is deliberately end-to-end, and deliberately a pair: the
+# control proves the inference reaches this fixture at all. Before the
+# `fixture-mesh-*` equations were added it did not — 0 inferred edges in
+# the whole graph — which is exactly the state in which a stand-down
+# assertion passes while testing nothing.
+
+
+def _implementers(g, label: str) -> dict[str, str]:
+    eq_id = f"math:equation:{label}"
+    return {
+        s: d.get("source")
+        for s, _, d in g.in_edges(eq_id, data=True)
+        if d.get("type") == "implements"
+    }
+
+
+def test_the_inference_reaches_this_fixture_at_all(fixture_graph):
+    """POSITIVE CONTROL for the stand-down assertion below.
+
+    ``fixture-mesh-count`` is undeclared and shares the token ``mesh``
+    with the one symbol this page DOCUMENTS, so it must collect a guess.
+    """
+    assert _implementers(fixture_graph, "fixture-mesh-count") == {
+        "py:class:solver_pkg.helpers.Mesh": "inferred",
+    }
+
+
+def test_declaring_stands_the_guess_down_through_a_real_build(fixture_graph):
+    """``fixture-mesh-spacing`` is the same shape as the control — same
+    page, same shared token, same guesser — plus one directive.
+
+    The declaration names ``build_mesh``; the guess would have named
+    ``Mesh``. So an equality assertion here distinguishes *the guess
+    stood down* from *the declaration happened to agree with it*.
+    """
+    assert _implementers(fixture_graph, "fixture-mesh-spacing") == {
+        "py:function:solver_pkg.solver.build_mesh": "directive",
+    }
+
+
 def test_verification_audit_group_by_module(fixture_graph):
     q = GraphQuery(fixture_graph)
     audit = q.verification_audit(group_by="module")
