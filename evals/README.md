@@ -5,6 +5,15 @@
 > ways an eval returns a confident wrong answer — most of them do not look
 > like errors, they look like results.
 
+> ⭐ **This is one of two axes.** This battery asks *"did the agent reach
+> the right tool?"* and grades the **journal** — so a tool that is reached
+> and then answers wrongly scores a clean HIT. [FIDELITY.md](FIDELITY.md)
+> asks the other half, *"is the answer true, usable and complete?"*, and
+> is where a field trial's findings and the failure taxonomy live. A
+> 2026-08-16 trial found nine defects that this battery would have scored
+> as nine passes. Extend the axis that matches your finding; they share
+> the `evals/` directory and nothing else.
+
 Skills and the routing rule are load-bearing instructions, and whether they
 work is an **empirical question that changes as models change**. This suite
 answers "do our instructions still steer agents to the right tool?" without

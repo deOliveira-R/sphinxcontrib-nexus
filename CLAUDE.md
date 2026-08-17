@@ -263,6 +263,35 @@ audiences.
 - Version single-sourced in `sphinxcontrib/nexus/__init__.py`;
   `pyproject.toml` declares it `dynamic`.
 
+## Evals — two axes, and neither is the test suite
+
+`pytest` proves the code does what it says. It cannot tell you whether
+what it says is worth saying. Both batteries live in `evals/`:
+
+| axis | asks | run it |
+|---|---|---|
+| **routing** ([README](evals/README.md)) | did the agent reach the right tool? | `./evals/run_evals.py --project <p> --model haiku` |
+| **fidelity** ([FIDELITY.md](evals/FIDELITY.md)) | is the answer true, usable, complete? | `./evals/fidelity_probes.py --project <p>` |
+
+They are orthogonal and both are needed: routing grades the **journal**,
+so a tool that is reached and then lies scores a clean HIT. A 2026-08-16
+field trial found nine such defects — `provenance_chain` returning 112
+equations of the wrong granularity, `callers` returning `0` for a method
+called one frame away — every one of which the routing battery would
+have passed.
+
+**Before extending either, load `.claude/skills/eval-authoring`.** Before
+a release that changes tool behaviour or output shape, run the fidelity
+probes and append a scoreboard row; before one that changes skills,
+rules or tool descriptions, run the routing battery.
+
+⚠ The fidelity taxonomy (F1–F7) is the part to read first even if you
+never run a probe: it names the shapes a graph tool fails in — false
+zero, flattering aggregate, unaddressable handle, silent knowledge,
+undeclared inference, push-only surface, degenerate answer. Every one of
+them was found by *using* the tool, none by reading it, and each returns
+a plausible result rather than an error.
+
 ## Release process
 
 1. Bump `__version__` in `sphinxcontrib/nexus/__init__.py`.
