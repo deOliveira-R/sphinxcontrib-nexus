@@ -40,13 +40,34 @@ fresh, so its presence is the signal.
 | `callees` | What does this call? | `node_id`, `transitive`, `max_depth` |
 | `shortest_path` | How do these two things connect at all? | `source`, `target`, `max_hops` |
 
-`context` and `neighbors` serve the same relations two ways. `context`
-**groups** them by edge type and direction, and adds the node's own
-record — read it when you want to understand one symbol. `neighbors`
-returns one **flat, ranked** entry per neighbour (`id`, `edge_type`,
-`direction`, `degree`) — filter it with `edge_types=` when you want a
-complete single-relation list, which is the one thing `context`'s
-per-bucket cap will not give you.
+`context` and `neighbors` serve the same relations two ways, and the
+division is not stylistic — measured, each wins a different mode.
+
+Reach for **`context` first**, especially straight off a `file_brief`.
+It **groups** by edge type and direction, which is the axis your next
+decision splits on: "if I change this, who breaks?" is `incoming.calls`,
+one key, no filtering. A flat list makes you rebuild that grouping in
+your head, and — because the reply budget truncates — ranking an
+*incoming call* against an *outgoing type-use* on one scalar buries the
+answer. Measured on ORPHEUS: for `LossKernelGauge.for_mesh` the single
+production caller sat at rank 27 of 44 flat entries, while the top slots
+went to `SNMesh` (degree 1633, adjacent to everything).
+
+Inside a bucket, **production entries lead and test-tree entries
+follow**. Tests swamp incoming calls — 17 of 18 for `for_mesh`, 22 of 25
+for `solve_sn` — so without this the one caller you must not break sits
+below the fold. Demotion is relative to the asker: query a test node and
+nothing is demoted, because there test material is the subject. It keys
+on `in_test_file`, not `is_test`, since a `_ld_mesh`-style helper
+defined in a test module is test material too (by `is_test`,
+`LinearDiscontinuous` reports 7 production callers; the true count is
+0).
+
+Reach for **`neighbors` when you want one relation, complete**:
+`neighbors(id, direction="in", edge_types=["calls"])` is the uncapped
+single-bucket list `context` will not give you. In that mode its entries
+collapse to `{id, degree}` — the direction and edge type were your
+question, so they are not repeated in the answer.
 
 Two things a `neighbors` entry deliberately omits. Parallel edges (three
 `isinstance` calls) collapse into one entry carrying `times`, and no

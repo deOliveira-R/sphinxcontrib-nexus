@@ -453,3 +453,89 @@ def test_folding_parallel_edges_loses_no_edge():
 
     assert raw > len(entries), "fixture has no parallel edges to fold"
     assert sum(e.get("times", 1) for e in entries) == raw
+
+
+# ── who breaks vs what pins me ──────────────────────────────────────
+
+
+def _graph_with_test_callers() -> nx.MultiDiGraph:
+    """One production caller, one test, and one HELPER inside a test
+    file — the third is the discriminator between the two flags.
+
+    Insertion order is adversarial on purpose (see
+    `_graph_with_builtins`): the production caller goes in LAST and has
+    the LOWEST degree, so neither insertion order nor degree can pass
+    this gate by accident.
+    """
+    g = nx.MultiDiGraph()
+    g.add_node("py:method:pkg.mod.Thing.build", type="method",
+               name="pkg.mod.Thing.build", domain="py")
+
+    g.add_node("py:function:tests.t.test_it", type="function",
+               name="tests.t.test_it", domain="py",
+               is_test=True, in_test_file=True)
+    # is_test is FALSE here — a fixture helper, not a test case. [M] on
+    # ORPHEUS this class is what made `solve_sn` report 3 production
+    # callers and `LinearDiscontinuous` 7; both true counts are 0.
+    g.add_node("py:function:tests.t._make_mesh", type="function",
+               name="tests.t._make_mesh", domain="py",
+               is_test=False, in_test_file=True)
+    g.add_node("py:method:pkg.other.Caller.run", type="method",
+               name="pkg.other.Caller.run", domain="py")
+
+    for caller, times in (("py:function:tests.t.test_it", 4),
+                          ("py:function:tests.t._make_mesh", 3),
+                          ("py:method:pkg.other.Caller.run", 1)):
+        for _ in range(times):
+            g.add_edge(caller, "py:method:pkg.mod.Thing.build", type="calls")
+    return g
+
+
+def test_the_production_caller_leads_the_incoming_bucket():
+    """"Who breaks if I change this?" and "what pins this?" are two
+    questions sharing one bucket, and [M] on ORPHEUS the tests swamp it
+    — 17 of 18 incoming calls for `LossKernelGauge.for_mesh`, 22 of 25
+    for `solve_sn`. Unranked, that file's single production caller sat
+    at rank 27 of 44, below any truncation."""
+    from sphinxcontrib.nexus._serialize import assemble_context
+
+    q = GraphQuery(_graph_with_test_callers())
+    inc = assemble_context(q, "py:method:pkg.mod.Thing.build")["incoming"]["calls"]
+
+    assert inc[0]["id"] == "py:method:pkg.other.Caller.run", [e["id"] for e in inc]
+
+
+def test_a_HELPER_in_a_test_file_is_test_material_too():
+    """`in_test_file`, not `is_test`. [M] by `is_test`, ORPHEUS's
+    `LinearDiscontinuous` reports 7 production callers and every one is
+    a `_ld_mesh`-style helper defined in a test module; the true count
+    is 0. The wrong flag overstates "what breaks" by 7×."""
+    from sphinxcontrib.nexus._serialize import assemble_context
+
+    q = GraphQuery(_graph_with_test_callers())
+    inc = assemble_context(q, "py:method:pkg.mod.Thing.build")["incoming"]["calls"]
+    order = [e["id"] for e in inc]
+
+    helper = order.index("py:function:tests.t._make_mesh")
+    production = order.index("py:method:pkg.other.Caller.run")
+    assert production < helper, order
+
+
+def test_from_a_TEST_node_nothing_is_demoted():
+    """Demotion is relative to the asker. From production, tests are
+    the safety net; from a test, test material IS the subject, and
+    sinking it would bury the answer to the question actually asked."""
+    from sphinxcontrib.nexus._serialize import assemble_context
+
+    g = _graph_with_test_callers()
+    g.add_edge("py:function:tests.t.test_it", "py:function:tests.t._make_mesh",
+               type="calls")
+    g.add_edge("py:function:tests.t.test_it", "py:method:pkg.other.Caller.run",
+               type="calls")
+
+    out = assemble_context(GraphQuery(g), "py:function:tests.t.test_it")["outgoing"]
+    ids = [e["id"] for e in out["calls"]]
+    assert "py:function:tests.t._make_mesh" in ids
+    # ranked on degree alone, as before — the helper is not sunk
+    degrees = [e.get("degree", 0) for e in out["calls"]]
+    assert degrees == sorted(degrees, reverse=True), out["calls"]

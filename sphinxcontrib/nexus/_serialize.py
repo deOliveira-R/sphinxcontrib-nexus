@@ -151,7 +151,43 @@ def _dedupe_parallel(entries: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
-def _rank_entries(entries: list[dict], placeholders: frozenset[str]) -> None:
+def _test_material(q: GraphQuery, node_id: str, ids: set[str]) -> frozenset[str]:
+    """Of ``ids``, those living in the test tree — unless the ASKER does.
+
+    "Who depends on me?" has two audiences and they need opposite
+    answers. From production code the actionable dependent is the
+    production one and the tests are the safety net; from a test node,
+    test material IS the subject and demoting it would bury the answer.
+    So this is relative to the queried node, not absolute.
+
+    `[M]` 2026-08-16 on ORPHEUS, incoming ``calls``: `for_mesh` 17 of
+    18 are tests, `solve_sn` 22 of 25, `LinearDiscontinuous` 18 of 25 —
+    and the ratio swings from 1 production caller to 7, so it cannot be
+    guessed. Unranked, `for_mesh`'s single production caller sat at
+    rank **27 of 44**, below any truncation, while the top slots went
+    to `SNMesh` (degree 1633, adjacent to everything).
+
+    ⚠ ``in_test_file``, NOT ``is_test``. `[M]` by ``is_test``,
+    `solve_sn` reports 3 production callers and `LinearDiscontinuous`
+    7 — every one of them a *helper* defined in a test file
+    (`_ld_mesh`, `_sn_composite_triple`). Both true counts are 0. The
+    wrong flag overstates "what breaks" by 3× and 7×.
+    """
+    g = getattr(q, "_g", None)
+    if g is None:
+        return frozenset()
+    if g.nodes.get(node_id, {}).get("in_test_file"):
+        return frozenset()
+    return frozenset(
+        i for i in ids if g.nodes.get(i, {}).get("in_test_file")
+    )
+
+
+def _rank_entries(
+    entries: list[dict],
+    placeholders: frozenset[str],
+    demote: frozenset[str] = frozenset(),
+) -> None:
     """Order entries so a TRUNCATED answer keeps the useful half.
 
     Project symbols first, placeholders last, most-connected first
@@ -161,12 +197,17 @@ def _rank_entries(entries: list[dict], placeholders: frozenset[str]) -> None:
     builtins, and they outrank project symbols on raw degree. They are
     real edges and stay; they must not be what a truncated answer keeps.
 
+    ``demote`` (see :func:`_test_material`) sinks test-tree entries the
+    same way and for the same reason: they are real and they are not
+    what you act on first.
+
     Sorts in place. ``.get`` throughout because :func:`_compact_node`
     strips a zero degree as absent, and ``type`` survives only ON a
     placeholder — which is exactly the flag this sorts by.
     """
     entries.sort(key=lambda e: (
         e.get("type", "") in placeholders,
+        e["id"] in demote,
         -e.get("degree", 0),
         e["id"],
     ))
@@ -212,12 +253,13 @@ def assemble_context(
         buckets.setdefault(edge.type, []).append(_compact_node(neighbor))
 
     placeholders = getattr(q, "placeholder_types", _PLACEHOLDER_TYPES)
+    demote = _test_material(q, node_id, {n.id for n, _ in neighbors})
 
     omitted: dict[str, dict[str, int]] = {}
     for direction_name, buckets in (("outgoing", outgoing), ("incoming", incoming)):
         for edge_type, entries in list(buckets.items()):
             entries = _dedupe_parallel(entries)
-            _rank_entries(entries, placeholders)
+            _rank_entries(entries, placeholders, demote)
             buckets[edge_type] = entries
             if per_type_limit is not None and len(entries) > per_type_limit:
                 omitted.setdefault(direction_name, {})[edge_type] = (
@@ -348,7 +390,11 @@ def assemble_neighbors(
         entries.append(entry)
 
     entries = _dedupe_parallel(entries)
-    _rank_entries(entries, getattr(q, "placeholder_types", _PLACEHOLDER_TYPES))
+    _rank_entries(
+        entries,
+        getattr(q, "placeholder_types", _PLACEHOLDER_TYPES),
+        _test_material(q, node_id, {e["id"] for e in entries}),
+    )
     return entries
 
 

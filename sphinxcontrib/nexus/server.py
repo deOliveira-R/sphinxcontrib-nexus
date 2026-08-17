@@ -773,11 +773,21 @@ def context(node_id: str, limit_per_type: int = 0) -> str:
     Shows the node's properties plus all incoming and outgoing edges
     grouped by type. This is the primary tool for understanding a symbol.
 
-    Each edge-type bucket is sorted most-connected-first and capped at
-    ``limit_per_type`` entries; when anything is dropped, an ``omitted``
-    block reports per-bucket counts. A hub node's full context is
-    megabytes of JSON — use ``neighbors(node_id, edge_types=...)`` for a
-    complete single-type list instead of removing the cap.
+    Grouping by direction and edge type is the point: "if I change
+    this, who breaks?" is ``incoming.calls``, one key — the flat
+    ``neighbors`` view makes you rebuild that grouping yourself.
+
+    Within a bucket, PRODUCTION entries lead and test-tree entries
+    follow, then most-connected-first. Tests swamp incoming calls
+    (measured: 17 of 18, 22 of 25 on real hubs), so the one caller you
+    must not break would otherwise sit below the cap. Query a test node
+    and nothing is demoted — there, test material is the subject.
+
+    Each edge-type bucket is capped at ``limit_per_type`` entries; when
+    anything is dropped, an ``omitted`` block reports per-bucket counts.
+    A hub node's full context is megabytes of JSON — use
+    ``neighbors(node_id, edge_types=...)`` for a complete single-type
+    list instead of removing the cap.
 
     Args:
         node_id: Node ID (e.g., "py:function:sn_solver.solve_sn").
