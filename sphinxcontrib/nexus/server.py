@@ -805,8 +805,6 @@ def file_brief(file: str) -> str:
     Args:
         file: File path, absolute or relative to the project root.
     """
-    from dataclasses import asdict
-
     from sphinxcontrib.nexus.brief import file_brief as build_brief
     from sphinxcontrib.nexus._serialize import _compact_node
 
@@ -828,7 +826,11 @@ def file_brief(file: str) -> str:
                 "and retry."
             ),
         })
-    payload = asdict(brief)
+    # `to_dict`, not `asdict`: the shared serializer is where "a field
+    # that says nothing is not emitted" lives, so a `null` section
+    # simply does not appear. This tool used `asdict` and was the one
+    # reply on the whole surface exempt from that rule.
+    payload = to_dict(brief)
     # Complete, but not padded. The node list IS what the hook's
     # "+79 more nodes" expands to, so it must not be clipped — and
     # `BriefNode` never passed through the reply layer, so it was

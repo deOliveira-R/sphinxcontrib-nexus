@@ -393,6 +393,30 @@ def test_the_mcp_tool_returns_every_node_and_pads_none_of_them(test_file_db):
         assert entry.get("type") != node_type
 
 
+def test_the_mcp_tool_omits_a_section_the_file_does_not_have(rich_db):
+    """`"gates": null` says exactly what saying nothing says.
+
+    This tool built its payload with `asdict`, which keeps `None`, so
+    it was the one reply on the whole surface exempt from the shared
+    serializer's own rule — found by reading a live MCP reply."""
+    from sphinxcontrib.nexus import server
+    from sphinxcontrib.nexus.export import load_sqlite
+    from sphinxcontrib.nexus.workspace import Workspace
+
+    db, root = rich_db
+    server._query = GraphQuery(
+        load_sqlite(db), workspace=Workspace(db_path=db, root=root)
+    )
+    try:
+        payload = json.loads(server.file_brief.__wrapped__("solver.py"))
+    finally:
+        server._query = None
+
+    assert file_brief(db, root / "solver.py", project_root=root).gates is None
+    assert "gates" not in payload
+    assert payload["equation_ids"] == ["math:equation:balance"]
+
+
 def test_the_gate_section_survives_extraction_to_render(test_file_db):
     """Every other gate-render assertion hands `render_text` a
     hand-built `GateSummary`, so all of them are blind to whether
