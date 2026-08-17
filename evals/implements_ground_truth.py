@@ -332,13 +332,50 @@ def main() -> int:
           f"({sum(1 for v in TRUTH.values() if not v)} with no implementer)\n")
 
     if not args.variants:
-        shipped = collections.defaultdict(set)
-        for s, t, d in g.edges(data=True):
-            if d.get("type") == "implements" and d.get("source") == "inferred":
-                shipped[t].add(s)
-        r = score(shipped)
+        # TWO questions, deliberately separated — conflating them makes a
+        # SUCCESSFUL declaration campaign read as the rule getting worse.
+        #
+        # (1) How good is the RULE? A property of the rule, so it is
+        #     simulated over the whole corpus, ignoring declarations. It
+        #     must not move when an author DECLARES.
+        #     ⚠ It does legitimately move when an author writes PROSE,
+        #     because the candidate pool is the set of symbols a page
+        #     documents: adding an xref adds a candidate. `[M]` the
+        #     first declaration pass raised the guesses on the three
+        #     equations it did NOT declare, 23 -> 24/25/24, because the
+        #     new prose cross-referenced a symbol in order to say it is
+        #     NOT the implementer. An undeclared equation gets worse
+        #     every time its page is improved.
+        # (2) How much of the corpus is still GUESSED at? A property of
+        #     the corpus, and the thing declaring is meant to move.
+        #
+        # Reading the graph's live `source="inferred"` edges answers (2)
+        # and looks like (1). It reported `precision 0.0 %` the first
+        # time declarations landed — not because the rule had degraded
+        # but because the equations it scored well on had left the
+        # population. Same defect as the F5 re-scope one commit earlier:
+        # a metric whose denominator moved under it.
+        print("## the RULE (simulated over the whole corpus, "
+              "declarations ignored — must not move when authors declare)")
+        r = score(infer(g, tok, 1))
         for k, v in r.items():
             print(f"  {k:38s} {v}")
+
+        live = collections.defaultdict(set)
+        declared_eqs = set()
+        for s, t, d in g.edges(data=True):
+            if d.get("type") != "implements":
+                continue
+            if d.get("source") == "inferred":
+                live[t].add(s)
+            else:
+                declared_eqs.add(t)
+        labelled = {f"math:equation:{k}" for k in TRUTH}
+        still_guessed = sum(len(v) for k, v in live.items() if k in labelled)
+        print("\n## the CORPUS (what declaring has actually removed)")
+        print(f"  {'labelled equations declared':38s} "
+              f"{len(labelled & declared_eqs)} of {len(labelled)}")
+        print(f"  {'inferred edges left on them':38s} {still_guessed}")
         return 0
 
     print(f"{'variant':44s} {'edges':>7} {'prec':>7} {'recall':>7}  disjoint pools")
