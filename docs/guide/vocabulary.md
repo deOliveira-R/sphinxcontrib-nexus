@@ -145,7 +145,7 @@ discretize?" is a different question from "what implements it?".
 | Key | Meaning |
 |---|---|
 | `file_path`, `lineno`, `end_lineno` | Definition site. Present ⇒ this came from real source |
-| `is_test` | This **is** a test case — name-based for functions |
+| `is_test` | This **is** test material — name-based. Not the same as "collectable", see below |
 | `in_test_file` | This **lives in** the test tree — file-based |
 | `annotation` | The declared type of an attribute or data node |
 | `prf_type`, `statement` | `sphinx-proof` environment kind and its prose |
@@ -156,6 +156,14 @@ discretize?" is a different question from "what implements it?".
 `tests/_harness/registry.py` lives in the test tree but is not a test
 case; `retest` and `dead_functions` depend on that distinction, and so
 does the rule that stops test helpers absorbing production references.
+
+⚠ And `is_test` is **not** the same as "pytest will collect this".
+It is set on the classes, module-level constants and attributes of a
+test file as well as on its test functions — measured on one real
+project, 7305 nodes carry the flag and only **5273** (the `function`
+and `method` subset) are collectable. Counting a suite by the flag
+alone overstates it by 38 %, so filter by node type when the number is
+going to mean something.
 :::
 
 ## Provenance

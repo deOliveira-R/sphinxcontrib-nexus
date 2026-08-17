@@ -658,3 +658,99 @@ def test_retest_with_git(dream_graph, tmp_path):
     # Should find the test that calls sweep_spherical
     must_ids = {t.id for t in result.must_retest}
     assert "py:function:test_sweep.test_spherical" in must_ids
+
+
+# ── retest: the cone is walked to a fixed point (#62) ────────────────
+
+
+def _retest_repo(tmp_path):
+    """A git repo with one tracked, then modified, source file."""
+    for cmd in (["git", "init"], ["git", "config", "user.email", "t@t.com"],
+                ["git", "config", "user.name", "T"]):
+        subprocess.run(cmd, cwd=tmp_path, capture_output=True)
+    f = tmp_path / "kernel.py"
+    f.write_text("def kernel(): pass\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+    f.write_text("def kernel(): return 42\n")
+    return f
+
+
+def _deep_cone_graph(kernel_file) -> nx.MultiDiGraph:
+    """``kernel`` reached from a test FIVE hops up, and three decoys.
+
+    The chain length is the point: with the retired ``max_depth=3`` the
+    deep test is invisible and gets counted as ``safe_to_skip``. The
+    decoys pin the other two claims — a test that only *references* the
+    kernel is not in its dependence cone, and the class / module-level
+    constant that live in a test file carry ``is_test`` but are not
+    things pytest can collect.
+    """
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:kernel.kernel", type="function", name="kernel.kernel",
+               domain="py", file_path=str(kernel_file), lineno=1)
+
+    prev = "py:function:kernel.kernel"
+    for i in range(1, 5):                       # h1 ← h2 ← h3 ← h4
+        nid = f"py:function:pkg.h{i}"
+        g.add_node(nid, type="function", name=f"pkg.h{i}", domain="py")
+        g.add_edge(nid, prev, type="calls")
+        prev = nid
+
+    def _test(name, target, edge):
+        nid = f"py:function:test_k.{name}"
+        g.add_node(nid, type="function", name=f"test_k.{name}", domain="py",
+                   is_test=True, in_test_file=True)
+        g.add_edge(nid, target, type=edge)
+        return nid
+
+    _test("test_deep", prev, "calls")                                   # depth 5
+    _test("test_direct", "py:function:kernel.kernel", "calls")          # depth 1
+    _test("test_only_mentions", "py:function:kernel.kernel", "references")
+
+    # `is_test` is set on these too, and pytest collects neither.
+    g.add_node("py:class:test_k.TestBag", type="class", name="test_k.TestBag",
+               domain="py", is_test=True, in_test_file=True)
+    g.add_node("py:data:test_k.CASES", type="data", name="test_k.CASES",
+               domain="py", is_test=True, in_test_file=True)
+    return g
+
+
+def test_a_test_five_hops_up_is_not_reported_safe_to_skip(tmp_path):
+    """[M] on ORPHEUS the retired `max_depth=3` missed 232 collectable
+    tests for `geometry.mesh.BC` and 18 for `warn_if_unconverged` —
+    while missing 0 for `solve_sn`, whose shallow cone is exactly why a
+    spot-check certified the cap."""
+    q = GraphQuery(_deep_cone_graph(_retest_repo(tmp_path)),
+                   workspace=Workspace.for_root(tmp_path))
+    result = q.retest(scope="unstaged")
+
+    assert {t.id for t in result.must_retest} == {"py:function:test_k.test_direct"}
+    assert "py:function:test_k.test_deep" in {t.id for t in result.should_retest}
+    assert result.cone_depth >= 5, result.cone_depth
+
+
+def test_a_test_that_only_MENTIONS_the_change_stays_skippable(tmp_path):
+    """`references` is a mention, not a dependence. [M] including it puts
+    the fixed point at 78 % of ORPHEUS's suite from any starting symbol —
+    "re-run everything", which is the answer that needs no tool."""
+    q = GraphQuery(_deep_cone_graph(_retest_repo(tmp_path)),
+                   workspace=Workspace.for_root(tmp_path))
+    result = q.retest(scope="unstaged")
+
+    reached = {t.id for t in result.must_retest} | {t.id for t in result.should_retest}
+    assert "py:function:test_k.test_only_mentions" not in reached
+    assert "references" not in result.dependence_edges
+
+
+def test_the_suite_is_counted_in_COLLECTABLE_tests(tmp_path):
+    """`is_test` is also set on classes, module data and attributes in
+    test files — [M] 7305 nodes carry it on ORPHEUS and only 5273 are
+    collectable, so counting by the flag inflates `safe_to_skip` by
+    every one of the other 2032."""
+    q = GraphQuery(_deep_cone_graph(_retest_repo(tmp_path)),
+                   workspace=Workspace.for_root(tmp_path))
+    result = q.retest(scope="unstaged")
+
+    assert result.total_tests == 3, "the class and the constant are not tests"
+    assert result.safe_to_skip == 1                       # test_only_mentions

@@ -580,13 +580,23 @@ class BriefingResult:
 
 @dataclass
 class RetestResult:
-    """Minimum set of tests to re-run."""
+    """Minimum set of tests to re-run.
+
+    ``safe_to_skip`` is the complement: every collectable test that is
+    not in ``must_retest`` or ``should_retest``. It is reported as a
+    count rather than ~5000 node ids, so the two fields that make it
+    AUDITABLE travel with it — ``dependence_edges`` says what counted as
+    a dependency, and ``cone_depth`` how far the walk actually had to go
+    (it runs to a fixed point, so this is a measurement, not a setting).
+    """
 
     must_retest: list[NodeResult]
     should_retest: list[NodeResult]
     changed_symbols: list[str]
     total_tests: int
     safe_to_skip: int
+    dependence_edges: list[str] = field(default_factory=list)
+    cone_depth: int = 0
 
 
 @dataclass
@@ -1062,6 +1072,15 @@ class GraphQuery:
 
         - upstream: follow in-edges (what depends on this)
         - downstream: follow out-edges (what this depends on)
+
+        ``max_depth=-1`` walks to the FIXED POINT — the same uncapped
+        sentinel ``runtime_timeline`` uses. The traversal terminates on
+        its own (``bfs_layers`` visits each node once); ``max_depth``
+        only stops it early. Whether the fixed point is a useful answer
+        depends entirely on ``edge_types``: over the dependence
+        relations it converges in a handful of layers, while including
+        ``references`` reaches `[M]` 78 % of ORPHEUS's tests from any
+        starting symbol — everything mentions everything eventually.
         """
         if target not in self._g:
             return ImpactResult(target=target, direction=direction)
@@ -1085,7 +1104,7 @@ class GraphQuery:
         for depth, layer in enumerate(traversal):
             if depth == 0:
                 continue  # skip the target itself
-            if depth > max_depth:
+            if max_depth >= 0 and depth > max_depth:
                 break
             by_depth[depth] = [self._node_result(n) for n in layer]
             total += len(layer)
@@ -2686,24 +2705,72 @@ class GraphQuery:
     # Feature 5: Minimum Retest Set
     # ------------------------------------------------------------------
 
-    def retest(self, scope: str = "all") -> RetestResult:
-        """Compute the minimum set of tests to re-run after changes."""
-        changes = self.detect_changes(scope=scope)
-        changed_ids = {e.node.id for e in changes.changed_symbols}
+    #: How a test's behaviour can DEPEND on a symbol: it calls it, it is
+    #: typed by it, or it inherits from it. Deliberately excludes
+    #: ``references``/``imports``, which are MENTION relations — `[M]`
+    #: including ``references`` puts the fixed point at 78 % of ORPHEUS's
+    #: suite from any starting symbol, i.e. "re-run everything", while
+    #: adding ``type_uses``+``inherits`` to ``calls`` costs 0–7 tests and
+    #: does not move the depth at which it converges.
+    _RETEST_DEPENDENCE_EDGES = ("calls", "type_uses", "inherits")
 
-        # Find all test functions
+    def retest(self, scope: str = "all") -> RetestResult:
+        """Compute the minimum set of tests to re-run after changes.
+
+        Walks the dependence cone (:data:`_RETEST_DEPENDENCE_EDGES`)
+        upstream to a FIXED POINT, so ``safe_to_skip`` is a claim rather
+        than an artefact of where the walk stopped.
+
+        ⛔ It used to stop at a hard-coded ``max_depth=3``, and the harm
+        was invisible to a spot check because cone depth is a property of
+        the SYMBOL, not of the graph. `[M]` on ORPHEUS 2026-08-16,
+        collectable tests the cap MISSED — i.e. called ``safe_to_skip``
+        while they exercise the changed code:
+
+        ==========================  ======  =====  ======
+        changed symbol              capped   true  missed
+        ==========================  ======  =====  ======
+        ``solve_sn``                   117    117       0
+        ``warn_if_unconverged``        347    365      18
+        ``geometry.mesh.BC``           944   1176     232
+        ==========================  ======  =====  ======
+
+        ``solve_sn`` is the trap: its cone is shallow, so the obvious
+        spot-check certifies a cap that is silently losing 232 tests one
+        symbol over. Running to the fixed point costs `[M]` 42 ms vs
+        39 ms over five hub symbols — the cap was never buying speed.
+        """
+        changes = self.detect_changes(scope=scope)
+
+        # A COLLECTABLE test — pytest runs functions and methods. The
+        # `is_test` flag is also set on the classes, module-level data
+        # and attributes that live in test files: `[M]` 7305 nodes carry
+        # it and only 5273 are collectable, so counting the suite by the
+        # flag alone overstates it by 38 % and inflates `safe_to_skip`
+        # by every one of those 2032 non-tests.
+        #
+        # Not `in_test_file` (`[M]` 9530), which answers the DIFFERENT
+        # question "lives in the test tree" and so counts fixtures and
+        # helpers too. What a retest set needs is what pytest will run.
         all_tests = {
             nid for nid, attrs in self._g.nodes(data=True)
             if attrs.get("is_test")
+            and attrs.get("type") in ("function", "method")
         }
 
         must_retest: set[str] = set()
         should_retest: set[str] = set()
+        deepest = 0
 
         for entry in changes.changed_symbols:
-            # Direct test callers (depth 1)
-            result = self.impact(entry.node.id, direction="upstream", max_depth=3)
+            result = self.impact(
+                entry.node.id,
+                direction="upstream",
+                max_depth=-1,
+                edge_types=list(self._RETEST_DEPENDENCE_EDGES),
+            )
             for depth, nodes in result.by_depth.items():
+                deepest = max(deepest, depth)
                 for n in nodes:
                     if n.id in all_tests:
                         if depth == 1:
@@ -2721,6 +2788,8 @@ class GraphQuery:
             changed_symbols=[e.node.name for e in changes.changed_symbols],
             total_tests=len(all_tests),
             safe_to_skip=max(0, safe_to_skip),
+            dependence_edges=list(self._RETEST_DEPENDENCE_EDGES),
+            cone_depth=deepest,
         )
 
     # ------------------------------------------------------------------
