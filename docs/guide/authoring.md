@@ -150,8 +150,25 @@ And to say which code *is* an equation:
 
 An explicit `implements` always beats the inferred one. Nexus infers
 `implements` edges from shared name tokens between a page's equations and
-the code it documents, at `confidence=0.7`; a declared edge is `1.0` and
-suppresses inference for that pair.
+the code it documents, at `confidence=0.7`; a declared edge is `1.0`.
+
+**Declaring stands the inference down for the whole equation.** Not for
+the pair — for the equation. Once you have answered *"what implements
+`transport-balance`?"*, nexus stops guessing at answers to it, and the
+graph returns what you said and nothing else.
+
+That is deliberate, and it is the only version of this rule worth having.
+Guesses cluster: measured on a real corpus, an equation that attracts any
+guesses attracts a **median of 12** (max 82). Suppressing one of thirteen
+answers repays a careful author with a graph that is still unreadable; a
+pair-level rule asks for the work and withholds the payoff.
+
+:::{warning}
+The corollary is a contract on you: **declare every implementer of that
+equation.** An equation implemented in two places, with one directive on
+it, will show one implementer — the guess that used to cover the other
+has stood down. Half an answer displaces a full set of guesses.
+:::
 
 :::{note}
 A test **verifies** an equation — it does not implement one. Nexus never

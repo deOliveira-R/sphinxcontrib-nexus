@@ -461,8 +461,19 @@ class ImplementsDirective(_VerificationDirectiveBase):
 
     Emits an ``EdgeType.IMPLEMENTS`` edge from the code symbol to
     ``math:equation:<label>`` with ``source="directive"`` and
-    ``confidence=1.0``. Because the edge is explicit, the inference
-    heuristic in ``merge._infer_implements`` skips this pair.
+    ``confidence=1.0``.
+
+    Because the edge is explicit, the inference heuristic in
+    ``merge._infer_implements`` stands down for **the whole equation** —
+    not merely for this pair. One directive therefore silences every
+    guess pointing at ``<label>``, which is what makes declaring worth
+    the keystrokes (``[M]`` ORPHEUS 2026-08-17: a median of 12 guesses
+    per guessed-at equation, max 82).
+
+    ⚠ The corollary is a contract on the author: declare EVERY
+    implementer of the equation. A single directive on an equation
+    implemented in two places leaves the second one unlinked, because
+    the guess that used to cover it has stood down.
     """
 
     kind = "implements"

@@ -663,6 +663,158 @@ def test_unmarked_test_node_is_still_inferred():
 
 
 # ---------------------------------------------------------------------------
+# A declared equation is not guessed about — the stand-down (nexus #82)
+# ---------------------------------------------------------------------------
+#
+# The suppression used to be per-(code, equation) PAIR, which asked an
+# author for the work and withheld the payoff: measured on ORPHEUS
+# 2026-08-17, an equation that attracts any guesses attracts a median of
+# 12 (max 82), so declaring one implementer left eleven guesses standing
+# beside the fact and `provenance_chain` still returned twelve answers.
+#
+# `implements` on that corpus was 14004 edges, 14004 of them inferred.
+
+_GAUGE_EQ = "math:equation:loss-gauge-projection"
+_GUESSERS = (
+    "py:function:proj.a.apply_gauge",
+    "py:function:proj.b.gauge_projection",
+    "py:function:proj.c.build_gauge",
+)
+
+
+def _stand_down_fixture() -> KnowledgeGraph:
+    """One page, one equation, three code symbols sharing its `gauge`
+    token, and a second equation on the same page sharing `kernel`.
+
+    Nothing is declared. Every assertion below is about what a
+    declaration then removes.
+
+    ⚠ The two equations' token sets must stay DISJOINT from each other's
+    code symbols, or the per-equation assertions test nothing. The first
+    draft named this one `loss-kernel-gauge`, which shares `kernel` with
+    `kernel_weights` — so the fourth symbol guessed at both equations and
+    the positive control below went red. That is what it is for.
+    """
+    kg = KnowledgeGraph()
+    kg.add_node(GraphNode(id="std:file:theory/gauge", type=NodeType.FILE,
+                          name="theory/gauge", domain="std",
+                          docname="theory/gauge"))
+    for eq in (_GAUGE_EQ, "math:equation:kernel-normalisation"):
+        label = eq.rsplit(":", 1)[1]
+        kg.add_node(GraphNode(id=eq, type=NodeType.EQUATION, name=label,
+                              display_name=label, domain="math"))
+        kg.add_edge(GraphEdge(source="std:file:theory/gauge", target=eq,
+                              type=EdgeType.CONTAINS))
+
+    for code_id in (*_GUESSERS, "py:function:proj.d.kernel_weights"):
+        dotted = code_id.split(":")[-1]
+        kg.add_node(GraphNode(
+            id=code_id, type=NodeType.FUNCTION, name=dotted,
+            display_name=dotted.rsplit(".", 1)[1], domain="py",
+            metadata={"file_path": "/proj/x.py"},
+        ))
+        kg.add_edge(GraphEdge(source="std:file:theory/gauge", target=code_id,
+                              type=EdgeType.DOCUMENTS))
+    return kg
+
+
+def _declare(kg: KnowledgeGraph, code_id: str, eq_id: str) -> None:
+    kg.nxgraph.add_edge(code_id, eq_id, type="implements",
+                        source="directive", confidence=1.0)
+
+
+def _implementers(g, eq_id: str) -> dict[str, str]:
+    """Every IMPLEMENTS edge into `eq_id`, as {code_id: source}."""
+    return {
+        s: d.get("source")
+        for s, _, d in g.in_edges(eq_id, data=True)
+        if d.get("type") == EdgeType.IMPLEMENTS.value
+    }
+
+
+def test_an_undeclared_equation_collects_every_guess():
+    """POSITIVE CONTROL for the stand-down tests below.
+
+    Without this, a fixture that simply fails to produce guesses would
+    make every stand-down assertion pass while testing nothing.
+    """
+    kg = _stand_down_fixture()
+    _infer_implements(kg.nxgraph)
+    assert set(_implementers(kg.nxgraph, _GAUGE_EQ)) == set(_GUESSERS)
+
+
+def test_a_declared_equation_is_not_guessed_about():
+    """The rule. One declaration silences all three guesses, not one."""
+    kg = _stand_down_fixture()
+    _declare(kg, _GUESSERS[0], _GAUGE_EQ)
+
+    _infer_implements(kg.nxgraph)
+
+    assert _implementers(kg.nxgraph, _GAUGE_EQ) == {
+        _GUESSERS[0]: "directive",
+    }
+
+
+def test_the_stand_down_is_per_equation_not_per_page():
+    """A declaration answers ITS equation, and says nothing about the
+    others sharing a page with it."""
+    kg = _stand_down_fixture()
+    _declare(kg, _GUESSERS[0], _GAUGE_EQ)
+
+    _infer_implements(kg.nxgraph)
+
+    assert _implementers(kg.nxgraph, "math:equation:kernel-normalisation") == {
+        "py:function:proj.d.kernel_weights": "inferred",
+    }
+
+
+def test_a_declaration_from_another_page_still_stands_the_guesses_down():
+    """The stand-down is a property of the EQUATION, not of the page a
+    guess would have been minted on.
+
+    An implementer is often documented somewhere other than the theory
+    page carrying the equation — an API page, a different module's page.
+    A per-page reading of "is this declared?" would keep guessing here.
+    """
+    kg = _stand_down_fixture()
+    kg.add_node(GraphNode(id="std:file:api/kernels", type=NodeType.FILE,
+                          name="api/kernels", domain="std",
+                          docname="api/kernels"))
+    kg.add_node(GraphNode(
+        id="py:function:proj.e.gauge_impl", type=NodeType.FUNCTION,
+        name="proj.e.gauge_impl", display_name="gauge_impl", domain="py",
+        metadata={"file_path": "/proj/e.py"},
+    ))
+    kg.add_edge(GraphEdge(source="std:file:api/kernels",
+                          target="py:function:proj.e.gauge_impl",
+                          type=EdgeType.DOCUMENTS))
+    _declare(kg, "py:function:proj.e.gauge_impl", _GAUGE_EQ)
+
+    _infer_implements(kg.nxgraph)
+
+    assert _implementers(kg.nxgraph, _GAUGE_EQ) == {
+        "py:function:proj.e.gauge_impl": "directive",
+    }
+
+
+def test_an_inferred_edge_does_not_stand_the_inference_down():
+    """Only a DECLARATION answers the question.
+
+    Pinned because the predicate is `source != "inferred"`, and a re-run
+    over an already-inferred graph must be idempotent rather than
+    self-silencing — otherwise the second build of a project reports a
+    different graph from the first.
+    """
+    kg = _stand_down_fixture()
+    kg.nxgraph.add_edge(_GUESSERS[0], _GAUGE_EQ, type="implements",
+                        source="inferred", confidence=0.7)
+
+    _infer_implements(kg.nxgraph)
+
+    assert set(_implementers(kg.nxgraph, _GAUGE_EQ)) == set(_GUESSERS)
+
+
+# ---------------------------------------------------------------------------
 # What the AST knows survives a symbol Sphinx has also seen (nexus #71)
 # ---------------------------------------------------------------------------
 

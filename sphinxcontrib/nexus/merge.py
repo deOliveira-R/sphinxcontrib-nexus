@@ -301,6 +301,28 @@ def _infer_implements(
     An edge type the ontology does not declare is not inferred at all. No
     declaration is no licence; falling back to a literal would restore the
     second copy this exists to remove.
+
+    **An equation with a declared implementer is not guessed about at all.**
+    A guess exists to fill a vacuum; once an author has answered the
+    question, further guesses do not add to the answer, they bury it. So
+    the stand-down is per-EQUATION, not per-(code, equation) pair.
+
+    That distinction is the whole difference between a gradient an author
+    will climb and one they will not. ``[M]`` 2026-08-17, ORPHEUS: the 632
+    equations receiving guesses carry a **median of 12** each (max 82), so
+    a pair-level stand-down repays the first declaration by removing
+    **one** of thirteen answers — leaving ``provenance_chain`` returning
+    twelve guesses beside the fact, and the author no better off. At
+    equation level the same edit removes all twelve.
+
+    ⚠ The corollary is an authoring contract, and it is stated in
+    ``docs/guide/authoring.md``: declaring an implementer asserts that you
+    are ANSWERING the question, so declare every implementer of that
+    equation. Half an answer now displaces a full set of guesses.
+
+    This runs after every declaration path — directives, registry,
+    ``write_verifies_edges`` — precisely so the stand-down can see them
+    (see the call site in ``__init__.py``).
     """
     import re as _re
 
@@ -322,6 +344,18 @@ def _infer_implements(
     seen: set[tuple[str, str]] = set()
     count = 0
     refused = 0
+
+    # The equations an author has already answered. Global on purpose: an
+    # equation can be declared from a symbol documented on a different
+    # page, and the stand-down is a property of the equation, not of the
+    # page the guess would have been minted on.
+    declared_equations = {
+        tgt
+        for _, tgt, data in g.edges(data=True)
+        if data.get("type") == "implements"
+        and data.get("source") != "inferred"
+    }
+    stood_down: set[str] = set()
 
     def _tokenize(name: str) -> set[str]:
         """Split a name into meaningful tokens (min length 3)."""
@@ -350,10 +384,18 @@ def _infer_implements(
             ):
                 code_map[tgt] = _tokenize(tgt_name)
 
-        equations = list(eq_map.items())
         code_symbols = list(code_map.items())
+        if not eq_map or not code_symbols:
+            continue
 
-        if not equations or not code_symbols:
+        equations = []
+        for eq_id, eq_tokens in eq_map.items():
+            if eq_id in declared_equations:
+                stood_down.add(eq_id)
+            else:
+                equations.append((eq_id, eq_tokens))
+
+        if not equations:
             continue
 
         for code_id, code_tokens in code_symbols:
@@ -365,14 +407,21 @@ def _infer_implements(
                 pair = (code_id, eq_id)
                 if pair in seen:
                     continue
-                # Skip if any explicit TESTS or IMPLEMENTS edge already
-                # links these two nodes. An edge is "explicit" when its
+                # Skip if a declared TESTS edge already links these two
+                # nodes: this pair's relationship has been stated, and it
+                # is not "implements". An edge is "declared" when its
                 # source is NOT the string "inferred" — covers
                 # registry-sourced, directive-sourced, and
                 # pytest.mark.verifies-sourced edges alike.
+                #
+                # This used to read ``in ("implements", "tests")``. The
+                # IMPLEMENTS arm is now unreachable and was retired with
+                # the arm it duplicated: a declared implements edge puts
+                # its target in ``declared_equations``, so the equation
+                # never reaches this loop at all.
                 existing = g.get_edge_data(code_id, eq_id, default={})
                 if any(
-                    d.get("type") in ("implements", "tests")
+                    d.get("type") == "tests"
                     and d.get("source") != "inferred"
                     for d in existing.values()
                 ):
@@ -417,13 +466,16 @@ def _infer_implements(
                 )
                 count += 1
 
-    if count or refused:
-        # Report refusals too. A filter that drops silently is
-        # indistinguishable from one that never fires.
+    if count or refused or stood_down:
+        # Report refusals and stand-downs too. A filter that drops
+        # silently is indistinguishable from one that never fires — and
+        # the stand-down count is the author's payoff made visible: it is
+        # what a declaration BOUGHT on this build.
         logger.info(
             "Inferred %d IMPLEMENTS edges (code → equation); "
-            "%d candidate(s) refused by the ontology",
-            count, refused,
+            "%d candidate(s) refused by the ontology; "
+            "%d equation(s) already declared, so not guessed about",
+            count, refused, len(stood_down),
         )
 
 
