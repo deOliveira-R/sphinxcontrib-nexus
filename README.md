@@ -481,10 +481,14 @@ Nexus closes that hole in four layers:
    server at another checkout's graph (one server per agent session,
    so the switch is session-scoped); it accepts a worktree directory
    name, a branch name, or an absolute root path. `session_briefing`
-   carries a `workspace` block that warns when the graph's branch no
-   longer matches the checkout or when sibling worktrees have graphs
-   of their own — the wrong-tree mismatch surfaces on the session's
-   first turn.
+   carries a `workspace` block that warns when files the graph
+   **indexes** have changed since it was built, or when sibling
+   worktrees have graphs of their own — the wrong-tree mismatch
+   surfaces on the session's first turn. It deliberately does *not*
+   warn on a branch-name difference alone: fast-forwarding a branch
+   into `main` and deleting it leaves a graph that still describes the
+   checkout exactly, and warning there charges a multi-minute rebuild
+   for nothing.
 4. **Roots auto-alignment.** `session_briefing` asks the client (MCP
    `roots/list`) which directory the session was launched from; when
    that lies inside a different checkout that has a graph, the server

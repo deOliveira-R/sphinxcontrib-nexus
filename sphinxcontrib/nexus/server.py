@@ -44,6 +44,7 @@ from sphinxcontrib.nexus.workspace import (
     WorkspaceResolutionError,
     checkout_containing,
     discover,
+    files_changed_since,
     resolve_checkout_root,
 )
 
@@ -483,6 +484,70 @@ def _mark_stale_positions(payload: str) -> str:
     return to_json(data) if marked else payload
 
 
+def _indexed_files() -> set[str]:
+    """Repo-relative paths of every file the active graph indexed.
+
+    The graph knows what it read, so "is this graph still current?" can
+    be asked about the files that MATTER rather than against a guessed
+    extension list.
+    """
+    ws = _active_workspace()
+    if ws is None or _query is None:
+        return set()
+    root = str(ws.root).rstrip("/") + "/"
+    paths = set()
+    for _, attrs in _query._g.nodes(data=True):
+        p = attrs.get("file_path")
+        if isinstance(p, str) and p.startswith(root):
+            paths.add(p[len(root):])
+    return paths
+
+
+def _provenance_warnings(active: Any, prov: GitProvenance) -> list[str]:
+    """Warn when the graph no longer describes the checkout.
+
+    ⛔ This used to compare BRANCH NAMES, which is a proxy that fails in
+    the most ordinary workflow there is: fast-forward a branch into
+    `main` and delete it, and every session is told to rebuild a graph
+    whose commit is now an ancestor of HEAD with no source change at
+    all. Measured on ORPHEUS 2026-08-16 — 25 files differed from the
+    build commit and **none of them was indexed**; all 25 were agent
+    memory and plan notes under `.claude/`.
+
+    The actionable question is not "which branch was this built on" but
+    "did anything the graph INDEXES change since". One `git diff`
+    against the build commit answers it, and it covers uncommitted work
+    too, since diffing a commit compares it to the working tree.
+
+    Same lesson the sibling-graph warning below already learned the
+    expensive way: existence is noise, drift is signal.
+    """
+    changed = files_changed_since(active.workspace.root, prov.commit)
+    if changed is None:
+        # The build commit is unreachable — a deleted branch that was
+        # never merged, a re-cloned tree, a different repository. That
+        # is a real mismatch and the branch name is all we have left.
+        if active.branch and prov.branch and prov.branch != active.branch:
+            return [
+                f"the active graph was built on branch {prov.branch!r} at "
+                f"{prov.commit}, which this checkout ({active.branch!r}) "
+                f"cannot resolve — rebuild the graph, or switch with "
+                f"use_workspace if you meant another checkout"
+            ]
+        return []
+
+    drifted = sorted(changed & _indexed_files())
+    if not drifted:
+        return []
+    shown = ", ".join(drifted[:3])
+    more = f" (+{len(drifted) - 3})" if len(drifted) > 3 else ""
+    return [
+        f"{len(drifted)} indexed file(s) changed since the active graph "
+        f"was built at {prov.commit} — {shown}{more}. Rebuild with "
+        f"sphinx-build to bring the graph up to date"
+    ]
+
+
 def _workspace_payload() -> dict[str, Any]:
     """Workspace block for briefings: which tree the active graph was
     built from, whether it still matches the checkout, and which
@@ -513,18 +578,8 @@ def _workspace_payload() -> dict[str, Any]:
         )
     else:
         prov = GitProvenance.from_stamp(active.provenance)
-        if (
-            prov is not None
-            and active.branch
-            and prov.branch
-            and prov.branch != active.branch
-        ):
-            warnings.append(
-                f"the active graph was built on branch {prov.branch!r} "
-                f"but the checkout is now on {active.branch!r} — rebuild "
-                f"the graph, or switch with use_workspace if you meant "
-                f"another checkout"
-            )
+        if prov is not None:
+            warnings.extend(_provenance_warnings(active, prov))
     # Warn about sibling graphs only when one is FRESHER than the
     # active graph — the mere existence of sibling graphs fired 39
     # warnings across 6 real sessions against 4 workspace switches

@@ -550,18 +550,77 @@ def test_reload_tracks_switched_workspace(server_on_main, worktree):
     assert q.get_node("py:function:feature_rebuilt") is not None
 
 
-def test_briefing_workspace_block_flags_branch_mismatch(server_on_main):
-    """A graph stamped on another branch than the checkout triggers
-    the mismatch warning — the L22-class tripwire."""
-    repo = server_on_main
-    # Re-stamp the graph as if it had been built on a different branch.
+def _restamp_branch(repo, branch: str) -> None:
+    """Re-stamp the active graph as if it had been built elsewhere."""
     db = repo / DB_RELPATH
     kg = load_sqlite(db)
-    kg.metadata[PROVENANCE_KEY]["git_branch"] = "stale-branch"
+    kg.metadata[PROVENANCE_KEY]["git_branch"] = branch
     write_sqlite(kg, db)
 
-    block = server_mod._workspace_payload()
-    assert any("stale-branch" in w for w in block["warnings"])
+
+def test_a_merged_branch_name_alone_is_not_a_mismatch(server_on_main):
+    """⛔ This used to warn on the branch NAME, which fires on the most
+    ordinary workflow there is: fast-forward a branch into `main` and
+    delete it, and every session is told to rebuild a graph that
+    describes its checkout perfectly.
+
+    [M] on ORPHEUS 2026-08-16 the warning fired while 25 files differed
+    from the build commit and NONE of them was indexed — all 25 were
+    agent memory and plan notes under `.claude/`. Rebuilding ORPHEUS's
+    graph is a multi-minute sphinx-build, charged for nothing."""
+    _restamp_branch(server_on_main, "merged-and-deleted")
+
+    # Asserts SILENCE, not merely the absence of that branch name: a
+    # false positive phrased any other way is the same false positive.
+    # (The fixture has no sibling worktrees, so quiet means empty.)
+    assert server_mod._workspace_payload().get("warnings", []) == []
+
+
+def test_an_indexed_file_that_CHANGED_is_the_mismatch(repo, monkeypatch):
+    """The actionable question is not which branch it was built on, but
+    whether anything the graph INDEXES has moved since it was built.
+
+    Note this test builds its own graph rather than using
+    ``server_on_main``: that fixture's one node carries no
+    ``file_path``, so the graph indexes NOTHING and a drift gate
+    written on it could never fail."""
+    src = repo / "kernel.py"
+    src.write_text("def kernel(): pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add kernel")
+
+    kg = _make_graph("kernel")
+    kg.nxgraph.nodes["py:function:kernel"]["file_path"] = str(src)
+    stamp_provenance(kg, repo)
+    kg.metadata[PROVENANCE_KEY]["git_branch"] = "some-other-branch"
+    db = repo / DB_RELPATH
+    db.parent.mkdir(parents=True, exist_ok=True)
+    write_sqlite(kg, db)
+    monkeypatch.setattr(
+        server_mod, "_query",
+        GraphQuery(load_sqlite(db), workspace=Workspace(db_path=db, root=repo)),
+    )
+    monkeypatch.setattr(server_mod, "_db_mtime", db.stat().st_mtime)
+
+    assert server_mod._indexed_files() == {"kernel.py"}
+    src.write_text("def kernel(): return 42\n")          # the drift
+
+    warnings = server_mod._workspace_payload().get("warnings", [])
+    assert any(
+        "kernel.py" in w and "rebuild" in w.lower() for w in warnings
+    ), warnings
+
+
+def test_an_unresolvable_build_commit_still_warns(server_on_main, monkeypatch):
+    """When the build commit cannot be resolved — an unmerged branch
+    that was deleted, a re-cloned tree, a different repository — there
+    is no diff to take, and "cannot tell" must not read as "nothing
+    changed". The branch name survives for exactly this case."""
+    _restamp_branch(server_on_main, "vanished-branch")
+    monkeypatch.setattr(server_mod, "files_changed_since", lambda *a, **k: None)
+
+    warnings = server_mod._workspace_payload().get("warnings", [])
+    assert any("vanished-branch" in w for w in warnings), warnings
 
 
 def test_briefing_workspace_block_notes_sibling_graphs(server_on_main, worktree):
