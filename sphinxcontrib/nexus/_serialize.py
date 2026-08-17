@@ -7,7 +7,7 @@ identical by construction.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any, Literal
 
 from sphinxcontrib.nexus.query import GraphQuery
@@ -22,9 +22,22 @@ def to_dict(obj: Any) -> Any:
     used to compact it. Everything else serializes whole.
     """
     if hasattr(obj, "__dataclass_fields__"):
-        d = asdict(obj)
-        return _compact_node(d) if type(obj).__name__ == "NodeResult" else {
-            k: to_dict(v) for k, v in d.items()
+        if type(obj).__name__ == "NodeResult":
+            return _compact_node(asdict(obj))
+        # Walk the FIELDS, not `asdict(obj)`. `asdict` recurses and
+        # flattens every nested dataclass to a plain dict first, so a
+        # NodeResult inside a StalenessEntry arrives here already
+        # anonymous and escapes compaction — which is exactly what
+        # happened: the tools compacted, the briefing did not, and it
+        # is the briefing that loads every session.
+        #
+        # `None` fields are dropped: `"equation": null` states the same
+        # thing as saying nothing, in 18 characters. Empty LISTS stay —
+        # `"tests": []` on a coverage entry is the finding, not padding.
+        return {
+            f.name: to_dict(v)
+            for f in fields(obj)
+            if (v := getattr(obj, f.name)) is not None
         }
     if isinstance(obj, (list, tuple)):
         return [to_dict(x) for x in obj]

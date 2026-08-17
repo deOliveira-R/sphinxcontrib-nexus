@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -562,6 +562,11 @@ class BriefingResult:
     recent_changes: list[ChangeEntry]
     unresolved_count: int
     external_count: int
+    #: Section → how much of it you are seeing, and which tool has the
+    #: rest. The briefing shows examples, so without this a reader
+    #: cannot tell five stale pages from five HUNDRED — an absence that
+    #: does not name what it looked for (``lessons-L56``).
+    showing: dict[str, str] = field(default_factory=dict)
     id_grammar: IdGrammar = field(
         default_factory=lambda: IdGrammar(description="", examples=[]),
     )
@@ -2085,6 +2090,13 @@ class GraphQuery:
                     if code_ts > latest_code_ts:
                         latest_code_ts = code_ts
 
+            # A page that documents a symbol through more than one edge
+            # listed it once per edge — [M] `api/collision_probability`
+            # reported `Mesh1D` twice — so the count in `stale_reason`
+            # was edges, not symbols, and read as more drift than there
+            # is. Order-preserving so the first-seen order survives.
+            stale_symbols = list(dict.fromkeys(stale_symbols))
+
             if stale_symbols:
                 stale.append(StalenessEntry(
                     doc_node=self._node_result(doc_id),
@@ -2407,17 +2419,43 @@ class GraphQuery:
     # Feature 4: Session Briefing
     # ------------------------------------------------------------------
 
+    #: Symbols listed per stale page in the BRIEFING. The full list is
+    #: what `staleness()` is for; here the count in `stale_reason` is the
+    #: triage signal and the names are examples. [M] 2026-08-16 the
+    #: uncapped lists were 55% of the whole briefing — 123 names for one
+    #: page — on the one reply that loads at every session start.
+    _BRIEFING_SYMBOL_EXAMPLES = 3
+
+    #: Coverage gaps shown in the briefing. Enough to see the shape;
+    #: `verification_audit()` has them all.
+    _BRIEFING_GAPS = 5
+
     def session_briefing(self) -> BriefingResult:
-        """Generate a structured briefing for an AI agent starting a session."""
+        """Orientation for an agent starting a session.
+
+        An INDEX, not a payload: every section is a count plus a few
+        examples plus the tool that expands it. This is the one reply
+        loaded before anyone has asked a question, so its cost is paid
+        by every session whether or not it is used — `[M]` 2026-08-16 it
+        was **10,564 tokens**, of which 82% were two uncapped lists.
+        """
         stats_result = self.stats()
         top_nodes = self.god_nodes(top_n=5)
 
-        # Staleness
         stale_result = self.staleness()
+        stale_docs = [
+            replace(
+                entry,
+                affected_symbols=entry.affected_symbols[
+                    : self._BRIEFING_SYMBOL_EXAMPLES
+                ],
+            )
+            for entry in stale_result.stale_docs[:5]
+        ]
 
         # Coverage gaps (equations with code but no tests)
         coverage = self.verification_coverage(status_filter="implemented")
-        gaps = coverage.entries[:10]  # top 10 gaps
+        gaps = coverage.entries[: self._BRIEFING_GAPS]
 
         # Recent changes
         changes_result = DetectChangesResult(
@@ -2456,10 +2494,37 @@ class GraphQuery:
             ),
         )
 
+        showing = {
+            "god_nodes": (
+                f"top {len(top_nodes)} project hubs by degree; "
+                f"`god_nodes(top_n=…)` for more, "
+                f"`include_placeholders=True` to rank stdlib too"
+            ),
+            "stale_docs": (
+                f"{len(stale_docs)} of {len(stale_result.stale_docs)} drifted "
+                f"pages, each showing up to "
+                f"{self._BRIEFING_SYMBOL_EXAMPLES} of its affected symbols — "
+                f"`staleness()` for all of both"
+            ),
+            "coverage_gaps": (
+                f"{len(gaps)} of {len(coverage.entries)} equations that have "
+                f"code but no test — `verification_audit()` for all, with "
+                f"grouping"
+            ),
+            "recent_changes": (
+                f"{len(changes_result.changed_symbols)} symbols changed on this "
+                f"branch vs the default branch"
+                + ("" if changes_result.changed_symbols else
+                   " — none, so this branch has touched no indexed symbol")
+                + "; `detect_changes()` / `retest()` for the blast radius"
+            ),
+        }
+
         return BriefingResult(
             graph_stats=stats_result,
             god_nodes=top_nodes,
-            stale_docs=stale_result.stale_docs[:5],
+            showing=showing,
+            stale_docs=stale_docs,
             coverage_gaps=gaps,
             recent_changes=changes_result.changed_symbols[:10],
             unresolved_count=unresolved,
