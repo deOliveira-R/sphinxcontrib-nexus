@@ -311,9 +311,19 @@ def _infer_implements(
     will climb and one they will not. ``[M]`` 2026-08-17, ORPHEUS: the 632
     equations receiving guesses carry a **median of 12** each (max 82), so
     a pair-level stand-down repays the first declaration by removing
-    **one** of thirteen answers — leaving ``provenance_chain`` returning
-    twelve guesses beside the fact, and the author no better off. At
-    equation level the same edit removes all twelve.
+    **one** of thirteen answers — leaving twelve guesses standing beside
+    the fact, and the author no better off. At equation level the same
+    edit removes all twelve.
+
+    ⛔ This paragraph originally named ``provenance_chain`` as the tool
+    left "returning twelve guesses beside the fact". That was FALSE the
+    day it was written, and in the direction that flatters this function:
+    ``provenance_chain`` did not read ``implements`` at all — it walked
+    the doc page — so the stand-down changed its reply by exactly
+    **zero** (``nexus#72``, fixed same day). The argument for an
+    equation-level stand-down is unaffected; what was wrong was the named
+    beneficiary. ⟹ a justification that cites a downstream consumer owes
+    a check that the consumer consumes the thing.
 
     ⚠ The corollary is an authoring contract, and it is stated in
     ``docs/guide/authoring.md``: declaring an implementer asserts that you

@@ -65,11 +65,21 @@ with ≥2 `implements` edges (one concept in two places).
 
 **Axis 5 — Doc/domain alignment.** `provenance_chain(node_id)`,
 `verification_coverage()`, `dead_references()`. *Smell:* `provenance_chain`
-empty or broken for a function that visibly implements a cited equation →
-the change severed the code↔equation↔citation chain. `dead_references`
-catches the inverse: prose still citing a symbol the change deleted (Sphinx
-renders those as plain text with NO warning). A refactor that breaks
-provenance is a correctness regression even when tests pass.
+empty **where it was non-empty before your change**, for a function that
+visibly implements a cited equation → the change severed the
+code↔equation↔citation chain. `dead_references` catches the inverse: prose
+still citing a symbol the change deleted (Sphinx renders those as plain
+text with NO warning). A refactor that breaks provenance is a correctness
+regression even when tests pass.
+
+⚠ **Empty is the NORMAL state, so it is a smell only as a DELTA.**
+`provenance_chain` follows `implements`, and most code implements no
+equation — `[M]` **639** code symbols on one real corpus are documented on
+a page and implement nothing, which is legitimate and permanent. Read
+`also_on_these_pages` to tell the two zeros apart (pages present =
+*documented there, implementing nothing known*; pages empty = no doc
+relation at all), and compare against the pre-change reply before flagging.
+A bare "it's empty" is not evidence.
 
 **Axis 6 — Retirement.** `dead_functions()`, `callers(predecessor)`,
 `impact(predecessor, "upstream")`, `retest(scope="branch")`. *Smell:* the
@@ -109,7 +119,7 @@ symbol is the seam of a missing abstraction," not two unrelated nits.
 | `twin_paths` on `apply`/`apply_transpose`, `domain`/`codomain` | Twin path | Symmetric-by-design forward/adjoint or dual accessors | PASS unless they inline divergent arithmetic |
 | `native_place` with `likely_free_primitive=true` | Feature envy | Public + independently tested = correctly free | PASS (leave free) |
 | High upstream `impact` on a `god_nodes`/`bridges` hit | Risky change | The node is the single source doing its job | Amplifies a confirmed finding; NOT a finding alone |
-| `provenance_chain` empty after a refactor | Severed doc chain | Stale graph (docs not rebuilt in this checkout) | Rebuild + `use_workspace`, re-check. Flag only if still empty |
+| `provenance_chain` empty after a refactor | Severed doc chain | **Usually nothing is wrong** — the symbol implements no equation, the common case (`[M]` 639 on one corpus). Or a stale graph | Check `also_on_these_pages`, then compare with the PRE-change reply. Rebuild + `use_workspace` if in doubt. Flag only on a delta |
 | `dead_functions` / `callers` = test nodes only | Dead weight | Deliberate retained oracle for an equivalence test | Wired to a `tests` edge → PASS. No test edges → VIOLATION |
 | `dead_functions` with `decorated=true` or `public=true` | Dead code | Registry/route/property decorator invokes it indirectly; public = entry point | Read for dynamic dispatch / external callers first |
 | `protocol_conformers` match | Undeclared conformer | Method-NAME match only; signatures ignored | Confirm with the type checker (pyright / LSP goToImplementation) |

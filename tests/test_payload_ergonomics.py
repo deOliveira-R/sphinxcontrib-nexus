@@ -571,9 +571,10 @@ def _graph_with_mixed_evidence() -> nx.MultiDiGraph:
 
 
 def test_an_inferred_edge_says_so_AND_says_what_it_guessed_from():
-    """[M] on ORPHEUS **14004 of 14004** `implements` edges are
-    inferred — not one is declared — so a reader who assumes the default
-    is wrong every single time. `via` is what settles it: seeing
+    """[M] on ORPHEUS **12999 of 13084** `implements` edges are
+    inferred (2026-08-17; 14004 of 14004 before declarations began) — so
+    a reader who assumes the default is wrong almost every time. `via`
+    is what settles it: seeing
     `Scattering.kernel` matched to a scale-free-kernel equation on the
     word "kernel" needs no further investigation."""
     from sphinxcontrib.nexus._serialize import assemble_context

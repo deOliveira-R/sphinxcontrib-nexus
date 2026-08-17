@@ -188,9 +188,10 @@ annotating it would spend bytes on every entry to say "normal". In
 code side is `declared`, `inferred` or `mixed`.
 
 :::{warning}
-On one real project **14004 of 14004** `implements` edges are inferred —
-not one is declared. So "which code implements this equation?" is
-answered there entirely by shared-word matching, and a reader who
+On one real project **12999 of 13084** `implements` edges are inferred
+(2026-08-17; it was 14004 of 14004 before the first declarations landed).
+So "which code implements this equation?" is answered there almost
+entirely by shared-word matching, and a reader who
 assumes otherwise is wrong every time. `tests` edges on the same
 project are the opposite: 2748 of 2748 declared.
 :::

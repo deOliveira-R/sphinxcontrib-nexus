@@ -130,9 +130,10 @@ def _mark_evidence(entry: dict, edge: Any) -> dict:
     annotating it would cost bytes on every reply to say "normal".
 
     An inferred edge is different in kind, not degree — it exists
-    because two names share a word. `[M]` on ORPHEUS **14004 of 14004**
-    ``implements`` edges are inferred, so a reader who assumes the
-    default is wrong every single time; ``via`` is what lets them see it
+    because two names share a word. `[M]` on ORPHEUS **12999 of 13084**
+    ``implements`` edges are inferred (2026-08-17; 14004 of 14004 before
+    the first declarations landed), so a reader who assumes the default
+    is wrong almost every time; ``via`` is what lets them see it
     (``ScatteringOperator.kernel`` matched to a UBLD kernel equation on
     the token ``kernel``).
 

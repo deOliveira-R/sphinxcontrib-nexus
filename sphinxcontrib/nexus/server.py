@@ -857,7 +857,7 @@ def context(node_id: str, limit_per_type: int = 0) -> str:
 
     ⚠ An entry marked `inferred: true` is a GUESS, not a fact: nobody
     declared it, it was minted because two names share a word, and
-    `via` lists the words. Measured on a real project, 14004 of 14004
+    `via` lists the words. Measured on a real project, 12999 of 13084
     `implements` edges are of this kind — so on the `implements`
     bucket the guess is the rule, not the exception. Declared edges
     (a marker, a directive) carry no mark.
@@ -1492,6 +1492,22 @@ def provenance_chain(node_id: str) -> str:
     literature citations those equations come from. The complete
     mathematical provenance.
 
+    Followed along ``implements``, in both directions — a code symbol
+    names what it implements, an equation names what implements it.
+    Sharing a doc page is NOT implementing, and until 2026-08-17 this
+    walked the page: one class reported **148** equations for the 9 it
+    implements, and an equation implemented by nothing reported 40.
+
+    ⚠ An **empty** ``equations`` is an answer, and ``also_on_these_pages``
+    says which one. Pages present means *documented there, implementing
+    nothing the graph knows of*; pages empty means no doc relation at
+    all. Do not read the first as a severed chain — `[M]` on a real
+    corpus **639** code symbols are legitimately in that state.
+
+    A guess announces itself: an entry minted by name-matching carries
+    ``inferred`` plus ``via``, the shared tokens that produced it.
+    Declared entries carry neither and sort first.
+
     ``relations`` carries the math-to-math spine where the project
     declares one: which continuous form a discrete equation
     ``discretizes``, which parent it ``derives_from``, which exact form
@@ -1793,7 +1809,7 @@ def doc_impact(node_id: str, limit: int = 0) -> str:
     the COARSE half — a ``documents`` edge lands on a page, not a
     section, so those entries carry no anchor. And a claim marked
     `inferred` was minted from a shared name token, not declared; `[M]`
-    on a real project that is 14004 of 14004 `implements` edges, so
+    on a real project that is 12999 of 13084 `implements` edges, so
     treat an inferred claim as a lead, not a fact.
 
     Args:

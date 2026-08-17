@@ -117,9 +117,10 @@ class EdgeResult:
 
     ``"inferred"`` means nobody declared this: it was minted because a
     code symbol's name shares a token with an equation label. `[M]` on
-    ORPHEUS **14004 of 14004** ``implements`` edges are inferred — not
-    one is declared — so "which code implements this equation?" has
-    never once been answered from a declaration there, while
+    ORPHEUS **12999 of 13084** ``implements`` edges are inferred
+    (2026-08-17; it was 14004 of 14004 before the first declarations
+    landed) — so "which code implements this equation?" is still
+    answered there almost entirely by shared-word matching, while
     ``tests`` edges are 2748 of 2748 declared (a real
     ``@pytest.mark.verifies``).
 
@@ -456,9 +457,10 @@ class DocClaim:
     becoming false."""
 
     inferred: bool = True
-    """Whether the ``implements`` link is a GUESS. `[M]` on ORPHEUS all
-    14004 of them are, so this is the rule and not the exception — an
-    inferred claim may simply not be about your symbol at all."""
+    """Whether the ``implements`` link is a GUESS. `[M]` on ORPHEUS
+    12999 of 13084 are (2026-08-17), so this is the rule and not the
+    exception — an inferred claim may simply not be about your symbol at
+    all."""
 
     location: str = ""
     """``page:line#anchor`` — one string that says where to read it.
@@ -572,6 +574,31 @@ class ProvenanceStep:
     node: NodeResult
     edge_type: str
     depth: int
+    inferred: bool | None = None
+    """``True`` when the ``implements`` edge behind this step was GUESSED.
+
+    Absent when the edge was declared — declared is the silent default,
+    the same convention ``_serialize._mark_evidence`` uses for ``context``
+    and ``neighbors``, so a fact costs no bytes and only a guess announces
+    itself. ``None`` rather than ``False`` on purpose: ``to_dict`` drops
+    ``None`` and keeps ``False``, so a plain boolean would stamp
+    ``"inferred": false`` onto every step of every reply.
+
+    Only ``implements``-derived steps carry it; a page or citation step
+    leaves it ``None`` because the question does not apply to them.
+    """
+    via: list[str] | None = None
+    """The shared name tokens that produced an inferred edge.
+
+    What makes a guess actionable is seeing WHY it was made — ``#74``'s
+    ruling was that a confidence number does not, and the tokens do.
+
+    ``None``, not ``[]``, for the same reason :attr:`inferred` is not
+    ``False``: ``to_dict`` drops ``None`` and KEEPS empty lists, so a
+    list-typed default would stamp ``"via": []`` onto every step of
+    every reply — a field paying no rent on the overwhelmingly common
+    case.
+    """
 
 
 @dataclass
@@ -595,12 +622,29 @@ class ProvenanceResult:
     target: str
     chain: list[ProvenanceStep]
     equations: list[NodeResult]
+    """What this symbol IMPLEMENTS — followed along ``implements``, never
+    along page adjacency. Declared entries come first."""
     citations: list[str]
     relations: list[StatementRelation] = field(default_factory=list)
     """Authored math-to-math structure reachable from this node — the
     spine a validator walks when asking what a test actually pins down.
     Empty unless the project declares ``discretizes`` / ``derives-from``
     / ``approximates`` relations."""
+    also_on_these_pages: list[NodeResult] = field(default_factory=list)
+    """Doc pages that document this symbol — the COARSE half, and a
+    different question from :attr:`equations`.
+
+    Sharing a page is not implementing: this list used to BE the answer,
+    which is why one class reported 148 equations where it implements 9.
+    It stays because it is the only thing that makes an empty
+    :attr:`equations` legible — *documented here, implementing nothing
+    known* reads differently from *nothing known at all*, and on a real
+    corpus 639 code symbols are in the first state.
+
+    ⚠ PAGES, not their equations. Carrying the page's equations here
+    would restore the 72 KB payload that following ``implements`` exists
+    to remove.
+    """
 
 
 @dataclass
@@ -643,9 +687,10 @@ class CoverageEntry:
     equation whose only ``implements`` edges were minted because a
     symbol's NAME shares a token with the label reads as
     ``implemented`` exactly like one a directive declared. `[M]` on
-    ORPHEUS every single one is the first kind — 14004 of 14004 — so
-    the whole code side of that matrix is currently ``inferred`` and
-    the status column cannot say so.
+    ORPHEUS almost every one is the first kind — 12999 of 13084 at
+    2026-08-17, and it was 14004 of 14004 before any declaration
+    existed — so the code side of that matrix is overwhelmingly
+    ``inferred`` and the status column cannot say so.
 
     The test side has carried ``source``/``confidence`` on every
     :class:`TestReference` since it was written; this is the missing
@@ -1907,16 +1952,75 @@ class GraphQuery:
                 frontier.append((tgt if src == current else src, depth + 1))
         return relations
 
+    def _implements_partners(
+        self, node_id: str, *, outgoing: bool,
+    ) -> list[tuple[str, bool, list[str]]]:
+        """The ``implements`` edges at one end of a node, declared first.
+
+        One relation read from two ends — ``outgoing=True`` asks *what do
+        I implement*, ``outgoing=False`` asks *what implements me* — so
+        both directions share this walk rather than transcribing it
+        twice and drifting.
+
+        Returns ``(partner_id, inferred, via)`` sorted with declared
+        first, then by id. A pair can carry several edges (a registry
+        entry beside a directive beside a guess); a declared one wins,
+        because the question "is this a fact?" is answered yes as soon as
+        anybody asserted it.
+        """
+        edges = (
+            self._g.out_edges(node_id, data=True) if outgoing
+            else self._g.in_edges(node_id, data=True)
+        )
+        best: dict[str, tuple[bool, list[str]]] = {}
+        for src, tgt, data in edges:
+            if data.get("type") != "implements":
+                continue
+            partner = tgt if outgoing else src
+            inferred = data.get("source") == "inferred"
+            via = (list(data.get("shared_tokens") or []) or None) if inferred else None
+            prior = best.get(partner)
+            if prior is None or (prior[0] and not inferred):
+                best[partner] = (inferred, via)
+        return sorted(
+            ((p, inf, via) for p, (inf, via) in best.items()),
+            key=lambda row: (row[1], row[0]),
+        )
+
     def provenance_chain(self, node_id: str) -> ProvenanceResult:
         """Trace citation → equation → code for a symbol.
 
-        Given a code symbol, find which doc pages reference it, what
-        equations those pages contain, and what citations they use.
-        Given an equation or proof environment, find the code documented
-        on the same page.
+        Given a code symbol, find the equations it IMPLEMENTS and the
+        citations those equations' pages carry. Given an equation or
+        proof environment, find the code that implements it.
 
-        Traverses: code ←DOCUMENTS– doc –CONTAINS→ equations
-                                        –CITES→ citations
+        Traverses: code –IMPLEMENTS→ equation ←CONTAINS– doc –CITES→ cite
+
+        ⛔ Until 2026-08-17 the code leg was ``code ←DOCUMENTS– doc
+        –CONTAINS→ equations`` — every equation on every page that
+        documented the symbol. Sharing a page is not implementing, and
+        the numbers were not marginal: one class returned **148**
+        equations for the 9 it implements, and an equation with **zero**
+        implementers reported 40 of them, a false ALIVE. Three
+        independent agents named it *"garbage at the granularity asked
+        for"* (``nexus#72``). The MCP tool's own description had
+        promised the ``implements`` reading all along.
+
+        Page adjacency survives as :attr:`ProvenanceResult.also_on_these_pages`,
+        which is a different question and is labelled as one.
+
+        ⚠ **An empty ``equations`` is an answer, and which answer it is
+        depends on the other bucket**: pages present means *documented
+        here, implementing nothing known*; pages empty means the graph
+        knows of no doc relation at all. On a real corpus 639 code
+        symbols are in the first state, so the distinction is the common
+        case, not a corner.
+
+        Citations stay page-rooted because they ARE page-rooted — a
+        ``cites`` edge is minted from the doc node, and no equation
+        carries one. What changed is which pages: those holding the
+        equations actually implemented, not every page that mentions the
+        symbol.
 
         Every statement reached is then used as a root for
         :meth:`_statement_relations`, so any authored ``discretizes`` /
@@ -1935,83 +2039,90 @@ class GraphQuery:
 
         chain.append(ProvenanceStep(node=node, edge_type="target", depth=0))
 
-        # Find doc pages connected to this node
+        pages: list[NodeResult] = []
         seen_docs: set[str] = set()
-        seen_code: set[str] = set()
-        doc_pages: list[str] = []
+        # The statements this chain is anchored on. For a code symbol
+        # they are what it implements; for a statement, itself. Citations
+        # and the relation walk both hang off these, so narrowing the
+        # equation leg narrows them with it — which is the point: the
+        # bibliography of a page you merely appear on is not your
+        # provenance.
+        statements: list[str] = []
 
         if node.type in ("function", "method", "class", "module", "attribute"):
+            for eq_id, inferred, via in self._implements_partners(
+                node_id, outgoing=True,
+            ):
+                eq_type = self._g.nodes.get(eq_id, {}).get("type", "")
+                if eq_type not in STATEMENT_TYPES or eq_id in seen_eqs:
+                    continue
+                seen_eqs.add(eq_id)
+                statements.append(eq_id)
+                stmt_node = self._node_result(eq_id)
+                if eq_type == "equation":
+                    equations.append(stmt_node)
+                chain.append(ProvenanceStep(
+                    node=stmt_node, edge_type="implements", depth=1,
+                    inferred=inferred or None, via=via,
+                ))
+            # The coarse half, kept apart and labelled. It is what makes
+            # an empty `equations` readable rather than ambiguous.
             for src, _, data in self._g.in_edges(node_id, data=True):
                 src_type = self._g.nodes.get(src, {}).get("type", "")
                 if src_type == "file" and data.get("type") in ("documents", "contains"):
                     if src not in seen_docs:
                         seen_docs.add(src)
-                        doc_pages.append(src)
-                        chain.append(ProvenanceStep(
-                            node=self._node_result(src),
-                            edge_type="documented_by", depth=1,
-                        ))
+                        pages.append(self._node_result(src))
 
         elif node.type in STATEMENT_TYPES:
             seen_eqs.add(node_id)
+            statements.append(node_id)
             if node.type == "equation":
                 equations.append(node)
-            for src, _, data in self._g.in_edges(node_id, data=True):
+            for code_id, inferred, via in self._implements_partners(
+                node_id, outgoing=False,
+            ):
+                chain.append(ProvenanceStep(
+                    node=self._node_result(code_id),
+                    edge_type="implemented_by", depth=1,
+                    inferred=inferred or None, via=via,
+                ))
+
+        # Citations are page-rooted AT THE PRODUCER — a `cites` edge is
+        # minted from the doc node (`extractors.py`, `ingest.py`) and no
+        # equation carries one; `[M]` 0 of 903 on ORPHEUS. So reaching a
+        # citation must go through a page, and the honest page to go
+        # through is the one HOLDING an anchor statement, not every page
+        # that happens to mention the symbol.
+        cited_docs: list[str] = []
+        seen_chain_docs: set[str] = set()
+        for stmt_id in statements:
+            for src, _, data in self._g.in_edges(stmt_id, data=True):
                 src_type = self._g.nodes.get(src, {}).get("type", "")
-                if src_type == "file" and data.get("type") == "contains":
-                    if src not in seen_docs:
-                        seen_docs.add(src)
-                        doc_pages.append(src)
-                        chain.append(ProvenanceStep(
-                            node=self._node_result(src),
-                            edge_type="contained_by", depth=1,
-                        ))
-                        for _, tgt, d2 in self._g.out_edges(src, data=True):
-                            tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
-                            if tgt_type in ("function", "method", "class") and d2.get("type") == "documents":
-                                if tgt not in seen_code:
-                                    seen_code.add(tgt)
-                                    chain.append(ProvenanceStep(
-                                        node=self._node_result(tgt),
-                                        edge_type="implemented_by", depth=2,
-                                    ))
+                if src_type != "file" or data.get("type") != "contains":
+                    continue
+                if src in seen_chain_docs:
+                    continue
+                seen_chain_docs.add(src)
+                cited_docs.append(src)
+                chain.append(ProvenanceStep(
+                    node=self._node_result(src),
+                    edge_type="contained_by", depth=2,
+                ))
 
-        # From doc pages, collect statements and citations
-        statements: list[str] = (
-            [node_id] if node.type in STATEMENT_TYPES else []
-        )
-        for doc_id in doc_pages:
+        for doc_id in cited_docs:
             for _, tgt, data in self._g.out_edges(doc_id, data=True):
-                tgt_type = self._g.nodes.get(tgt, {}).get("type", "")
-                edge_type = data.get("type", "")
-
-                if tgt_type in STATEMENT_TYPES and tgt not in seen_eqs:
-                    seen_eqs.add(tgt)
-                    statements.append(tgt)
-                    stmt_node = self._node_result(tgt)
-                    # ``equations`` is the historical field name and its
-                    # consumers expect equations; proof environments ride
-                    # in the chain and relation walk instead.
-                    if tgt_type == "equation":
-                        equations.append(stmt_node)
-                    chain.append(ProvenanceStep(
-                        node=stmt_node,
-                        edge_type=(
-                            "equation_on_page" if tgt_type == "equation"
-                            else "statement_on_page"
-                        ),
-                        depth=2,
-                    ))
-
-                if edge_type == "cites":
-                    tgt_name = self._g.nodes.get(tgt, {}).get("name", tgt)
-                    if tgt_name not in seen_citations:
-                        seen_citations.add(tgt_name)
-                        citations.append(tgt_name)
-                        chain.append(ProvenanceStep(
-                            node=self._node_result(tgt),
-                            edge_type="cites", depth=3,
-                        ))
+                if data.get("type") != "cites":
+                    continue
+                tgt_name = self._g.nodes.get(tgt, {}).get("name", tgt)
+                if tgt_name in seen_citations:
+                    continue
+                seen_citations.add(tgt_name)
+                citations.append(tgt_name)
+                chain.append(ProvenanceStep(
+                    node=self._node_result(tgt),
+                    edge_type="cites", depth=3,
+                ))
 
         relations = self._statement_relations(statements)
 
@@ -2021,6 +2132,7 @@ class GraphQuery:
             equations=equations,
             citations=list(set(citations)),
             relations=relations,
+            also_on_these_pages=pages,
         )
 
     # ------------------------------------------------------------------
@@ -2066,7 +2178,8 @@ class GraphQuery:
         # carried `source`/`confidence` since it was written — so a row
         # implemented by a shared-word guess read exactly like one
         # implemented by a declaration. `[M]` on ORPHEUS that is not an
-        # edge case: 14004 of 14004 `implements` edges are inferred.
+        # edge case: 12999 of 13084 `implements` edges are inferred
+        # (2026-08-17; 14004 of 14004 before declarations began).
         inferred_links: set[tuple[str, str]] = set()
         # Index 2: equation → declared tests via TESTS edges.
         declared_tests: dict[str, list[TestReference]] = {}

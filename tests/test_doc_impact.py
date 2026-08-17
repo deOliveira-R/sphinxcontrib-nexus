@@ -284,8 +284,9 @@ def test_a_verified_claim_is_marked_as_such():
 
 
 def test_a_GUESSED_claim_says_so():
-    """`[M]` on ORPHEUS all 14004 `implements` edges are inferred, so a
-    reader who assumes otherwise is wrong every time."""
+    """`[M]` on ORPHEUS 12999 of 13084 `implements` edges are inferred
+    (2026-08-17), so a reader who assumes otherwise is wrong almost every
+    time."""
     r = _q().doc_impact("py:function:pkg.leaf")
     assert not next(c for c in r.claims if c.equation.name == "near").inferred
     assert next(c for c in r.claims if c.equation.name == "far").inferred

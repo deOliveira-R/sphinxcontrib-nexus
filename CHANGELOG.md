@@ -2,6 +2,44 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## Unreleased
+
+### Fixed — `provenance_chain` answers the question it was asked (#72)
+
+It walked `code ←documents– page –contains→ every equation on that page` and
+never followed `implements` at all, so it answered *what else is on my page*.
+`[M]` on a real corpus: `LinearDiscontinuous` returned **148** equations for
+the 9 it implements, and `dd-curvilinear-scalar` — implemented by **nothing** —
+reported **40** implementers, a false ALIVE. Three independent agents reviewing
+the tool named it the same way: *garbage at the granularity asked for*.
+
+The MCP tool's own description had promised the `implements` reading all along,
+so this is a repair to meet a published contract rather than a change of one.
+
+Both directions now follow `implements`, through one shared walk. The payload
+for that class fell **72,554 → 7,228 bytes**.
+
+- **A guess announces itself.** An entry minted by name-matching carries
+  `inferred` plus `via`, the shared tokens that produced it; declared entries
+  carry neither and sort first. Both fields default to `None` rather than
+  `False`/`[]`, because `to_dict` drops `None` and keeps the others — a
+  list-typed default would have stamped `"via": []` onto every step.
+- **Page context survives as `also_on_these_pages`** — pages, deliberately not
+  their equations, which would restore the payload the fix removes.
+- **An empty answer is legible.** Following `implements` makes emptiness the
+  common case (`[M]` **639** code symbols are documented somewhere and
+  implement nothing), so the pages bucket is what separates *documented there,
+  implementing nothing known* from *no doc relation at all*. The
+  `nexus-elegance` skill's "empty ⟹ severed chain" smell is re-scoped to a
+  DELTA, or it would have become a false-positive generator.
+- **Citations stay page-rooted, because they are** — a `cites` edge is minted
+  from the doc node and `[M]` 0 of 903 equations carries one. What changed is
+  *which* pages: those holding the equations actually implemented.
+
+`test_proof_objects_do_not_pollute_the_equations_field` is DEMOTED by this and
+deliberately kept — the class it guards is now unreachable by construction, and
+its docstring says so rather than the gate quietly passing forever.
+
 ## 0.17.0 — 2026-08-11
 
 ### Added — documentation, built by the extension it documents (#52)

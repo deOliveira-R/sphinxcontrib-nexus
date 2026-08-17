@@ -1600,9 +1600,23 @@ def _run_provenance(args: argparse.Namespace) -> int:
         return 0
     for step in result.chain:
         indent = "  " * step.depth
-        print(f"{indent}{step.edge_type}: {step.node.id} ({step.node.type})")
+        # A guess wears its reason. Declared prints nothing extra, which
+        # is what makes the marked ones visible at a glance.
+        guess = (
+            f"  (inferred via {', '.join(step.via or [])})"
+            if step.inferred else ""
+        )
+        print(f"{indent}{step.edge_type}: {step.node.id} ({step.node.type}){guess}")
     if result.citations:
         print(f"\nCitations: {', '.join(result.citations)}")
+    if result.also_on_these_pages:
+        # Labelled, and named for what is weak about it: being on a page
+        # is not implementing. Printed even when `equations` is empty —
+        # that pairing IS the signal for "documented here, implementing
+        # nothing known", as opposed to "nothing known at all".
+        print("\n  also on these pages (adjacency, not implementation):")
+        for page in result.also_on_these_pages:
+            print(f"      {page.id}")
     return 0
 
 

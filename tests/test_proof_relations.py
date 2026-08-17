@@ -288,9 +288,61 @@ def test_keyword_search_finds_an_environment_by_title(query):
 
 def test_proof_objects_do_not_pollute_the_equations_field(query):
     """``equations`` is a named contract; proof objects ride in the
-    chain and relations instead."""
+    chain and relations instead.
+
+    ⚠ **DEMOTED by nexus#72, deliberately kept.** This had teeth while
+    the equation leg walked the page: the fixture's page carries three
+    ``prf:proof_object`` statements, and a page walk reached all of them,
+    so the ``math:equation:`` filter was the only thing keeping them out
+    of ``equations``. Following ``implements`` cannot reach them at all
+    here — `[M]` the ORPHEUS corpus has **0** ``implements`` edges
+    targeting a proof object, and ``_infer_implements`` walks only
+    ``tgt_type == "equation"``, so the inference cannot mint one either.
+
+    So the class this guards is currently unreachable by construction and
+    the gate cannot fail — the ``coding-standards`` single-sourcing case,
+    where the demotion is CORRECT and must not be resolved by backing the
+    change out. It stays because a *declared* ``.. implements::`` naming a
+    proof object is spellable (the ontology's ``[edge.implements].range``
+    admits ``proof_object``), and this is the only assertion that would
+    catch it landing in ``equations``.
+    """
     result = query.provenance_chain("py:function:solver.sweep")
     assert all(e.id.startswith("math:equation:") for e in result.equations)
+
+
+# ---------------------------------------------------------------------------
+# provenance follows IMPLEMENTS — measured on a REAL build (nexus#72)
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_from_code_names_only_what_it_implements(query, graph):
+    """The primary gate for nexus#72, and it runs on a real Sphinx build
+    rather than a hand-assembled graph — the ``implements`` edge under
+    test is minted by the actual ``.. implements::`` directive path.
+
+    `[M]` this fixture's page carries **7** labelled statements — 4
+    equations (``transport-continuous``, ``transport-sn``, ``dd-closure``,
+    ``p1-closure``) and 3 proof objects (``def-angular-flux``,
+    ``thm-balance``, ``alg-sweep``) — and exactly ONE declaration,
+    ``.. implements:: dd-closure :by: solver.sweep``. A page walk returns
+    the page; following ``implements`` returns the one.
+    """
+    statements = {
+        n for n, a in graph.nodes(data=True)
+        if a.get("type") in ("equation", "proof_object")
+    }
+    assert len(statements) >= 7, "fixture shrank; the gate no longer discriminates"
+
+    result = query.provenance_chain("py:function:solver.sweep")
+
+    assert [e.id for e in result.equations] == ["math:equation:dd-closure"]
+    steps = [s for s in result.chain if s.edge_type == "implements"]
+    assert [s.node.id for s in steps] == ["math:equation:dd-closure"]
+    # Declared by a directive, so it must carry no guess marking.
+    assert steps[0].inferred is None and steps[0].via is None
+    # The page is not lost — it is answered as a different question.
+    assert [p.id for p in result.also_on_these_pages] == ["std:file:index"]
 
 
 # ---------------------------------------------------------------------------

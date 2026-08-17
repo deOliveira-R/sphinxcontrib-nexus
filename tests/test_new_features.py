@@ -373,12 +373,32 @@ def dream_graph():
     g.add_node("std:citation:Bailey2009", type="unresolved", name="Bailey2009",
                display_name="Bailey2009", domain="std")
 
+    # Two more equations on the SAME page — the discriminators, without
+    # which this fixture cannot see nexus#72 at all.
+    #
+    # It carried exactly one equation, and it was the one
+    # `sweep_spherical` implements, so page-contents and
+    # implements-targets were the SAME SET: every assertion below passed
+    # whether `provenance_chain` followed `implements` or walked the
+    # page. `beta-closure` is on the page and implemented by nothing;
+    # `gamma-balance` is implemented by a DECLARED edge, so declared-first
+    # ordering has something to order (the original lone edge is
+    # `source="inferred"`).
+    g.add_node("math:equation:beta-closure", type="equation", name="beta-closure",
+               display_name="(2)", domain="math", docname="theory/transport")
+    g.add_node("math:equation:gamma-balance", type="equation", name="gamma-balance",
+               display_name="(3)", domain="math", docname="theory/transport")
+
     # Edges
     g.add_edge("std:file:theory/transport", "math:equation:alpha-recursion", type="contains")
+    g.add_edge("std:file:theory/transport", "math:equation:beta-closure", type="contains")
+    g.add_edge("std:file:theory/transport", "math:equation:gamma-balance", type="contains")
     g.add_edge("std:file:theory/transport", "py:function:sweep.sweep_spherical", type="documents")
     g.add_edge("std:file:theory/transport", "std:citation:Bailey2009", type="cites")
     g.add_edge("py:function:sweep.sweep_spherical", "math:equation:alpha-recursion",
-               type="implements", source="inferred")
+               type="implements", source="inferred", shared_tokens=["sweep"])
+    g.add_edge("py:function:sweep.sweep_spherical", "math:equation:gamma-balance",
+               type="implements", source="directive")
     g.add_edge("py:function:sweep.sweep_spherical", "py:function:sweep.helper", type="calls")
     g.add_edge("py:function:sweep.sweep_spherical", "py:function:numpy.array", type="calls")
     g.add_edge("py:function:sweep.helper", "py:function:numpy.array", type="type_uses")
@@ -394,6 +414,9 @@ def test_provenance_chain_from_code(dream_graph):
     assert len(result.equations) > 0
     eq_ids = {e.id for e in result.equations}
     assert "math:equation:alpha-recursion" in eq_ids
+    # Citations survive the narrowing: `cites` is minted from the doc
+    # node, so the route is now code -> implements -> equation ->
+    # contained_by -> page -> cites, not "every page mentioning me".
     assert "Bailey2009" in result.citations
 
 
@@ -404,6 +427,84 @@ def test_provenance_chain_from_equation(dream_graph):
     # Should find the implementing code
     chain_ids = {s.node.id for s in result.chain}
     assert "py:function:sweep.sweep_spherical" in chain_ids
+
+
+# ---------------------------------------------------------------------------
+# provenance follows IMPLEMENTS, not page adjacency (nexus#72)
+# ---------------------------------------------------------------------------
+#
+# `provenance_chain` used to walk `code <-documents- page -contains->
+# every equation on that page`. Sharing a page is not implementing, and
+# the gap was not marginal: on ORPHEUS one class returned 148 equations
+# for the 9 it implements, and `dd-curvilinear-scalar` — implemented by
+# NOTHING — reported 40 implementers, a false ALIVE.
+
+
+def test_an_equation_merely_on_the_page_is_not_implemented(dream_graph):
+    """The discriminating case, and the whole of nexus#72.
+
+    `beta-closure` sits on the same page as the target and is implemented
+    by nothing. Page-walking returns it; following `implements` does not.
+    """
+    q = GraphQuery(dream_graph)
+    result = q.provenance_chain("py:function:sweep.sweep_spherical")
+
+    eq_ids = {e.id for e in result.equations}
+    assert eq_ids == {
+        "math:equation:alpha-recursion",
+        "math:equation:gamma-balance",
+    }, "page neighbours leaked into the implements answer"
+    assert "math:equation:beta-closure" not in eq_ids
+
+
+def test_the_page_survives_as_its_own_labelled_bucket(dream_graph):
+    """Page context is a different question, kept and labelled as one.
+
+    It is also what makes an empty `equations` legible — *documented
+    here, implementing nothing known* versus *nothing known at all*.
+    """
+    q = GraphQuery(dream_graph)
+    result = q.provenance_chain("py:function:sweep.sweep_spherical")
+    assert [p.id for p in result.also_on_these_pages] == [
+        "std:file:theory/transport",
+    ]
+
+
+def test_a_declared_edge_sorts_first_and_is_not_marked(dream_graph):
+    """#74: a guess must not read like a fact.
+
+    Declared is the SILENT default — `inferred` absent, no `via` — so a
+    fact costs no bytes and only a guess announces itself, with the
+    tokens that produced it.
+    """
+    q = GraphQuery(dream_graph)
+    result = q.provenance_chain("py:function:sweep.sweep_spherical")
+
+    steps = [s for s in result.chain if s.edge_type == "implements"]
+    assert [s.node.id for s in steps] == [
+        "math:equation:gamma-balance",      # declared
+        "math:equation:alpha-recursion",    # inferred
+    ], "declared must sort ahead of guessed"
+    assert steps[0].inferred is None and steps[0].via is None
+    assert steps[1].inferred is True and steps[1].via == ["sweep"]
+
+
+def test_an_equation_names_only_its_real_implementers(dream_graph):
+    """The mirror direction, where the defect was worse because the step
+    is literally named `implemented_by`.
+
+    `beta-closure` shares a page with `sweep_spherical` and is implemented
+    by nothing, so its implementer list must be EMPTY — the false-ALIVE
+    case, `[M]` 40 phantom implementers on ORPHEUS before this.
+    """
+    q = GraphQuery(dream_graph)
+    result = q.provenance_chain("math:equation:beta-closure")
+    assert [s for s in result.chain if s.edge_type == "implemented_by"] == []
+
+    implemented = q.provenance_chain("math:equation:gamma-balance")
+    named = [s for s in implemented.chain if s.edge_type == "implemented_by"]
+    assert [s.node.id for s in named] == ["py:function:sweep.sweep_spherical"]
+    assert named[0].inferred is None
 
 
 def test_verification_coverage(dream_graph):
