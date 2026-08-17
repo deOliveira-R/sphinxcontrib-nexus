@@ -120,22 +120,68 @@ def probe_coverage_inversion(g) -> dict:
     }
 
 
-def probe_declared_vs_inferred(g) -> dict:
-    """F5 — how much of the graph is a guess rendered as a fact?
+#: The edge types on which "guess or fact?" is a meaningful question —
+#: the V&V surface, where an edge is an ANSWER to "what implements /
+#: verifies this equation?". Everything else (`contains`, `imports`,
+#: `calls`) is extracted structure: nexus reads it, it does not guess it.
+_CLAIM_EDGES = ("implements", "tests")
 
-    `tests` edges come from an explicit marker; `implements` is minted
-    by name matching. Both are drawn in the same font by every tool, so
-    a consumer cannot tell evidence from resemblance.
+
+def probe_declared_vs_inferred(g) -> dict:
+    """F5 — how much of the V&V surface is a guess rendered as a fact?
+
+    Both edge kinds are drawn in the same font by every tool, so a
+    consumer cannot tell evidence from resemblance.
+
+    ⚠ **Re-scoped 2026-08-17; numbers before that date are not
+    comparable, and F2's history is void with them** (the scoreboard
+    says so where F2 is reported). The old version read provenance off
+    the edge TYPE — `declared = count(tests)`,
+    `inferred = count(implements) + count(references)` — which was
+    true when it was written and is now two separate errors:
+
+    - it hard-codes *implements ⇒ guess*, so the declared `implements`
+      edges that `nexus#82` exists to create would have been counted as
+      GUESSES. The metric a target is stated in would have moved the
+      wrong way while the target was being hit — F2's own failure mode,
+      a flattering aggregate, in the instrument that measures it.
+    - it counts `references` as inferred. `[M]` 2026-08-17 ORPHEUS: of
+      13391 `references` edges only 1228 carry no `source` and none is
+      `source="inferred"` — they are AST-extracted mentions, not
+      guesses, and they were more than half the "inferred" bucket. The
+      published 1 : 10.0 was really 1 : 5.1.
+
+    Provenance now comes from `source`, which is what actually records
+    it and what `#74` made visible in every reply.
     """
-    counts: dict[str, int] = {}
+    declared = inferred = 0
+    impl_declared = impl_inferred = 0
     for _, _, d in g.edges(data=True):
-        counts[d.get("type", "?")] = counts.get(d.get("type", "?"), 0) + 1
-    declared = counts.get("tests", 0)
-    inferred = counts.get("implements", 0) + counts.get("references", 0)
+        etype = d.get("type", "?")
+        if etype not in _CLAIM_EDGES:
+            continue
+        guess = d.get("source") == "inferred"
+        if guess:
+            inferred += 1
+        else:
+            declared += 1
+        if etype == "implements":
+            if guess:
+                impl_inferred += 1
+            else:
+                impl_declared += 1
+
+    impl_total = impl_declared + impl_inferred
     return {
         "declared_edges": declared,
         "inferred_edges": inferred,
         "inferred_per_declared": round(inferred / max(declared, 1), 1),
+        # The `nexus#82` target, stated as the issue states it.
+        "implements_declared": impl_declared,
+        "implements_total": impl_total,
+        "implements_declared_pct": round(
+            100 * impl_declared / max(impl_total, 1), 1
+        ),
     }
 
 
@@ -376,6 +422,9 @@ def main() -> int:
     f5 = report["F5_declared_vs_inferred"]
     print(f"F5 declared:inferred  1 : {f5['inferred_per_declared']}  "
           f"({f5['declared_edges']} declared, {f5['inferred_edges']} inferred)")
+    print(f"                      implements declared: "
+          f"{f5['implements_declared']}/{f5['implements_total']}  "
+          f"({f5['implements_declared_pct']}%)  <- nexus#82 target")
     print("F6 payload")
     for h in report["F6_answer_payload"]["hubs"]:
         print(f"                      {h['bytes_per_entry']:>4} B/entry  "

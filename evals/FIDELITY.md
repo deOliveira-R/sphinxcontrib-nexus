@@ -91,11 +91,31 @@ record the class or don't record the number.
 ### ⚠ Probes are not independent — read the dependency before the value
 
 `F2` (untested equations) is computed over `implements` edges, and `F5`
-says those edges run **10:1 inferred-to-declared** on the founding
-project. So F2's *absolute* value is a measurement of a population that
-is mostly guesses; only its **trend** is safe to read, and only while F5
-is unchanged. When F5 moves, F2's history is void and must be
-re-baselined, not compared.
+says those edges are **100 % inferred** on the founding project. So F2's
+*absolute* value is a measurement of a population that is entirely
+guesses; only its **trend** is safe to read, and only while F5 is
+unchanged. When F5 moves, F2's history is void and must be re-baselined,
+not compared.
+
+⛔ **F5 was RE-SCOPED 2026-08-17 and its OWN history is void** — every
+`1 : 10.0` below is on the old definition. Two errors, both of which
+became visible only when F5 acquired a target (`nexus#82`):
+
+- it read provenance off the edge **TYPE**, hard-coding *implements ⇒
+  guess*. True when written; it would have counted the declared
+  `implements` edges #82 exists to create as **guesses**, so the metric
+  the target is stated in would have moved the wrong way while the
+  target was being hit. ⭐ The instrument had F2's own failure mode —
+  a flattering aggregate — and F2 rides on it.
+- it counted `references` as inferred. `[M]` of 13391 `references`
+  edges **none** is `source="inferred"`; they are AST-extracted
+  mentions, and they were more than half the "inferred" bucket. The
+  published `1 : 10.0` was really `1 : 5.1`.
+
+Provenance now comes from `source` — what actually records it, and what
+`#74` made visible in every reply. ⟹ the transferable form: **a probe
+written before a distinction existed encodes its absence**, and nothing
+reveals that until something starts changing the distinction.
 
 State every such coupling when you add a probe. A scoreboard whose rows
 silently depend on each other produces the compound-`[M]` defect: two
@@ -191,7 +211,7 @@ class with no probe is the next probe to write.
 | **F2** | signal | **Flattering aggregate** — the count hides its own refutation | a big number summed over members, no member list | "91 tests verify these equations" for a module with **15 of 24** equations uncovered |
 | **F3** | ergonomics | **Unaddressable handle** — the reply names what it will not let you use | a string that needs a transform the emitter knows | equation labels emitted bare; must be prefixed `math:equation:` by hand. `[M]` **0 of 50** usable as ids |
 | **F4** | signal | **Silent knowledge** — the graph holds it, no tool says it | an agent opening the DB directly | `vv_level` / `verifies` / `catches` on every test node; the test-file brief carries **0** of them |
-| **F5** | signal | **Undeclared inference** — a guess rendered as a fact | two edge kinds, one font | `tests` (declared, from a marker) and `implements` (name-matched) look identical. `[M]` 1 : 10 |
+| **F5** | signal | **Undeclared inference** — a guess rendered as a fact | two edge kinds, one font | `tests` (declared, from a marker) and `implements` (name-matched) look identical. `[M]` **0 of 14004** `implements` edges declared; claim edges run 1 : 5.1 (⛔ the founding `1 : 10` was the pre-2026-08-17 definition — see the re-scope note above) |
 | **F6** | ergonomics | **Push-only surface** — arrives unbidden, cannot be requested | a hook with no MCP twin | `file_brief`: deduped once per session, unrecoverable after a compaction |
 | **F7** | signal | **Structurally degenerate answer** — a result that cannot vary | 100 % of rows in one bucket | `verification_audit(group_by="level")`: gaps are *defined* by having no test, and the grouping keys on the nearest test's level |
 | **F8** | ergonomics | **Broken chain** — every hop works, the question still cannot be answered | a hop needing a hand transform, a `grep`, or a fact the reply withheld | `symbol → doc page → section`: `[M]` **680** sections and **0** `section→equation` edges, so recovery ends in `awk` over a line range |
@@ -222,7 +242,7 @@ live value, not a regression.
 | **F2** untested equations | **2441 / 4040 (60.4 %)** | ⚠ rides on F5; trend only |
 | **F3** handles | eq labels usable as ids **0 / 50** | docnames resolvable **50 / 50** |
 | **F4** brief answers its file's question | production **4 / 6**, **test 0 / 6** | the test-side brief is silent by construction |
-| **F5** declared : inferred | **1 : 10.0** (2748 / 27 395) | |
+| **F5** declared : inferred | **1 : 10.0** (2748 / 27 395) | ⛔ OLD DEFINITION — re-scoped 2026-08-17; on the current one this reading is **1 : 5.1** |
 | **F6** payload | **181–197 B/entry**; `BC` 417 entries folded from 1699 edges | post-#67 |
 | **F8** chains closed | **0 / 4** | every hop works; no question closes |
 
@@ -259,7 +279,7 @@ so the previous row's numbers were measured on a graph built before
 | F2 untested equations | 2441 / 4040 (60.4 %) | 2441 / 4040 (60.4 %) | unchanged, as predicted |
 | F3 eq labels as ids | 0 / 50 | 0 / 50 | unchanged |
 | F4 brief, test files | 0 / 6 | 0 / 6 | unchanged |
-| F5 declared : inferred | 1 : 10.0 | 1 : 10.0 | unchanged |
+| F5 declared : inferred | 1 : 10.0 | 1 : 10.0 | unchanged ⛔ OLD DEFINITION (see the re-scope note) |
 | F6 payload | 181–197 B/entry | 181–197 B/entry | unchanged |
 | F8 chains closed | 0 / 4 | 0 / 4 | unchanged |
 
