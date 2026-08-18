@@ -32,7 +32,7 @@ autodoc_default_options = {
 
 nexus_output = "_nexus"
 nexus_ast_analyze = True
-nexus_extra_source_dirs = ["solver_pkg", "solver_tests"]
+nexus_extra_source_dirs = ["minimal_project/solver_pkg", "minimal_project/solver_tests"]
 nexus_analyze_tests = True
 nexus_test_patterns = ["solver_tests/*", "*/solver_tests/*", "test_*.py"]
 

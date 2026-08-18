@@ -1214,13 +1214,21 @@ def test_an_ordinary_conditional_import_is_still_a_runtime_import():
     assert "type_checking" not in _import_edges(v)["pkg.modern"]
 
 
-def test_a_type_only_alias_is_not_a_runtime_public_path():
-    """A guarded alias must not register as a re-export candidate.
+def test_a_type_only_alias_is_still_a_name_this_module_can_resolve():
+    """A guarded alias DOES register as a re-export candidate.
 
-    ``reexports`` feeds ``_chase_reexports``, which canonicalizes names
-    — so a phantom entry redirects onto a path that does not exist at
-    runtime. Measured on one real corpus: 12 ``__init__.py`` blocks
-    registered 15 such candidates, all of which ``hasattr`` denies.
+    ⛔ This gate is here because the opposite was tried. `pkg.SNMesh`
+    is not a runtime attribute — ``hasattr`` denies it — so excluding
+    guarded aliases from ``reexports`` looks like a correctness fix.
+    It is not: the map's consumer is ``_chase_reexports``, which folds
+    a docstring reference onto the class it names, and inside this
+    module ``SNMesh`` is exactly as resolvable a name as ``Mesh``.
+    Nothing asks the map about runtime existence.
+
+    `[M]` excluding them dropped 263 of 6917 entries on a real corpus
+    — 263 names this map could resolve and then could not. (An attempt
+    to price that in lost *references* was refuted: the +5 `unresolved`
+    it was blamed for survived the revert.)
     """
     v = _visit_source(
         "from typing import TYPE_CHECKING\n"
@@ -1230,7 +1238,5 @@ def test_a_type_only_alias_is_not_a_runtime_public_path():
         module_name="pkg",
     )
 
-    assert "pkg.SNMesh" not in v.reexports
-    # ...and the positive control: the real re-export still registers,
-    # so the guard narrowed the map rather than emptying it.
+    assert v.reexports["pkg.SNMesh"] == "pkg.mesh.SNMesh"
     assert v.reexports["pkg.Mesh"] == "pkg.helpers.Mesh"

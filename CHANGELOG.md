@@ -4,6 +4,41 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — an extra source dir inside a scanned root is not scanned twice
+
+`nexus_extra_source_dirs` names dirs to analyse *in addition to* the
+source roots. When one of them lies INSIDE a root already being scanned,
+`analyze_directory` ran over it a second time and re-emitted every node
+and edge — and a MultiDiGraph keeps both copies.
+
+`[M]` ORPHEUS declares `extra_source_dirs = ["tests"]` with `tests/`
+inside the scanned project root. The whole test tree was doubled: 3470
+of 3472 `(source, target)` import pairs carried two edges, and the graph
+reported **207 643 edges where 139 761 are real** — `calls` 118 126 →
+69 217 (−41 %), `imports` 9024 → 5517, total **−67 882 (−33 %)**. Node
+count is unaffected (ids dedupe); every per-node degree and every
+`impact` count was inflated.
+
+It survived because nexus's own fixture declared two extra dirs that
+*silently resolved to nothing* — `extra_source_dirs` resolves against
+`srcdir.parent`, and the fixture IS its own srcdir, so both entries
+warned "not found, skipping" into a `-q` build. The feature had no
+working witness. The fixture's spelling is corrected, which makes it
+reproduce the doubling (26 import edges over 14 distinct pairs) and
+therefore witness the fix.
+
+Also hoisted: the extra dirs are resolved BEFORE any scan and put on the
+sys-path of *every* scan. They are places imports resolve against, so an
+extra dir belongs on the path of the main scan too — and this removes an
+order dependence where the first-listed extra could not see the second.
+
+⚠ Unattributed, recorded rather than hidden: across this session's two
+rebuilds ORPHEUS's `unresolved` node count moved 3862 → 3867 (+5,
++0.13 %). It is NOT the re-export guard (it survives that revert) and
+not the regenerated matrix page (1 unresolved out-edge, pre-existing).
+The baseline predates an ORPHEUS commit that touched an indexed page.
+
+
 ### Added — a `TYPE_CHECKING` import says it is type-only (#88)
 
 `visit_ImportFrom` minted the same `imports` edge whether or not the
@@ -18,13 +53,32 @@ for typing" is how annotation-mediated dispatch (#76) is recovered.
 type-only. The issue's headline "14 of 365" measured a different
 predicate — *cross-layer* edges only.
 
-### Fixed — a type-only alias is not a runtime public path
+### ⛔ REFUTED and reverted — "a type-only alias is not a runtime public path"
 
-The same guard leaked into re-export candidates: `from .x import Y`
-under `TYPE_CHECKING` in an `__init__.py` registered `pkg.Y` in the
-`reexports` map that `_chase_reexports` canonicalizes through, though
-that path does not exist at runtime. `[M]` on ORPHEUS 12 such blocks
-registered 15 candidates, every one of which `hasattr` denies.
+The `TYPE_CHECKING` guard was briefly extended to re-export candidates,
+on the argument that `from .x import Y` under the guard registers
+`pkg.Y` in the `reexports` map although that path does not exist at
+runtime (`hasattr` denies it — verified, with a positive control).
+
+That argument was wrong about what the map is FOR. `reexports` feeds
+`_chase_reexports`, which folds a *docstring reference* onto the class
+it names; inside the importing module a guarded alias is exactly as
+resolvable a name as an unguarded one, and no consumer asks the map
+about runtime existence.
+
+`[M]` the exclusion was also far wider than the `__init__.py`-only
+probe that motivated it suggested — **263 of 6917** entries tree-wide,
+not 15. That is the measured cost: 263 names this map could resolve and
+now could not, against no consumer that wanted the runtime claim.
+
+⚠ A first attempt to price it in *references* was wrong and is recorded
+here rather than deleted: a +5 `unresolved` delta was attributed to this
+guard, and reverting the guard left the count unchanged (3867), so the
++5 is not attributable to it. The baseline it was measured against
+predates an ORPHEUS commit that regenerated an indexed docs page.
+Reverted on the argument above, which does not rest on that number;
+both gates now assert the alias IS registered and carry the refutation
+so it is not re-derived.
 
 ### Fixed — an `.. error-entry::` node carries the line it was declared on
 

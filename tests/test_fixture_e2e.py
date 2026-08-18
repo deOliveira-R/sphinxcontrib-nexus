@@ -737,16 +737,54 @@ def test_a_type_checking_import_edge_is_marked_through_the_real_build(
     assert "type_checking" not in _meta("solver_pkg.helpers")
 
 
-def test_a_type_only_alias_is_not_a_re_export_after_the_real_build(
+def test_a_type_only_alias_is_still_a_resolvable_name_after_the_build(
     fixture_kg,
 ):
-    """The phantom public path must not reach the canonicalization map.
+    """A guarded alias reaches the canonicalization map, like any other.
 
+    ⛔ The opposite was tried and refuted — see the unit-test twin.
     ``solver_pkg/__init__.py`` guards ``FluxProfile`` and re-exports
-    ``Mesh`` for real — so this asserts the guard narrowed the map
-    rather than emptying it.
+    ``Mesh`` for real; both must be resolvable names.
     """
     reexports = fixture_kg.metadata.get("reexports") or {}
     assert reexports, "no re-export map survived the build — test is vacuous"
-    assert "solver_pkg.FluxProfile" not in reexports
+    assert reexports.get("solver_pkg.FluxProfile") == (
+        "solver_pkg.typing_only.FluxProfile"
+    )
     assert reexports.get("solver_pkg.Mesh") == "solver_pkg.helpers.Mesh"
+
+
+def test_a_nested_extra_source_dir_is_not_scanned_twice(fixture_graph):
+    """An extra source dir inside a scanned root must not double the graph.
+
+    ``analyze_directory`` re-emits every node and edge, and a
+    MultiDiGraph keeps both copies — so declaring a directory that the
+    project-root pass already covers silently doubles that whole subtree.
+    `[M]` before the fix this fixture carried 26 import edges over 14
+    distinct pairs; ORPHEUS carried two edges for 3470 of its 3472
+    test-tree pairs.
+
+    The precondition is asserted, not assumed: without a nested extra
+    dir the check is green for the wrong reason, and a future edit to
+    the fixture's ``conf.py`` would silently retire the gate rather
+    than redden it.
+    """
+    from collections import Counter
+
+    conf = (FIXTURE / "conf.py").read_text()
+    assert "nexus_extra_source_dirs" in conf, "fixture no longer declares any"
+    assert "minimal_project/solver_pkg" in conf, (
+        "the extra dir is no longer NESTED inside the scanned root — this "
+        "gate can no longer see the defect it was written for"
+    )
+
+    pairs = Counter(
+        (u, v)
+        for u, v, d in fixture_graph.edges(data=True)
+        if d.get("type") == "imports"
+    )
+    duplicated = {p: n for p, n in pairs.items() if n > 1}
+    assert not duplicated, {
+        f"{u.split(':')[-1]} -> {v.split(':')[-1]}": n
+        for (u, v), n in duplicated.items()
+    }

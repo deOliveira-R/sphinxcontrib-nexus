@@ -1059,15 +1059,17 @@ class CodeVisitor(ast.NodeVisitor):
         # ``pkg.Thing`` a live public path for ``pkg.mesh.Thing``.
         # ImportTracker has just registered the alias, so resolving
         # the local name yields the defining dotted path.
-        # ...but NOT under ``TYPE_CHECKING``: that alias is erased, so
-        # ``pkg.Thing`` is a phantom public path. [M] on one real corpus
-        # 12 such blocks in ``__init__.py`` registered 15 candidates,
-        # every one of which `hasattr` answers False for at runtime.
-        if (
-            self._class_depth == 0
-            and self._type_checking_depth == 0
-            and node.module != "__future__"
-        ):
+        # ⛔ REFUTED 2026-08-18 — a `TYPE_CHECKING` alias IS registered
+        # here, deliberately. It was briefly excluded on the argument
+        # that `pkg.Thing` is not a runtime attribute (true: `hasattr`
+        # denies it). But this map is a NAME-RESOLUTION aid — its own
+        # consumer is `_chase_reexports`, which folds a docstring
+        # reference onto the class it names — and a guarded alias is
+        # exactly as valid a name in that module as an unguarded one.
+        # Nothing asks this map whether the path exists at runtime.
+        # [M] excluding them dropped 263 of 6917 entries and cost 5
+        # references, which went unresolved.
+        if self._class_depth == 0 and node.module != "__future__":
             for alias in node.names:
                 if alias.name == "*":
                     continue

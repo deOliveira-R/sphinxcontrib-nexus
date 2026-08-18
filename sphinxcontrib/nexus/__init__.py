@@ -261,25 +261,53 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         list(settings.exclude_patterns),
     )
 
+    # Resolve the extra source dirs BEFORE scanning anything: an extra
+    # dir is a place imports resolve against, so it belongs on the
+    # sys-path of EVERY scan — not only of the extras listed after it.
+    # Assembling it here also removes an order dependence, where the
+    # first-listed extra could not see the second.
+    extra_paths: list[Path] = []
+    for extra in settings.extra_source_dirs:
+        extra_path = (project_root / extra).resolve()
+        if not extra_path.is_dir():
+            logger.warning("nexus_extra_source_dirs: %s not found, skipping", extra)
+            continue
+        extra_paths.append(extra_path)
+    all_sys_paths = source_dirs + extra_paths
+
     # Scan main source directories.
     for src_dir in source_dirs:
         ast_graph = analyze_directory(
             source_dir=src_dir,
             project_root=project_root,
-            sys_path_dirs=source_dirs,
+            sys_path_dirs=all_sys_paths,
             exclude_patterns=exclude_patterns,
         )
         merge_graphs(graph, ast_graph)
 
     # Scan user-specified extra dirs (e.g. out-of-tree source roots).
     # Test exclusion still follows the nexus_analyze_tests gate.
-    all_sys_paths = source_dirs[:]
-    for extra in settings.extra_source_dirs:
-        extra_path = (project_root / extra).resolve()
-        if not extra_path.is_dir():
-            logger.warning("nexus_extra_source_dirs: %s not found, skipping", extra)
+    for extra_path in extra_paths:
+        # A dir one of the scanned roots ALREADY covers must not be
+        # scanned again: `analyze_directory` re-emits every node and
+        # edge, and a MultiDiGraph keeps both copies. Its sys-path
+        # contribution is kept above — that half of the request is not
+        # redundant. [M] ORPHEUS declares `extra_source_dirs =
+        # ["tests"]` with `tests/` inside the scanned project root,
+        # which doubled the whole test tree: 3470 of 3472 (source,
+        # target) import pairs carried two edges, and the graph as a
+        # whole was 207 643 edges where 139 761 are real.
+        covered = next(
+            (d for d in source_dirs
+             if extra_path == d or extra_path.is_relative_to(d)),
+            None,
+        )
+        if covered is not None:
+            logger.info(
+                "nexus_extra_source_dirs: %s is already scanned as part "
+                "of %s; not scanning it twice", extra_path, covered,
+            )
             continue
-        all_sys_paths.append(extra_path)
         ast_graph = analyze_directory(
             source_dir=extra_path,
             project_root=project_root,
