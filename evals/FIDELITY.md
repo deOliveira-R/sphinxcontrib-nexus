@@ -485,3 +485,82 @@ three specialists spend a round on real work and every finding lands in
 an existing row, the taxonomy is complete for that generation of the
 tool — and the trial can drop to an annual, with the probes carrying the
 regression load in between.
+
+---
+
+## Round 5 — 2026-08-17 · the scoreboard was grading the graph, not the tools
+
+Not a field trial. The board itself was audited after `nexus#72`, and it
+was **wrong on two of eight rows, in the flattering-to-nobody direction**:
+it reported closed work as broken.
+
+| row | reported | truth (hand-verified rounds 3–4) |
+|---|---|---|
+| **F8** chains closed | **1 / 4** | 4 / 4 |
+| **F3** handles | **0 / 50** | 2936 / 2936 |
+
+### Three defects, one root
+
+1. **Findings frozen as CONSTANTS.** `probe_chains` contained
+   `has_file_tool = False  # no file_brief in the MCP registry` and
+   `emits_pytest_id = False  # it does not`. Both true when written;
+   both fixed months later, in the reply layer, where a graph-only probe
+   cannot see them.
+2. **A probe grading a proposition nobody was fixing.** F3 measured
+   whether a bare equation LABEL is a node id. It is not, never was, and
+   never will be — ids are namespaced. The real defect was the *brief*
+   emitting labels instead of ids; `#75` fixed the emitter and F3 went on
+   printing a permanent `0/50`.
+3. ⭐⭐ **A probe that called the tool but CONFIGURED IT DIFFERENTLY.**
+   The rewrite made the probes call `GraphQuery` for real — and chain 2
+   still read BREAK. `[M]` 1206 test nodes reached, all with a `test`
+   block, **0** with a `pytest_id`, while the same query through the MCP
+   server returned one for every node. Cause: `fidelity_probes` built
+   `GraphQuery(kg)` and the server builds it with a `Workspace`. Without
+   the project root, `pytest_selector` cannot relativize an absolute path
+   and returns `None` — silently, for every node.
+
+⟹ the rule, and it is sharper than "call the tool": **a probe must call
+the surface the CONSUMER calls, configured the way the consumer
+configures it.** Two objects of the same class with different
+construction are different instruments. Getting (1) and (2) right still
+left the board reading BREAK on a chain that closes.
+
+⚠ And the fourth, found by mutating the fix: deleting `file_brief` made
+this script **die on import**, so the board printed nothing at all and no
+row said why. A probe whose job is to report *"the tool is missing"* must
+not crash when it is missing. Both affected probes now degrade to a
+reported `n/a` with a reason.
+
+### The board after the repair
+
+```
+F3 handles          brief handles that resolve 182/182 (6 files)
+F8 chains close     4/4   (was 1/4 — same tree, same graph)
+```
+
+### It can still fail — mutated, not asserted
+
+| mutation | F8 | F3 |
+|---|---|---|
+| baseline | 4/4 | 182/182 |
+| `pytest_selector` disabled (undo `#78`) | **3/4** | 182/182 |
+| `file_brief` removed (undo `#75` tool) | **2/4** | **n/a** + reason |
+| brief emits bare names (undo `#75` emitter) | **2/4** | **86/182** |
+
+Each arm undoes one landed fix and reddens exactly the row that fix
+earned. A scoreboard that reports 4/4 and *cannot* report anything else
+would be worse than the one it replaced — so this table, not the 4/4, is
+the evidence.
+
+### What this round owes the taxonomy
+
+No new class. The four defects are F2 (a flattering aggregate) and F4
+(silent knowledge) turned on the instrument rather than on nexus — which
+is worth its own note in Part 6 rather than a new row: **the probes are
+subject to every failure class they measure, and nothing probes the
+probes except a mutation run.**
+
+⚠ Still owed, unchanged: **F1-honesty** and **F4-recall**. And now a
+fifth: **nothing measures answer GRANULARITY**, the class `#72` was —
+148 answers where 9 are true. It passed every existing row.

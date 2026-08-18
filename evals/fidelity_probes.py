@@ -35,6 +35,7 @@ from sphinxcontrib.nexus._serialize import (  # noqa: E402
 )
 from sphinxcontrib.nexus.export import load_sqlite  # noqa: E402
 from sphinxcontrib.nexus.query import GraphQuery  # noqa: E402
+from sphinxcontrib.nexus.workspace import Workspace  # noqa: E402
 
 #: A class scope that a capitalisation heuristic would miss. Kept as a
 #: probe after the 2026-08-16 fix so a regression is visible, not as a
@@ -267,31 +268,87 @@ def probe_handle_addressability(project: Path, db: Path, g) -> dict:
     """F3 — can the caller ACT on what a reply names, without a
     transform it had to invent?
 
-    A handle is addressable when pasting it into another tool works. A
-    bare equation label is not: it must be prefixed with
-    `math:equation:` by hand, which is a transform the emitter knows and
-    the reader must guess.
+    A handle is addressable when pasting it into another tool works.
+
+    ⛔ **Re-scoped 2026-08-17.** This measured whether a bare equation
+    LABEL (`loss-rep-LpC`) is a node id. It is not, it never was, and it
+    never will be — ids are namespaced (`math:equation:loss-rep-LpC`).
+    So the probe reported a permanent `0/50` for a proposition nobody
+    was trying to make true, while the actual defect — the *brief*
+    emitting bare labels a reader had to prefix by hand — was fixed at
+    `nexus#75` somewhere the probe could not see, taking 0/50 to
+    2936/2936.
+
+    ⟹ address the EMITTER. The question is never "is this string an id?"
+    but "does every handle a reply hands me resolve?".
     """
-    eq_labels = [
-        a.get("name") for n, a in g.nodes(data=True)
-        if a.get("type") == "equation" and a.get("name")
-    ][:50]
-    addressable = sum(1 for lab in eq_labels if lab in g)
+    file_brief = _load_file_brief()
+    if file_brief is None:
+        return {
+            "brief_handles_that_resolve": "n/a",
+            "files_sampled": 0,
+            "docnames_resolvable_without_guessing_ext": "n/a",
+            "blocked_by": "F6: no file_brief to grade — the tool is gone",
+        }
+
+    paths = _sample_files(g, lambda fp: "/tests/" not in fp, k=6)
+    emitted, resolved = 0, 0
+    for fp in paths:
+        brief = file_brief(db, fp, project)
+        if brief is None:
+            continue
+        handles = (
+            [n.id for n in brief.nodes]
+            + list(brief.equation_ids)
+            + list(brief.doc_page_ids)
+        )
+        emitted += len(handles)
+        resolved += sum(1 for h in handles if h in g)
+
     docnames = [
         a.get("name") for n, a in g.nodes(data=True)
         if n.startswith("std:file:") and a.get("name")
     ][:50]
-    resolvable = sum(
+    doc_ok = sum(
         1 for d in docnames
         if any((project / "docs" / f"{d}{ext}").exists() for ext in (".rst", ".md"))
     )
     return {
-        "equation_labels_usable_as_ids": f"{addressable}/{len(eq_labels)}",
-        "docnames_resolvable_without_guessing_ext": f"{resolvable}/{len(docnames)}",
+        "brief_handles_that_resolve": f"{resolved}/{emitted}",
+        "files_sampled": len(paths),
+        "docnames_resolvable_without_guessing_ext": f"{doc_ok}/{len(docnames)}",
     }
 
 
-def probe_chains(g) -> dict:
+def _load_file_brief():
+    """The `file_brief` entry point, or ``None`` when it is not there.
+
+    ⚠ Deliberately soft. A probe whose job is to report *"the
+    file-addressed tool is missing"* must not CRASH when it is missing —
+    `[M]` 2026-08-17, deleting it made this script die on import, so the
+    scoreboard printed nothing at all and no F-row said why. A dead
+    instrument that dies loudly is still a dead instrument.
+    """
+    try:
+        from sphinxcontrib.nexus.brief import file_brief
+    except ImportError:
+        return None
+    return file_brief
+
+
+def _sample_files(g, pred, k: int = 6) -> list[str]:
+    """Distinct source paths from the graph, for probes that call tools."""
+    seen: list[str] = []
+    for _, a in g.nodes(data=True):
+        fp = a.get("file_path") or ""
+        if fp.endswith(".py") and fp not in seen and pred(fp):
+            seen.append(fp)
+            if len(seen) >= k:
+                break
+    return seen
+
+
+def probe_chains(q, g, db: Path, project: Path) -> dict:
     """F8 — does an answer hand you the NEXT call?
 
     Ergonomics is not only "can I reach this tool". It is "can I reach
@@ -300,47 +357,80 @@ def probe_chains(g) -> dict:
     hop's input; it is BROKEN when a hop needs a hand transform, an
     external tool, or a fact the reply withheld.
 
-    Each chain below is a question a real session asked in the founding
-    round. `closes` is the metric; `blocked_by` names the class.
+    ⛔ **Rewritten 2026-08-17, and the rewrite is the lesson.** This
+    probe asserted its findings as CONSTANTS::
+
+        has_file_tool   = False   # no `file_brief` in the MCP registry
+        emits_pytest_id = False   # it does not; consumers re-derive it
+
+    Both were true when written. Both were fixed months later IN THE
+    REPLY LAYER — `file_brief` shipped, `TestFacts.pytest_id` shipped —
+    which a graph-only probe cannot see, so F8 went on reporting
+    **1 of 4** against a hand-verified **4 of 4**. It graded the closed
+    chains as broken for weeks, in a file whose whole job is to notice
+    when something is broken.
+
+    ⟹ **a probe must CALL the surface it grades.** Reading the graph
+    tells you what the graph HOLDS; a chain is about what a TOOL HANDS
+    BACK, and those are different questions. `probe_brief_by_file_kind`
+    in this same module always did it right (it shells out to the CLI) —
+    the inconsistency was the tell nobody read.
     """
+    file_brief = _load_file_brief()
+
     chains = []
 
     # 1. "I am editing this file — who breaks?"  file -> node -> callers
-    #    There is no file-addressed MCP tool: `node_at` needs a LINE.
-    has_file_tool = False           # no `file_brief` in the MCP registry
+    #    Walked for real: path -> brief -> hub id -> callers.
+    sample = _sample_files(g, lambda fp: "/tests/" not in fp, k=1)
+    hub, callers_reached = None, False
+    if sample and file_brief is not None:
+        brief = file_brief(db, sample[0], project)
+        if brief is not None and brief.nodes:
+            hub = brief.nodes[0].id
+            try:
+                q.callers(hub)
+                callers_reached = hub in g
+            except Exception:                       # noqa: BLE001
+                callers_reached = False
     chains.append({
         "chain": "file -> node -> callers",
         "asks": "I am editing this file; who breaks?",
-        "closes": has_file_tool,
-        "blocked_by": None if has_file_tool else
+        "closes": callers_reached,
+        "measured": f"file_brief({sample[0].split('/')[-1]}) -> {hub} -> callers"
+                    if hub else "no production file sampled",
+        "blocked_by": None if callers_reached else
         "F6: no file-addressed tool; node_at needs a line you do not have yet",
     })
 
     # 2. "What verifies this equation, and can I run it?"
+    #    Asked through `impact(only="tests")`, the real reply path.
     eqs = [n for n, a in g.nodes(data=True) if a.get("type") == "equation"]
-    reachable = 0
-    runnable = 0
-    for eq in eqs[:200]:
-        tests = [u for u, _, d in g.in_edges(eq, data=True)
-                 if d.get("type") == "tests"]
+    reachable = runnable = 0
+    for eq in eqs[:40]:
+        tests = [
+            n for bucket in q.impact(
+                eq, direction="upstream", only="tests", max_depth=2,
+            ).by_depth.values() for n in bucket
+        ]
         if not tests:
             continue
         reachable += 1
-        # runnable == the reply hands over a pytest node id. It does not;
-        # every consumer re-derives it from file_path + the dotted name.
-        emits_pytest_id = False
-        runnable += bool(emits_pytest_id)
+        runnable += all(
+            getattr(n, "test", None) and n.test.pytest_id for n in tests
+        )
     chains.append({
         "chain": "equation -> tests -> pytest invocation",
         "asks": "what pins this equation, and can I run it?",
         "closes": runnable == reachable and reachable > 0,
         "measured": f"{reachable} equations reach their tests, "
-                    f"{runnable} hand over a runnable id",
+                    f"{runnable} hand over a runnable id (40 sampled)",
         "blocked_by": None if runnable == reachable else
         "F3: node ids are emitted, pytest ids are not (one string-join short)",
     })
 
     # 3. "What documents this symbol — which SECTION do I open?"
+    #    A graph-shape question, honestly answered by reading the graph.
     sections = {n for n, a in g.nodes(data=True) if a.get("type") == "section"}
     eq_to_section = sum(
         1 for u, v, d in g.edges(data=True)
@@ -352,21 +442,31 @@ def probe_chains(g) -> dict:
         "closes": eq_to_section > 0,
         "measured": f"{len(sections)} sections, {eq_to_section} section->equation edges",
         "blocked_by": None if eq_to_section else
-        "F8: nested 2026-08-17 — 849 section->equation edges, "
-        "869/903 equations carry an anchor (was 0)",
+        "F8: no section->equation edge; the page is the finest address",
     })
 
-    # 4. "A brief named an equation — ask the graph about it."
-    labels = [a.get("name") for n, a in g.nodes(data=True)
-              if a.get("type") == "equation" and a.get("name")][:50]
-    pasteable = sum(1 for lab in labels if lab in g)
+    # 4. "A brief named something — ask the graph about it."
+    #    The handles the brief ACTUALLY emits, not bare labels: what
+    #    nexus#75 fixed was the emitter, so the emitter is what to ask.
+    emitted = resolved = 0
+    for fp in ([] if file_brief is None else _sample_files(g, lambda p_: True, k=6)):
+        brief = file_brief(db, fp, project)
+        if brief is None:
+            continue
+        handles = (
+            [n.id for n in brief.nodes]
+            + list(brief.equation_ids)
+            + list(brief.doc_page_ids)
+        )
+        emitted += len(handles)
+        resolved += sum(1 for h in handles if h in g)
     chains.append({
-        "chain": "brief label -> graph node",
+        "chain": "brief handle -> graph node",
         "asks": "the injection named this; tell me about it",
-        "closes": bool(labels) and pasteable == len(labels),
-        "measured": f"{pasteable}/{len(labels)} labels paste directly as ids",
-        "blocked_by": None if pasteable == len(labels) else
-        "F3: bare label needs a `math:equation:` prefix the reader must guess",
+        "closes": emitted > 0 and resolved == emitted,
+        "measured": f"{resolved}/{emitted} emitted handles resolve as ids",
+        "blocked_by": None if emitted and resolved == emitted else
+        "F3: a handle needs a prefix the reader must guess",
     })
 
     closed = sum(1 for c in chains if c["closes"])
@@ -387,7 +487,20 @@ def main() -> int:
         return 2
 
     kg = load_sqlite(str(db))
-    q = GraphQuery(kg)
+    # ⚠ WITH a workspace, because that is how the MCP server builds it.
+    # `GraphQuery(kg)` alone leaves `_workspace = None`, and every
+    # derivation that needs the project root then silently degrades —
+    # `[M]` 2026-08-17 `pytest_id` came back `None` on all 1206 test
+    # nodes a probe reached, while the same query through the server
+    # returned it for every one. F8 chain 2 read BREAK for a chain that
+    # closes. Calling the tool is not enough; it has to be CONFIGURED
+    # the way the consumer configures it, or the probe grades a
+    # different object that happens to share a class name.
+    try:
+        workspace = Workspace.for_root(project)
+    except Exception:                                    # noqa: BLE001
+        workspace = None
+    q = GraphQuery(kg, workspace=workspace)
     g = kg.nxgraph
 
     report = {
@@ -400,7 +513,7 @@ def main() -> int:
         "F6_answer_payload": probe_answer_payload(q, g),
         "F4_brief_by_file_kind": probe_brief_by_file_kind(project, db, g),
         "F3_handle_addressability": probe_handle_addressability(project, db, g),
-        "F8_chains": probe_chains(g),
+        "F8_chains": probe_chains(q, g, db, project),
     }
 
     if args.json:
@@ -435,8 +548,9 @@ def main() -> int:
         print(f"F4 brief ({kind:10}) answers its question for "
               f"{v['brief_answers_its_question']}/{v['sampled']} files")
     f3 = report["F3_handle_addressability"]
-    print(f"F3 handles          eq labels usable as ids "
-          f"{f3['equation_labels_usable_as_ids']}; docnames resolvable "
+    print(f"F3 handles          brief handles that resolve "
+          f"{f3['brief_handles_that_resolve']} "
+          f"({f3['files_sampled']} files); docnames resolvable "
           f"{f3['docnames_resolvable_without_guessing_ext']}")
     f8 = report["F8_chains"]
     print(f"F8 chains close     {f8['closed']}")
