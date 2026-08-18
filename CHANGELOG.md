@@ -4,6 +4,36 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — CI is green again: pyright clean, and two false references retired
+
+CI had failed **29 of its last 30 runs**, on two jobs, since well before
+this release's work. A signal that always says "broken" cannot tell a
+new break from the old one.
+
+**pyright, 11 errors → 0.** Eight were one stale annotation repeated:
+`index` on the four public `overlay_*` functions still said
+`dict[str, list[tuple[int, int, str]]]` after it became `PositionIndex`
+— `NodeBinder` and `_context_node` had been migrated and these had not.
+The rest were annotations that disagreed with their own code:
+`_implements_partners` stored `None` in a `list[str]` slot (a DECLARED
+edge has no shared tokens to show), and two duck-typed unwraps had no
+expressible static type.
+
+**`Literal[...]` members are values, not type names.** The
+string-annotation branch parses any string constant as a forward
+reference, so `only: Literal["tests", "code"]` minted a `type_uses` edge
+onto a class named `tests`. Nothing declares one, so it surfaced as a
+dead reference and failed the docs gate — while `"code"` did **not**,
+because the stdlib has a module by that name. The silent half is the one
+worth the gate: a value resolved onto an unrelated real symbol leaves no
+trace at all.
+
+**A role inside an inline literal is prose ABOUT a role.** ``` ``:eq:`X``` ```
+in a docstring explaining that very role was scanned as a reference.
+`[M]` 15 of nexus's 156 docstring roles are of this kind, and `[M]` **0
+of ORPHEUS's 18 684** — so masking literal spans before the scan retires
+15 false references here and costs a consumer nothing.
+
 ### Fixed — directive misuse is audible to `-W`
 
 `directives.py` logged through stdlib `logging`, which Sphinx's

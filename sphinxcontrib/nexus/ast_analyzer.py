@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # hint), and leading ``!`` (suppress-link convention).
 _SPHINX_ROLE_RE = re.compile(r":(\w+):`([^`]+)`")
 
+#: An RST inline literal. Its contents are typeset verbatim and are
+#: interpreted as NOTHING — which is exactly how a docstring writes a
+#: role it wants to talk ABOUT rather than follow.
+_INLINE_LITERAL_RE = re.compile(r"``.*?``", re.DOTALL)
+
 # ``title <target>`` form: Sphinx allows a cross-reference role to
 # declare a display title distinct from the target, like
 # ``:func:`display name <pkg.mod.actual>```. The target inside the
@@ -471,6 +476,30 @@ class ImportTracker:
 # ---------------------------------------------------------------------------
 
 
+def _mask_inline_literals(text: str) -> str:
+    """``text`` with every inline-literal span blanked, length preserved.
+
+    Spaces rather than deletion so any offset taken from the result
+    still indexes the original string.
+    """
+    return _INLINE_LITERAL_RE.sub(lambda m: " " * (m.end() - m.start()), text)
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Is this the `Literal` special form — bare or dotted?
+
+    Both spellings reach here (`Literal[...]` after a `from typing`
+    import, `typing.Literal[...]` without one), and only the name
+    matters: nothing else in the type language is subscripted by values
+    rather than by types.
+    """
+    if isinstance(node, ast.Name):
+        return node.id == "Literal"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "Literal"
+    return False
+
+
 def _extract_type_names(
     node: ast.expr | None,
     imports: ImportTracker,
@@ -499,7 +528,17 @@ def _extract_type_names(
     # Subscript: list[int], Optional[str], dict[str, int]
     if isinstance(node, ast.Subscript):
         names = _extract_type_names(node.value, imports)
-        names.extend(_extract_type_names(node.slice, imports))
+        # ⛔ …except `Literal[...]`, whose members are VALUES, not type
+        # names. The string-annotation branch above parses ANY string
+        # constant as a forward reference, so walking this slice turned
+        # `only: Literal["tests", "code"]` into a `type_uses` edge onto a
+        # class named `tests`. Nothing declares one, so it surfaced as a
+        # dead reference and failed nexus's own docs gate — while
+        # `"code"` did NOT surface, because the stdlib has a module by
+        # that name: the same bug, silently resolved onto the wrong
+        # thing, which is the half that would never have been noticed.
+        if not _is_literal(node.value):
+            names.extend(_extract_type_names(node.slice, imports))
         return names
 
     # PEP 604 union: X | Y
@@ -954,7 +993,15 @@ class CodeVisitor(ast.NodeVisitor):
                 metadata={"source": "ast"},
             ))
 
-        for match in _SPHINX_ROLE_RE.finditer(docstring):
+        # A role inside an inline literal is not a role — it is prose
+        # ABOUT one, which is how documentation quotes its own syntax.
+        # Scanning it anyway minted references to things nobody meant:
+        # `[M]` 15 of nexus's 156 docstring roles are of this kind, and
+        # one of them (``:eq:`X``` in `drop_inline_math_references`, a
+        # docstring explaining that very role) failed nexus's own
+        # `dead-references` gate. `[M]` 0 of ORPHEUS's 18 684, so the
+        # masking costs a consumer nothing.
+        for match in _SPHINX_ROLE_RE.finditer(_mask_inline_literals(docstring)):
             role, raw = match.group(1), match.group(2)
             target = _parse_role_target(raw)
             if target is None:

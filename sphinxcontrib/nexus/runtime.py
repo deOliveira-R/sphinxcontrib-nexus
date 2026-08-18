@@ -548,7 +548,7 @@ def load_and_merge(names: str, load) -> RuntimeRun:
 
 def overlay_cprofile(
     stats: dict[tuple[str, int, str], tuple[int, int, float, float, dict]],
-    index: dict[str, list[tuple[int, int, str]]],
+    index: PositionIndex,
     name: str,
     meta: dict[str, Any] | None = None,
     source_prefixes: list[str] | None = None,
@@ -680,7 +680,7 @@ def _context_node(context: str, index: PositionIndex) -> str | None:
 
 def overlay_coverage(
     cov_json: dict[str, Any],
-    index: dict[str, list[tuple[int, int, str]]],
+    index: PositionIndex,
     name: str,
     meta: dict[str, Any] | None = None,
     source_prefixes: list[str] | None = None,
@@ -824,7 +824,7 @@ def ingest_coverage(
 
 def overlay_pytest(
     manifest: dict[str, Any],
-    index: dict[str, list[tuple[int, int, str]]],
+    index: PositionIndex,
     name: str,
     meta: dict[str, Any] | None = None,
     source_prefixes: list[str] | None = None,
@@ -912,7 +912,7 @@ def _parse_viztracer_name(name: str) -> tuple[str, int] | None:
 
 def overlay_viztracer(
     events: list[dict[str, Any]],
-    index: dict[str, list[tuple[int, int, str]]],
+    index: PositionIndex,
     name: str,
     meta: dict[str, Any] | None = None,
     source_prefixes: list[str] | None = None,

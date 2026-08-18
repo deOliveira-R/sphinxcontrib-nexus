@@ -339,7 +339,10 @@ def _fit_budget(payload: str, tool: str, budget: int | None = None) -> str:
                 found.extend(lists_in(v, f"{path}[]"))
         return found
 
-    root = {"results": data} if isinstance(data, list) else data
+    # `Any`: the payload is arbitrary JSON, and the wrapper branch
+    # makes the two arms disagree on the value type — pinning it to
+    # the first arm made the `truncated` block below unassignable.
+    root: Any = {"results": data} if isinstance(data, list) else data
     if not isinstance(root, dict):
         return payload
     slots = lists_in(root)

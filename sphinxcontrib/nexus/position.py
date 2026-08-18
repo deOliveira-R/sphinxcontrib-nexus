@@ -38,7 +38,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sphinxcontrib.nexus.workspace import canonical_path
 
@@ -197,7 +197,11 @@ class PositionIndex:
         graph: KnowledgeGraph | nx.MultiDiGraph,
         root: Path | None = None,
     ) -> None:
-        g = getattr(graph, "nxgraph", graph)
+        # `getattr` rather than `isinstance`: `KnowledgeGraph` is a
+        # TYPE_CHECKING-only import here (importing it at runtime would
+        # close a cycle), so the duck-typed unwrap is deliberate. The
+        # annotation is what tells a checker what comes out of it.
+        g = cast("nx.MultiDiGraph", getattr(graph, "nxgraph", graph))
         self._root = root
         by_file: dict[Path, list[Definition]] = {}
         modules: dict[Path, str] = {}

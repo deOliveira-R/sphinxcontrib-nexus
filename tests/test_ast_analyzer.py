@@ -1240,3 +1240,72 @@ def test_a_type_only_alias_is_still_a_name_this_module_can_resolve():
 
     assert v.reexports["pkg.SNMesh"] == "pkg.mesh.SNMesh"
     assert v.reexports["pkg.Mesh"] == "pkg.helpers.Mesh"
+
+
+def test_a_LITERALs_members_are_values_not_type_names():
+    """⛔ `Literal["tests", "code"]` names no types.
+
+    The string-annotation branch parses ANY string constant as a forward
+    reference, so walking a `Literal` slice minted `type_uses` onto a
+    class called `tests`. Nothing declares one, so it surfaced as a dead
+    reference and failed nexus's own `dead-references` docs gate —
+    while `"code"` did NOT surface, because the stdlib has a module by
+    that name. That silent half is the one worth the gate: a value
+    resolved onto an unrelated real symbol leaves no trace at all.
+    """
+    v = _visit_source(
+        'from typing import Literal\n'
+        'def foo(only: Literal["tests", "code"] | None = None): pass'
+    )
+    targets = {e[1] for e in _edge_tuples(v, "type_uses")}
+    assert "py:class:tests" not in targets
+    assert not any(t.endswith(":code") for t in targets), targets
+    # …and `Literal` itself is still recorded as used.
+    assert any("Literal" in t for t in targets), targets
+
+
+def test_a_dotted_Literal_is_recognised_too():
+    """`typing.Literal[...]` without a `from` import reaches the same
+    branch as an `ast.Attribute`, and only the leaf name distinguishes
+    it — nothing else in the type language is subscripted by values."""
+    v = _visit_source(
+        'import typing\n'
+        'def foo(only: typing.Literal["tests"] = "tests"): pass'
+    )
+    assert "py:class:tests" not in {e[1] for e in _edge_tuples(v, "type_uses")}
+
+
+def test_a_NON_literal_subscript_still_walks_its_slice():
+    """The control. A guard that skipped every slice would pass both
+    gates above and quietly stop recording `dict[str, MyClass]`."""
+    v = _visit_source("def foo(x: dict[str, int]): pass")
+    targets = {e[1] for e in _edge_tuples(v, "type_uses")}
+    assert "py:class:int" in targets and "py:class:str" in targets
+
+
+def test_a_role_inside_an_inline_LITERAL_is_prose_about_a_role():
+    """⛔ Documentation quoting its own syntax must not mint references.
+
+    `[M]` 15 of nexus's 156 docstring roles are of this kind, and one —
+    ``:eq:`X``` inside `drop_inline_math_references`, a docstring whose
+    whole subject is that role — failed nexus's own `dead-references`
+    gate. `[M]` 0 of ORPHEUS's 18 684, so the masking costs a real
+    consumer nothing.
+    """
+    v = _visit_source(
+        'def foo():\n'
+        '    """``:eq:`X``` references a labelled equation."""\n'
+    )
+    targets = {e[1] for e in _edge_tuples(v, "references")}
+    assert "math:equation:X" not in targets, targets
+
+
+def test_a_role_OUTSIDE_a_literal_is_still_followed():
+    """The control. Masking everything would pass the gate above and
+    silently stop recording every cross-reference in the corpus."""
+    v = _visit_source(
+        'def foo():\n'
+        '    """See :eq:`real-label` for the derivation."""\n'
+    )
+    targets = {e[1] for e in _edge_tuples(v, "references")}
+    assert "math:equation:real-label" in targets, targets

@@ -2329,7 +2329,7 @@ class GraphQuery:
 
     def _implements_partners(
         self, node_id: str, *, outgoing: bool,
-    ) -> list[tuple[str, bool, list[str]]]:
+    ) -> list[tuple[str, bool, list[str] | None]]:
         """The ``implements`` edges at one end of a node, declared first.
 
         One relation read from two ends — ``outgoing=True`` asks *what do
@@ -2347,7 +2347,10 @@ class GraphQuery:
             self._g.out_edges(node_id, data=True) if outgoing
             else self._g.in_edges(node_id, data=True)
         )
-        best: dict[str, tuple[bool, list[str]]] = {}
+        #  is None whenever the edge was DECLARED — a declaration
+        # has no shared tokens to show — so the value type has to admit
+        # it. The annotation said it could not while the code stored it.
+        best: dict[str, tuple[bool, list[str] | None]] = {}
         for src, tgt, data in edges:
             if data.get("type") != "implements":
                 continue
@@ -3894,14 +3897,22 @@ class GraphQuery:
         deepest = 0
         evidenced = inferred = 0
 
+        # Bound once, outside the loop: the cone test below runs per
+        # candidate test per changed symbol, and a `covered` bool cannot
+        # narrow `ledger` for a type checker anyway — the empty set is
+        # the honest value when no run was given, since a capture that
+        # does not exist has run no tests.
+        captured = ledger.captured_tests if ledger is not None else frozenset()
+
         for entry in changes.changed_symbols:
-            covered = (ledger is not None
-                       and ledger.state(entry.node.id) != UNOBSERVED)
-            if covered:
-                evidenced += 1
-                proven |= ledger.tests_for(entry.node.id) & all_tests
-            elif ledger is not None:
-                inferred += 1
+            covered = False
+            if ledger is not None:
+                if ledger.state(entry.node.id) != UNOBSERVED:
+                    covered = True
+                    evidenced += 1
+                    proven |= ledger.tests_for(entry.node.id) & all_tests
+                else:
+                    inferred += 1
 
             result = self.impact(
                 entry.node.id,
@@ -3925,7 +3936,7 @@ class GraphQuery:
                     # reported `safe_to_skip = 5161` for a geometry
                     # change — 3779 tests declared safe on the strength
                     # of never having been looked at.
-                    if covered and n.id in ledger.captured_tests:
+                    if covered and n.id in captured:
                         continue
                     if depth == 1:
                         must_retest.add(n.id)
