@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import pathlib
 
 import networkx as nx
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from sphinxcontrib.nexus._serialize import to_dict, to_json
 from sphinxcontrib.nexus.query import GraphQuery
 from sphinxcontrib.nexus.runtime import RuntimeRun
+from sphinxcontrib.nexus.workspace import Workspace
 
 _key = itertools.count()
 
@@ -283,19 +285,44 @@ def _exercised_run() -> RuntimeRun:
 
 
 def _graph_with_tests() -> nx.MultiDiGraph:
+    """Two exercising tests — one COLLECTABLE, one not.
+
+    `test_one` carries ``is_test``, so it must come back as a runnable
+    pytest selector; `test_two` does not, so it must fall back to its
+    node id rather than to an empty string. Both arms of
+    ``_runnable_test_id`` therefore have a witness (vv #17).
+    """
     g = _graph()
-    for name in ("test_one", "test_two"):
-        g.add_node(f"py:function:t.{name}", type="function", name=f"t.{name}",
-                   domain="py", file_path="/p/t.py", lineno=1, end_lineno=3)
+    g.add_node("py:function:t.test_one", type="function", name="t.test_one",
+               domain="py", file_path="/p/t.py", lineno=1, end_lineno=3,
+               is_test=True)
+    g.add_node("py:function:t.test_two", type="function", name="t.test_two",
+               domain="py", file_path="/p/t.py", lineno=5, end_lineno=7)
     return g
 
 
+def _query_with_root() -> GraphQuery:
+    """A query that knows its project root.
+
+    ``pytest_selector`` returns ``None`` without one — a stored absolute
+    path cannot be made relative, and pytest ids are relative — so a
+    rootless query exercises only the FALLBACK arm and the selector arm
+    would have no witness at all.
+    """
+    root = pathlib.Path("/p")
+    return GraphQuery(_graph_with_tests(),
+                      workspace=Workspace(db_path=root / "g.db", root=root))
+
+
 def test_exercisers_ranks_most_exercised_first():
-    q = GraphQuery(_graph_with_tests())
+    q = _query_with_root()
     rows = q.runtime_exercisers(_exercised_run())
     assert [r.node.id for r in rows] == ["py:function:m.A", "py:function:m.B"]
     assert rows[0].test_count == 2
-    assert [t.name for t in rows[0].tests] == ["t.test_one", "t.test_two"]
+    runnable, fallback = rows[0].tests
+    assert runnable.endswith("::test_one")          # collectable -> a command
+    assert fallback == "py:function:t.test_two"     # not collectable -> its id
+    assert all(rows[0].tests), "a row must never carry an unnameable test"
 
 
 def test_exercisers_drops_nodes_the_graph_no_longer_has():
@@ -322,7 +349,14 @@ def test_exercisers_serialises_its_tests():
     ``_compact_node`` drops falsy values and fields that repeat an id
     segment, so a result type can lose exactly the field it exists to
     deliver — this pins that ``tests`` survives to JSON.
+
+    It also pins the SIZE, which the first real query got wrong: a
+    NodeResult per test overran the 20 000-character budget on one node
+    (38 of 130 kept). A selector is a string, so the row stays small.
     """
-    q = GraphQuery(_graph_with_tests())
+    q = _query_with_root()
     payload = to_json(to_dict(q.runtime_exercisers(_exercised_run())))
     assert "t.test_two" in payload
+    assert "test_one" in payload
+    # the per-test NodeResult fields must NOT be back
+    assert '"degree"' not in payload.split('"tests"')[1].split("]")[0]

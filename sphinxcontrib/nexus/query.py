@@ -530,7 +530,16 @@ class ExercisedResult:
     """
 
     node: NodeResult
-    tests: list[NodeResult] = field(default_factory=list)
+    #: The exercising tests as RUNNABLE pytest selectors, not as node
+    #: payloads. A hub is exercised by hundreds of tests — [M] 167 on one
+    #: ORPHEUS node — and a NodeResult each costs ~250 characters of
+    #: id + degree + file_path + lineno + a nested pytest_id that
+    #: restates the id. That overran the 20 000-character tool budget on
+    #: the FIRST real query, keeping 38 of 130. A selector is ~70
+    #: characters, says the same thing, and can be pasted into pytest.
+    #: Same shape as :attr:`MarkedTestResult.pytest_ids`, for the same
+    #: reason: the answer to "which tests" should be runnable.
+    tests: list[str] = field(default_factory=list)
     test_count: int = 0
 
 
@@ -1275,6 +1284,18 @@ class GraphQuery:
             lineno=attrs.get("lineno") or 0,
             test=self._test_facts(attrs),
         )
+
+    def _runnable_test_id(self, node_id: str) -> str:
+        """A test node as the command that runs it, else its node id.
+
+        Routed through :meth:`_test_facts` rather than calling
+        ``pytest_selector`` again, so "what makes a node collectable"
+        keeps one author. The fallback is never an empty string: a
+        caller must always be able to name the row it was handed.
+        """
+        attrs = self._g.nodes.get(node_id, {})
+        facts = self._test_facts(attrs)
+        return facts.pytest_id if facts and facts.pytest_id else node_id
 
     def _test_facts(self, attrs: dict) -> TestFacts | None:
         """The test block for a node, or ``None`` if it is not a test.
@@ -4591,7 +4612,7 @@ class GraphQuery:
             known = [t for t in tests if t in self._g]
             out.append(ExercisedResult(
                 node=self._node_result(node_id),
-                tests=[self._node_result(t) for t in known],
+                tests=[self._runnable_test_id(t) for t in known],
                 test_count=len(known),
             ))
         out.sort(key=lambda r: (-r.test_count, r.node.id))

@@ -44,6 +44,16 @@ resolved, 0 unknown**; 931 code nodes, 11 182 (code, test) pairs.
   rather than from `kind`. Kind is provenance, not capability: two runs both
   `kind="coverage"` differ on whether contexts were captured, and suggesting
   one that cannot answer re-creates the confusion the refusal exists to remove.
+- **The exercisers are RUNNABLE pytest selectors, not node payloads.** A hub is
+  exercised by hundreds of tests, and a `NodeResult` each costs ~250 characters
+  of id + degree + file_path + lineno + a nested `pytest_id` restating the id.
+  `[M]` that overran the 20 000-character tool budget on the FIRST real query
+  through the MCP server — one node, 38 of 130 tests kept. As selectors the
+  same node is 15 200 characters and complete, and the answer can be pasted
+  into `pytest`. Same shape as `MarkedTestResult.pytest_ids`, for the same
+  reason. (Found only through the server: the in-process gate asserted a test
+  NAME was present in the payload, which stayed true while the list was being
+  truncated.)
 - ⚠ **Contexts make the REPORT enormous, not the overlay.** `[M]` the
   `--show-contexts` JSON for that one directory is **265 MB** and reduces to a
   **1.44 MB** `exercised_by` — 184×. The cost is transient; slice the suite.
