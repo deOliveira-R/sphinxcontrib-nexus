@@ -544,6 +544,7 @@ def assemble_verification_coverage(
     status_filter: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    run=None,
 ) -> dict:
     """Coverage summary plus the entries slice.
 
@@ -551,9 +552,9 @@ def assemble_verification_coverage(
     to opt in to pagination. ``total_entries`` is always the
     unfiltered count so clients can detect truncation.
     """
-    result = q.verification_coverage(status_filter=status_filter)
+    result = q.verification_coverage(status_filter=status_filter, run=run)
     window = _slice(result.entries, limit, offset)
-    return {
+    payload = {
         "summary": result.summary,
         "entries": to_dict(window),
         "total_entries": len(result.entries),
@@ -561,6 +562,13 @@ def assemble_verification_coverage(
         "limit": limit,
         "returned": len(window),
     }
+    # The scope belongs with the summary, not only with the rows: a
+    # `claims_*` count is unreadable without knowing what the capture
+    # could have reached, and this payload is hand-built rather than
+    # walked by `to_dict`, so an added field does NOT arrive for free.
+    if result.capture is not None:
+        payload["capture"] = to_dict(result.capture)
+    return payload
 
 
 def assemble_shortest_path(

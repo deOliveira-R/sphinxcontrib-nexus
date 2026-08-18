@@ -65,6 +65,17 @@ family since 2026-08-16; the CLI refused only a *missing* run, so
 `lessons-L56` confusion surviving on the surface that did not share the
 author. Both front ends now call one function.
 
+### Fixed — the claims tally counts assertions, not evidence of itself
+
+A row minted from execution evidence cannot corroborate anything: it
+exists BECAUSE execution says so. Counting those took
+`claims_corroborated` from **5994 to 36466** on ORPHEUS — a headline
+that moves with the size of the capture rather than with how well the
+suite's assertions hold up, which is `plan-authoring` §10 (a metric
+invalidated by its own success) in a number this release introduced.
+They are now reported as `executed_unclaimed` — code a test ran that
+nothing claims, `[M]` **30 472** pairs, itself a V&V finding.
+
 ### Added — a coverage claim can now be refuted
 
 `verification_coverage(run=…)` and `verification_audit(run=…)` adjudicate

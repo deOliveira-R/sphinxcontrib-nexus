@@ -2806,6 +2806,18 @@ class GraphQuery:
                     if not t.execution:
                         continue
                     claimants.add(t.id)
+                    # ⛔ A row MINTED from evidence is not a claim being
+                    # adjudicated: it exists BECAUSE execution says so,
+                    # which makes its `corroborated` verdict a tautology.
+                    # Counting it took `claims_corroborated` from 5994 to
+                    # 36466 on ORPHEUS — a number that then moves with
+                    # the size of the capture rather than with how well
+                    # the suite's assertions hold up, which is the wrong
+                    # thing for anyone to track. Reported separately, as
+                    # what it is: code a test ran that nothing claims.
+                    if t.source == "executed":
+                        summary["executed_unclaimed"] += 1
+                        continue
                     summary[f"claims_{t.execution}"] += 1
             capture = CaptureScope(
                 runs=list(ledger.runs),

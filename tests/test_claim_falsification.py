@@ -133,10 +133,19 @@ def test_the_summary_agrees_with_its_own_ROWS(coverage):
     only one that incremented: `claims_refuted` read 212 while the rows
     carried 1231."""
     from collections import Counter
+    # Two tallies, and the split is the point: `claims_*` counts rows
+    # somebody ASSERTED, `executed_unclaimed` counts rows evidence
+    # minted. Every stamped row lands in exactly one.
     walked = Counter(t.execution for e in coverage.entries
-                     for t in e.tests if t.execution)
+                     for t in e.tests if t.execution and t.source != "executed")
+    minted = sum(1 for e in coverage.entries for t in e.tests
+                 if t.execution and t.source == "executed")
     for verdict, n in walked.items():
         assert coverage.summary[f"claims_{verdict}"] == n
+    assert coverage.summary.get("executed_unclaimed", 0) == minted
+    stamped = sum(1 for e in coverage.entries for t in e.tests if t.execution)
+    assert sum(v for k, v in coverage.summary.items()
+               if k.startswith("claims_")) + minted == stamped
 
 
 def test_the_capture_states_what_it_could_have_adjudicated(coverage):
@@ -202,6 +211,31 @@ def test_evidence_ADDS_a_code_row_the_call_heuristic_never_proposed():
     assert entry.status == "tested"
     assert [(t.source, t.execution) for t in entry.tests] == [
         ("executed", CORROBORATED)]
+
+
+def test_an_evidence_MINTED_row_is_not_counted_as_an_adjudicated_claim():
+    """⛔ A row that exists BECAUSE execution says so cannot corroborate
+    anything — its verdict is a tautology.
+
+    Counting them took `claims_corroborated` from 5994 to **36466** on
+    ORPHEUS: a headline that then moves with the SIZE OF THE CAPTURE
+    rather than with how well the suite's assertions hold up. That is
+    `plan-authoring` §10 — a metric invalidated by its own success — in
+    a number this very change introduced. They are reported separately
+    as `executed_unclaimed`, which is the honest reading: code a test
+    ran that nothing claims. `[M]` 30 472 of them.
+    """
+    g = nx.MultiDiGraph()
+    g.add_node("py:function:m.lonely", type="function", name="m.lonely",
+               domain="py", file_path="/p/m.py", lineno=1, end_lineno=3)
+    g.add_node("py:function:t.ran", type="function", name="t.ran", domain="py",
+               file_path="/p/t.py", lineno=1, end_lineno=2, is_test=True)
+    run = RuntimeRun(name="cov", kind="coverage",
+                     exercised_by={"py:function:m.lonely": ["py:function:t.ran"]})
+    c = GraphQuery(g).verification_coverage(run=run)
+    assert c.summary.get("executed_unclaimed") == 1
+    assert c.summary.get("claims_corroborated", 0) == 0, (
+        "an evidence-minted row must not inflate the adjudicated tally")
 
 
 def test_the_audit_carries_the_verdicts_and_the_scope():

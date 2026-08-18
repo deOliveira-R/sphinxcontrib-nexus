@@ -1544,6 +1544,7 @@ def verification_coverage(
     status_filter: str = "",
     limit: int = 0,
     offset: int = 0,
+    run: str = "",
 ) -> str:
     """Map verification coverage: equation → code → test chains.
 
@@ -1566,15 +1567,27 @@ def verification_coverage(
             no limit — return every matching entry. Use with ``offset``
             to page through very large result sets.
         offset: Number of entries to skip from the start of the list.
+        run: Coverage run(s) captured WITH contexts, comma-separated.
+            Given one, every `TestReference` gains an `execution`
+            verdict — `corroborated` / `refuted` / `out_of_capture` /
+            `no_implementation` — and the payload carries a `capture`
+            block saying what the run could have adjudicated. Only the
+            first two verdicts are findings; the other two say the claim
+            could not be checked.
     """
     q = _get_query()
     filt = status_filter if status_filter else None
+    loaded = None
+    if run:
+        loaded = _load_runs(run)
+        _require_family(loaded, "exercised_by", "verification_coverage")
     return to_json(
         assemble_verification_coverage(
             q,
             status_filter=filt,
             limit=limit if limit > 0 else None,
             offset=offset,
+            run=loaded,
         )
     )
 
@@ -2102,6 +2115,7 @@ def callees(node_id: str, transitive: bool = False, max_depth: int = 3) -> str:
 def verification_audit(
     group_by: str = "",
     include_tests: bool = False,
+    run: str = "",
 ) -> str:
     """Complete V&V audit in a single call.
 
@@ -2121,11 +2135,30 @@ def verification_audit(
             caller can weigh how much of the "verified" total rides
             on explicit (marker/directive/registry) vs. heuristic
             evidence.
+        run: Coverage run(s) captured WITH contexts, comma-separated to
+            union them. Given one, every claim gains an `execution`
+            verdict and `summary` gains four `claims_*` counts.
+
+            ⛔ Read those four TOGETHER. Only `claims_corroborated` and
+            `claims_refuted` are findings about the suite;
+            `claims_out_of_capture` and `claims_no_implementation` say
+            the claim could not be checked, for two causes needing
+            opposite repairs — a wider capture, and a declared
+            `implements` link. `[M]` ORPHEUS 2026-08-18 over its 2748
+            declared claim edges: 11 / 10 / 1751 / 976, so the
+            unadjudicable pair is 99.2 % and a summary read as "11
+            verified of 2748" would be badly wrong. `capture` states
+            what the run could have reached.
     """
     q = _get_query()
+    loaded = None
+    if run:
+        loaded = _load_runs(run)
+        _require_family(loaded, "exercised_by", "verification_audit")
     result = q.verification_audit(
         group_by=group_by or None,
         include_tests=include_tests,
+        run=loaded,
     )
     return to_json(to_dict(result))
 
