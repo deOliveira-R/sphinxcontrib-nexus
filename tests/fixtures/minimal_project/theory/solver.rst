@@ -71,3 +71,29 @@ inference runs, and nothing else pins that.
    Declared deliberately onto a DIFFERENT symbol than the one the
    inference would have guessed (``Mesh``), so the assertion can tell a
    stood-down guess from a coincidence.
+
+The error catalogue
+-------------------
+
+Two entries, and the pairing is the point. ``FM-01`` is named by
+``test_attenuation_vacuum_source``'s ``@pytest.mark.catches``, so
+declaring it here turns that marker from a string into a real
+``catches`` edge. ``FM-99`` is declared and named by nothing, so it is
+the UNCAUGHT case — which is the finding ``errors`` exists to report and
+the question ``nexus#63`` was filed for.
+
+Both have to live in a real build: the edge is written by
+``merge.write_catches_edges`` only after ``apply_declared_nodes`` has
+minted the node, and nothing else pins that order.
+
+.. error-entry:: FM-01
+   :title: Attenuation with a vacuum inlet returns a non-zero flux
+
+   The marker on ``test_attenuation_vacuum_source`` resolves here.
+
+.. error-entry:: FM-99
+   :title: A catalogued defect that no test claims
+
+   Deliberately uncaught. If a test ever carries
+   ``@pytest.mark.catches("FM-99")``, the ``uncaught`` assertion in
+   ``test_fixture_e2e.py`` is what will notice.

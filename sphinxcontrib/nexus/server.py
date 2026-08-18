@@ -1601,6 +1601,41 @@ def dead_references(limit: int = 0) -> str:
     return to_json(payload)
 
 
+@nexus_tool
+def errors(limit: int = 0) -> str:
+    """The catalogued failure modes, and which tests catch them.
+
+    The sibling of ``verification_coverage`` on the other authored
+    relation: that one answers *which equation has no test*, this one
+    *which catalogued DEFECT has no catcher* — a question that was a
+    grep against a markdown file until entries became nodes. Entries are
+    declared by ``.. error-entry::``; catchers arrive from
+    ``@pytest.mark.catches``.
+
+    Rows lead with the UNCAUGHT ones, because those are the finding: a
+    catalogued defect nothing pins is an unguarded regression.
+
+    ⚠ ``total_entries: 0`` does not mean the project is clean — it means
+    nothing has been declared, and every ``catches`` marker in the tree
+    points at nothing. ``unresolved_markers`` separates those two
+    states, and is worth reading even when entries exist: a marker
+    naming an undeclared id READS as coverage in a grep and is not.
+
+    Args:
+        limit: Maximum entries to return (uncaught first). 0 uses the
+            project's list budget; -1 is uncapped. ``total_entries``,
+            ``uncaught`` and ``total_catchers`` always reflect the full
+            count, whatever was returned.
+    """
+    q = _get_query()
+    result = q.errors()
+    payload = to_dict(result)
+    cap = _list_limit(limit)
+    if cap > 0:
+        payload["entries"] = payload["entries"][:cap]
+    return to_json(payload)
+
+
 def _briefing_payload() -> dict[str, Any]:
     """Briefing body shared by the tool and the ``nexus://briefing``
     resource."""

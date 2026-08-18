@@ -175,11 +175,22 @@ prefixes = ["src/mypkg", "tests"]
 
 ```toml
 [catalog]
-# Files declaring error-catalogue entries, so `@pytest.mark.catches`
-# has something to resolve against. See `.. error-entry::` in
-# {doc}`authoring`.
-errors = ["docs/verification/error_catalog.rst"]
+# ONE project-relative path (a string, not a list) to a file listing the
+# project's failure modes. Optional, and usually unnecessary.
+errors = "docs/verification/error_catalog.rst"
 ```
+
+Optional because the catalogue's real home is the corpus: `.. error-entry::`
+declares an entry wherever it is written, `@pytest.mark.catches` resolves
+against those nodes, and `errors` / `verification_gaps` read them straight
+from the graph. This key exists for a project that keeps its catalogue
+*outside* the corpus and still wants `nexus gaps` to count against it.
+
+:::{warning}
+A **list** here raises `TypeError` — this page documented one until
+2026-08-17, and `nexus config` crashes on the spelling it showed. If you
+copied that form, make it a bare string.
+:::
 
 ## Seeing what is in effect
 

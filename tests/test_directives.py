@@ -458,6 +458,40 @@ def test_a_project_with_no_catalogue_is_told_once_not_224_times(caplog):
     assert "not in the corpus" in caplog.text
 
 
+def test_the_relation_replay_SKIPS_a_declaration_instead_of_crashing():
+    """The shared registry holds both kinds; only one has a `label`.
+
+    Regression, 2026-08-17. `apply_pending_edges` read `entry["label"]`
+    for every payload that was not an equation relation, so the first
+    real `.. error-entry::` in any project raised `KeyError: 'label'`
+    out of the `build-finished` handler and took the whole build down.
+
+    The nine sibling tests above could not see it: every one of them
+    calls `apply_declared_nodes` directly, and the crash is in the OTHER
+    function that walks the same queue. Only a real Sphinx build runs
+    both — which is why `test_fixture_e2e` now declares two entries.
+    """
+    env = _env_with_error_entries(("ERR-051", "x"))
+    # A relation payload alongside it, so the replay has real work to do
+    # and a silent early return cannot pass for a skip.
+    env.nexus_pending_edges["catalogue"].append({
+        "kind": "implements", "label": "eq-a", "target": "pkg.fn",
+        "docname": "catalogue", "lineno": 2,
+    })
+    g = nx.MultiDiGraph()
+    g.add_node("math:equation:eq-a", type="equation", name="eq-a")
+    g.add_node("py:function:pkg.fn", type="function", name="pkg.fn")
+
+    assert apply_pending_edges(env, g) == 1  # the relation, not the entry
+
+    edge = list(g.get_edge_data(
+        "py:function:pkg.fn", "math:equation:eq-a",
+    ).values())[0]
+    assert edge["type"] == "implements"
+    # And the declaration is still the other function's job, untouched.
+    assert "vv:error:ERR-051" not in g
+
+
 def test_write_catches_edges_is_idempotent():
     from sphinxcontrib.nexus.directives import apply_declared_nodes
     from sphinxcontrib.nexus.merge import write_catches_edges

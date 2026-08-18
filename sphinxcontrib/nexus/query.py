@@ -993,6 +993,59 @@ class VerificationGapsResult:
     filters: dict[str, str | int | None] = field(default_factory=dict)
 
 
+@dataclass
+class ErrorCatcher:
+    """One test claiming to catch a catalogued defect.
+
+    ``source`` names WHAT made the claim — ``pytest.mark.catches`` or a
+    directive. An audit needs the provenance of a coverage claim, and
+    the edge type alone does not carry it.
+    """
+
+    test: NodeResult
+    source: str = ""
+
+
+@dataclass
+class ErrorEntry:
+    """A catalogued failure mode, and the tests that claim to catch it.
+
+    Deliberately NOT a bare :class:`NodeResult`. The serializer compacts
+    a node down to its id whenever the remaining fields merely repeat an
+    id segment, so ``title`` — the one field a reader actually scans —
+    would not survive the trip.
+    """
+
+    id: str
+    name: str
+    title: str = ""
+    docname: str = ""
+    lineno: int = 0
+    catcher_count: int = 0
+    catchers: list[ErrorCatcher] = field(default_factory=list)
+
+
+@dataclass
+class ErrorsResult:
+    """The error catalogue as the graph holds it.
+
+    ``uncaught`` is the headline: a catalogued defect that no test
+    claims is a hole in the regression net, and counting those is the
+    question the catalogue exists to be asked.
+
+    ``unresolved_markers`` is the other direction — a
+    ``@pytest.mark.catches`` naming an entry nobody declared. Such a
+    marker READS as coverage in a grep and is not one, so an empty list
+    here is part of the answer rather than padding.
+    """
+
+    entries: list[ErrorEntry] = field(default_factory=list)
+    total_entries: int = 0
+    total_catchers: int = 0
+    uncaught: int = 0
+    unresolved_markers: list[str] = field(default_factory=list)
+
+
 #: A node body of at most this many lines, with no recognised accessor
 #: decorator, is treated as a trivial getter by ``_is_accessor``. Kept tight
 #: to avoid misclassifying a genuine short polymorphic dispatcher.
@@ -2492,9 +2545,13 @@ class GraphQuery:
           ``tests`` edge from any tier (declared, 1-hop, multi-hop).
           Equivalent to the ``documented``/``implemented`` bucket of
           ``verification_audit``.
-        - ``missing_err_catchers``: when ``error_catalog`` is supplied,
-          any ``ERR-NNN`` / ``FM-NN`` tag in the catalog that no test's
-          ``catches`` metadata mentions.
+        - ``missing_err_catchers``: any catalogued failure mode that no
+          test's ``catches`` metadata mentions. The catalogue is the
+          set of ``.. error-entry::`` nodes in the graph; ``error_catalog``
+          overrides it for a project that keeps its catalogue outside
+          the corpus. Before entries were nodes this bucket could only
+          be filled by the caller, so it reported ``None`` on every
+          project — see :meth:`errors` for the full per-entry answer.
 
         Filters:
 
@@ -2573,6 +2630,17 @@ class GraphQuery:
             ))
 
         # ---- missing_err_catchers --------------------------------------
+        # An explicit set still wins: a project may hold its catalogue
+        # outside the corpus. But defaulting to the declared entries is
+        # what makes this bucket answerable at all — it read `None` on
+        # every project for as long as the caller was its only source.
+        if error_catalog is None:
+            error_catalog = {
+                attrs.get("name", "")
+                for _node_id, attrs in self._g.nodes(data=True)
+                if attrs.get("type") == NodeType.ERROR.value
+            } - {""}
+
         missing_err: list[VerificationGap] = []
         if error_catalog:
             covered: set[str] = set()
@@ -2601,6 +2669,83 @@ class GraphQuery:
                     len(error_catalog) if error_catalog else None
                 ),
             },
+        )
+
+    def errors(self, max_catchers_per_entry: int = 25) -> ErrorsResult:
+        """The catalogued failure modes, least-covered first.
+
+        The sibling of :meth:`verification_coverage` on the project's
+        other authored relation: that one asks which EQUATION has no
+        test, this asks which catalogued DEFECT has no catcher. Entries
+        are declared by ``.. error-entry::`` and reached by
+        ``@pytest.mark.catches`` (see
+        :func:`~sphinxcontrib.nexus.merge.write_catches_edges`).
+
+        Rows are sorted uncaught-first, then by id, because the uncaught
+        ones ARE the finding — a budget-truncated reply then keeps the
+        half worth reading.
+
+        ⚠ An empty result does not mean the project has no catalogued
+        defects. It means no ``.. error-entry::`` has been declared, and
+        every ``catches`` marker in the tree is pointing at nothing —
+        which is exactly what ``unresolved_markers`` reports, rather
+        than leaving it as a silent zero.
+
+        Args:
+            max_catchers_per_entry: Cap on each entry's catcher list.
+                ``catcher_count`` is always the TRUE total, whatever was
+                returned.
+        """
+        catchers_by_entry: dict[str, list[ErrorCatcher]] = {}
+        for src_id, tgt_id, data in self._g.edges(data=True):
+            if data.get("type") != EdgeType.CATCHES.value:
+                continue
+            catchers_by_entry.setdefault(tgt_id, []).append(
+                ErrorCatcher(
+                    test=self._node_result(src_id),
+                    source=data.get("source", ""),
+                )
+            )
+
+        entries: list[ErrorEntry] = []
+        declared: set[str] = set()
+        for node_id, attrs in self._g.nodes(data=True):
+            if attrs.get("type") != NodeType.ERROR.value:
+                continue
+            name = attrs.get("name", "")
+            declared.add(name)
+            found = sorted(
+                catchers_by_entry.get(node_id, []), key=lambda c: c.test.id
+            )
+            entries.append(ErrorEntry(
+                id=node_id,
+                name=name,
+                title=attrs.get("title", ""),
+                docname=attrs.get("docname", ""),
+                lineno=attrs.get("lineno") or 0,
+                catcher_count=len(found),
+                catchers=found[:max_catchers_per_entry],
+            ))
+
+        entries.sort(key=lambda e: (e.catcher_count > 0, e.name))
+
+        # The other direction, and the reason it is a RESULT field rather
+        # than a build-time warning only: a marker naming an undeclared
+        # entry is invisible to anyone reading the catalogue, and reads
+        # as coverage to anyone grepping the tests.
+        unresolved = {
+            tag
+            for _node_id, attrs in self._g.nodes(data=True)
+            for tag in (attrs.get("catches") or ())
+            if tag not in declared
+        }
+
+        return ErrorsResult(
+            entries=entries,
+            total_entries=len(entries),
+            total_catchers=sum(e.catcher_count for e in entries),
+            uncaught=sum(1 for e in entries if not e.catcher_count),
+            unresolved_markers=sorted(unresolved),
         )
 
     # ------------------------------------------------------------------

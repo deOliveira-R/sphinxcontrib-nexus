@@ -525,6 +525,14 @@ def _apply_relation(
     return 1
 
 
+#: Directive kinds that DECLARE a node rather than relate two existing
+#: ones. They share ``env.nexus_pending_edges`` with the relation
+#: directives and are applied by :func:`apply_declared_nodes`, so the
+#: relation replay must skip them — their payload has no ``label`` or
+#: ``target`` to read.
+DECLARING_KINDS = frozenset({"error-entry"})
+
+
 def apply_pending_edges(
     env: "BuildEnvironment",
     graph: "nx.MultiDiGraph",
@@ -562,6 +570,14 @@ def apply_pending_edges(
 
             if kind in EQUATION_RELATIONS:
                 written += _apply_relation(entry, graph, ctx)
+                continue
+
+            # Declaring directives share this registry (one store keeps
+            # `env-purge-doc` and `env-merge-info` working for both), but
+            # they carry no `label`/`target` — they MINT a node rather
+            # than relate two. `apply_declared_nodes` has already
+            # handled them; reading on would KeyError.
+            if kind in DECLARING_KINDS:
                 continue
 
             label = entry["label"]

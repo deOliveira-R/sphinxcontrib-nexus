@@ -3,7 +3,7 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (43)
+## Tools (44)
 
 ### Exploration
 | Tool | What it answers | Key args |
@@ -60,6 +60,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 | `verification_coverage` | V&V status map | `status_filter` |
 | `verification_audit` | Complete V&V audit (single call) | — |
 | `verification_gaps` | Untagged tests, unverified equations, missing err catchers | `module`, `level` |
+| `errors` | Catalogued failure modes and the tests that catch them, UNCAUGHT FIRST; `total_entries: 0` means nothing is declared, not nothing is wrong | `limit` |
 | `staleness` | Doc-code drift (git timestamps) + dead-reference summary | — |
 | `dead_references` | Docs/docstrings citing symbols or equation labels that NO LONGER EXIST (Sphinx renders these as plain text with no warning) | `limit` |
 | `session_briefing` | Session overview | — |

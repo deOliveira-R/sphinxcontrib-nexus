@@ -647,3 +647,51 @@ def test_a_wrapped_role_in_PROSE_is_normalised_like_one_in_a_docstring(
     assert wrapped in fixture_graph, sorted(
         n for n in fixture_graph if "wrapped" in str(n)
     )
+
+
+# ---------------------------------------------------------------------------
+# `.. error-entry::` — the declaring directive, through a REAL build
+# ---------------------------------------------------------------------------
+#
+# The unit tests in `test_directives.py` call `apply_declared_nodes`
+# directly, which is why they could not see that `apply_pending_edges`
+# — the OTHER function walking the same queue — raised `KeyError:
+# 'label'` on a declaration payload and took the build down with it.
+# Only a real build runs both, so these are the gates that matter.
+
+
+def test_an_error_entry_becomes_a_node_in_a_real_build(fixture_graph):
+    for entry_id in ("FM-01", "FM-99"):
+        node = fixture_graph.nodes.get(f"vv:error:{entry_id}")
+        assert node is not None, f"{entry_id} was not declared"
+        assert node["type"] == "error"
+        assert node["title"]
+
+
+def test_a_catches_marker_becomes_a_real_edge(fixture_graph):
+    """The whole point of `nexus#63`: a string becomes a traversal."""
+    edges = [
+        (s, t) for s, t, d in fixture_graph.edges(data=True)
+        if d.get("type") == "catches"
+    ]
+    assert edges == [(
+        "py:function:solver_tests.test_solver.test_attenuation_vacuum_source",
+        "vv:error:FM-01",
+    )]
+
+
+def test_the_uncaught_entry_LEADS_the_errors_answer(fixture_graph):
+    """FM-99 is declared and claimed by nothing — the finding.
+
+    This is the case the query exists to surface, and it is here rather
+    than only in a hand-built graph so that the ordering is pinned
+    against a graph the real directive path produced.
+    """
+    from sphinxcontrib.nexus.query import GraphQuery
+
+    result = GraphQuery(fixture_graph).errors()
+
+    assert [e.name for e in result.entries] == ["FM-99", "FM-01"]
+    assert result.uncaught == 1
+    assert result.total_catchers == 1
+    assert result.unresolved_markers == []

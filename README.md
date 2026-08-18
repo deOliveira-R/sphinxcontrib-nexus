@@ -184,7 +184,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 | `derives_from` | Specialization → the parent it was reduced from | Directive |
 | `approximates` | Closure/truncation → the exact form it stands in for | Directive |
 
-## MCP Tools (43)
+## MCP Tools (44)
 
 ### Exploration
 - **`query`** — keyword search across node names
@@ -228,6 +228,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 - **`verification_coverage`** — equation → code → test coverage map (supports `limit`/`offset` pagination)
 - **`verification_audit`** — complete V&V audit: coverage + staleness + prioritized gap list (supports `group_by` and `include_tests`)
 - **`verification_gaps`** — untagged tests, unverified equations, missing err catchers (supports `module` and `level` filters)
+- **`errors`** — the catalogued failure modes (`.. error-entry::`) and the tests that catch them (`@pytest.mark.catches`), **uncaught first**. The sibling of `verification_coverage` on the other authored relation: that one answers *which equation has no test*, this one *which catalogued defect has no catcher*. `total_entries: 0` means nothing is declared rather than nothing is wrong, so `unresolved_markers` reports the markers pointing at no entry — those read as coverage in a grep and are not
 - **`staleness`** — detect docs that drifted from code: git-timestamp drift plus a dead-reference summary
 - **`dead_references`** — doc/docstring references whose code target no longer exists (deleted/renamed symbols still referenced by theory pages, docstrings, or quoted type annotations — Sphinx renders these as plain text with no warning); project-rooted names only, with re-export and inheritance rescue passes to keep false positives out. Findings carry `minted_by`: the files whose own code created the placeholder the reference bound to, so an unmaintained directory minting a namespace is named directly rather than showing up as N unrelated dead references
 - **`session_briefing`** — AI agent context restoration

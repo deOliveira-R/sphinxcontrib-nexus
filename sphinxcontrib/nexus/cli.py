@@ -656,6 +656,39 @@ def main(argv: list[str] | None = None) -> int:
         help="Exit 1 when any dead reference is found, so this can gate CI.",
     )
 
+    # --- errors ---
+    # Carries --format text for the same reason dead-references does: it
+    # is a finding an agent did not ask for, and an uncaught catalogued
+    # defect draws no warning from any build.
+    errors_cmd = sub.add_parser(
+        "errors",
+        help="The catalogued failure modes (`.. error-entry::`) and the "
+             "tests that catch them, least-covered first",
+    )
+    errors_cmd.add_argument(
+        "--db", type=Path, default=None,
+    )
+    errors_cmd.add_argument(
+        "--limit", type=int, default=50,
+        help="Max entries, uncaught first (default: 50; 0 = all).",
+    )
+    errors_cmd.add_argument(
+        "--format", choices=("json", "text"), default="json",
+        help="'text' is a compact digest for context injection; 'json' is "
+             "the full payload with every catcher.",
+    )
+    errors_cmd.add_argument(
+        "--quiet-when-clean", action="store_true",
+        help="Print nothing when every entry has a catcher and no marker "
+             "dangles. For hooks and `!` injection: an empty finding must "
+             "cost zero context.",
+    )
+    errors_cmd.add_argument(
+        "--exit-code", action="store_true",
+        help="Exit 1 when a catalogued defect has no catcher, or a marker "
+             "names no entry, so this can gate CI.",
+    )
+
     # --- protocol-conformers ---
     pc_cmd = sub.add_parser(
         "protocol-conformers",
@@ -986,6 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
         "discriminations": _run_discriminations,
         "dead-functions": _run_dead_functions,
         "dead-references": _run_dead_references,
+        "errors": _run_errors,
         "protocol-conformers": _run_protocol_conformers,
         "runtime-ingest": _run_runtime_ingest,
         "runtime-runs": _run_runtime_runs,
@@ -1771,6 +1805,61 @@ def _run_discriminations(args: argparse.Namespace) -> int:
         min_sites=args.min_sites, exclude=toks, limit=args.limit,
     )
     return _json_out(to_dict(results))
+
+
+def _run_errors(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+
+    q = _load_query(args)
+    result = q.errors()
+    entries = result.entries if args.limit <= 0 else result.entries[: args.limit]
+    findings = result.uncaught + len(result.unresolved_markers)
+
+    if args.format == "json":
+        payload = to_dict(result)
+        payload["entries"] = payload["entries"][: len(entries)]
+        _json_out(payload)
+        return 1 if (args.exit_code and findings) else 0
+
+    # An absence must say where it looked: a project that has declared
+    # nothing and a project whose catalogue is fully covered both report
+    # zero findings, and they are not the same state.
+    if not result.total_entries:
+        if not args.quiet_when_clean:
+            print(
+                "No error catalogue: nothing declares `.. error-entry::`, so "
+                f"{len(result.unresolved_markers)} `catches` marker id(s) "
+                "resolve to nothing."
+            )
+        return 1 if (args.exit_code and result.unresolved_markers) else 0
+
+    if not findings:
+        if not args.quiet_when_clean:
+            print(
+                f"Error catalogue: {result.total_entries} entries, every one "
+                f"caught ({result.total_catchers} catcher(s))."
+            )
+        return 0
+
+    print(
+        f"ERROR CATALOGUE — {result.uncaught} of {result.total_entries} "
+        f"catalogued defect(s) have NO test claiming to catch them. A "
+        f"catalogued defect with no catcher is an unpinned regression: "
+        f"either write the gate, or say in the entry why none can exist."
+    )
+    for entry in entries:
+        if entry.catcher_count:
+            continue
+        where = f"  ({entry.docname})" if entry.docname else ""
+        print(f"\n  {entry.name} — {entry.title or '(untitled)'}{where}")
+    if result.unresolved_markers:
+        print(
+            f"\n{len(result.unresolved_markers)} `catches` marker id(s) name "
+            f"no declared entry — these READ as coverage and are not:"
+        )
+        for tag in result.unresolved_markers:
+            print(f"      {tag}")
+    return 1 if args.exit_code else 0
 
 
 def _run_dead_references(args: argparse.Namespace) -> int:
