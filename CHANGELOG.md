@@ -4,6 +4,49 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — a DECLARATION is admission-controlled, like a guess always was
+
+`apply_pending_edges` resolved a directive's target and wrote the edge
+unconditionally. `_infer_implements` has always consulted the ontology
+first, on its own stated principle — *"an edge that should not exist must
+never be created, and a warn-after pass would let it ship"*. The two were
+exactly backwards: a guess lands at confidence 0.7 and an authored
+declaration at **1.0**, so the stronger claim was the unchecked one.
+
+`[M]` on ORPHEUS this let `carrier-grid-operator-typing` acquire
+`py:data:` implementers against a `domain` of function/method/class, on a
+`-W` build that stayed green and warned at no severity.
+
+A refused declaration now **warns naming the rule** — what was wrong
+(`source is 'data'`), which rule (`[edge.implements]`), and where to
+change it — and skips. Skipping is the safe half: `_infer_implements`
+reads its stand-down set off the graph's edges and runs afterwards, so a
+refused declaration leaves the inference to proceed rather than
+suppressing the guesses and leaving the equation with nothing at all.
+
+### Fixed — the target resolver admits what the SCHEMA admits
+
+`_node_id_for_target` hard-coded `function`/`method`/`class`, and
+resolver and ontology then drifted in the worst available direction: a
+bare `:by: pkg.mod.SomeTypeVar` was refused with *"target not found in
+graph"* — false, the node is right there — while the author's natural
+workaround, the fully-prefixed `py:data:pkg.mod.SomeTypeVar`, matched the
+already-a-node-id line and skipped the type filter entirely. The natural
+spelling rejected with a misleading message, the workaround accepted with
+no check at all.
+
+It now takes the edge's own `domain`. The base ontology's three ARE the
+three it used to hard-code, so this is observable only through a
+project's `[extend.edge.implements]` — which is precisely the drift it
+removes, and how its gate witnesses it.
+
+⚠ **`[edge.implements].domain` is unchanged and the question is still
+open**: is a TypeVar a legal implementer of a *typing rule*? Widening is
+the ontology's own sanctioned move and is now a one-line project
+extension the machinery will honour — but it stays a decision someone
+makes, rather than one made by accident through a prefix workaround
+(nexus#86).
+
 ### Added — which tests EXECUTED which code is a relation the graph can join
 
 `ExecutionLedger` joins a contexts-carrying `coverage` run onto the graph,

@@ -519,3 +519,140 @@ def test_purge_drops_error_entries_too():
     env = _env_with_error_entries(("ERR-051", "x"))
     purge_doc(None, env, "catalogue")
     assert env.nexus_pending_edges == {}
+
+
+# ---------------------------------------------------------------------------
+# apply_pending_edges — the ontology admits a DECLARATION too (nexus#86)
+# ---------------------------------------------------------------------------
+#
+# The guessing path consulted the ontology at the producer; this one wrote
+# unconditionally. Backwards: a guess lands at confidence 0.7 and an
+# authored declaration at 1.0, so the stronger claim was the unchecked one.
+
+
+def _graph_with_a_typevar() -> nx.MultiDiGraph:
+    """The measured case. `[edge.implements].domain` is
+    function/method/class, so a TypeVar (`data`) is not an admissible
+    implementer — and `carrier-grid-operator-typing` on ORPHEUS acquired
+    exactly these edges, on a `-W` build that stayed green."""
+    g = _graph_for_edge_tests()
+    g.add_node("py:data:pkg.Domain", type="data", name="pkg.Domain",
+               display_name="Domain", domain="py")
+    return g
+
+
+def _entry(kind, target, label="eq-1"):
+    return {"kind": kind, "label": label, "target": target,
+            "docname": "theory/index", "lineno": 42}
+
+
+def _apply(g, *entries, project_root=None):
+    env = types.SimpleNamespace()
+    env.nexus_pending_edges = {"theory/index": list(entries)}
+    return apply_pending_edges(env, g, project_root=project_root)
+
+
+def test_the_PREFIXED_workaround_no_longer_skips_the_type_check(caplog):
+    """⛔ The hole this closes.
+
+    `_node_id_for_target` returns `target` unchanged when it is already a
+    node id, so a fully-prefixed `:by: py:data:...` matched before any
+    type filter ran. The bare spelling was REJECTED ("target not found in
+    graph" — false, the node is right there) and the workaround was
+    ACCEPTED with no check at all. Worst of both.
+    """
+    g = _graph_with_a_typevar()
+    with caplog.at_level("WARNING"):
+        written = _apply(g, _entry("implements", "py:data:pkg.Domain"))
+    assert written == 0
+    assert not [d for _, _, d in g.edges(data=True)
+                if d.get("type") == "implements"]
+    assert "ontology refuses" in caplog.text
+    assert "domain is ['function', 'method', 'class']" in caplog.text
+
+
+def test_the_refusal_names_the_RULE_so_the_author_can_act(caplog):
+    """The author asserted a fact and the schema disagrees; only they can
+    decide which is wrong. A bare "skipping" would not let them."""
+    g = _graph_with_a_typevar()
+    with caplog.at_level("WARNING"):
+        _apply(g, _entry("implements", "py:data:pkg.Domain"))
+    assert "source is 'data'" in caplog.text          # what was wrong
+    assert "[edge.implements]" in caplog.text          # which rule
+    assert "ontology.toml" in caplog.text              # where to change it
+
+
+def test_declaring_a_TEST_as_an_implementer_is_refused(caplog):
+    """`forbid_source_attr = {in_test_file = true}`: a test VERIFIES an
+    equation, it does not implement one. The inference path has refused
+    this since it was written — an equation whose only implementer is a
+    test reads as implemented when nothing implements it, a false ALIVE.
+    The declaring path accepted it."""
+    g = _graph_for_edge_tests()
+    g.nodes["py:function:pkg.test_solve"]["in_test_file"] = True
+    with caplog.at_level("WARNING"):
+        written = _apply(g, _entry("implements", "pkg.test_solve"))
+    assert written == 0
+    assert "ontology refuses" in caplog.text
+    assert "in_test_file" in caplog.text
+
+
+def test_the_SAME_test_node_is_still_a_legal_VERIFIER():
+    """The refusal is per-edge-type, not a blanket ban on test nodes —
+    `[edge.tests]` is exactly what a test may carry."""
+    g = _graph_for_edge_tests()
+    g.nodes["py:function:pkg.test_solve"]["in_test_file"] = True
+    assert _apply(g, _entry("verifies", "pkg.test_solve")) == 1
+
+
+def test_a_refused_declaration_leaves_the_INFERENCE_free_to_proceed():
+    """The safety property behind skipping rather than writing.
+
+    `_infer_implements` stands its guesses down for any equation that
+    already carries a non-inferred `implements` edge, and it runs AFTER
+    this pass. Writing the refused edge would suppress the guesses; so
+    would recording the equation as declared. Skipping does neither, so
+    a refused declaration costs the equation nothing it had.
+    """
+    g = _graph_with_a_typevar()
+    _apply(g, _entry("implements", "py:data:pkg.Domain"))
+    declared = {
+        t for _, t, d in g.edges(data=True)
+        if d.get("type") == "implements" and d.get("source") != "inferred"
+    }
+    assert "math:equation:eq-1" not in declared
+
+
+def test_a_legal_declaration_still_lands_silently(caplog):
+    """The positive control. A check that refuses everything would pass
+    every gate above."""
+    g = _graph_with_a_typevar()
+    with caplog.at_level("WARNING"):
+        written = _apply(g, _entry("implements", "pkg.solve"))
+    assert written == 1
+    assert "ontology refuses" not in caplog.text
+
+
+def test_the_resolver_admits_what_the_PROJECT_ontology_admits(tmp_path):
+    """⭐ The drift this removes, and it needs a project extension to be
+    observable at all — the base `domain` IS the three the resolver used
+    to hard-code, so the two agree today and would silently disagree the
+    moment either moved. Widening `implements` to accept `data` makes the
+    bare `:by: pkg.Domain` resolve, with no change to the resolver.
+    """
+    (tmp_path / ".nexus").mkdir()
+    # `[extend.edge.…]`, not a redefinition — widening is monotone and
+    # the base entries are kept, which is what makes it safe.
+    (tmp_path / ".nexus" / "ontology.toml").write_text(
+        '[extend.edge.implements]\ndomain = ["data"]\n'
+    )
+    g = _graph_with_a_typevar()
+    # Base ontology: the bare name does not resolve and `data` is refused.
+    assert _apply(g, _entry("implements", "pkg.Domain")) == 0
+    # The project's own ontology says a TypeVar may carry it. Same input.
+    assert _apply(g, _entry("implements", "pkg.Domain"),
+                  project_root=tmp_path) == 1
+    assert ("py:data:pkg.Domain", "math:equation:eq-1") in [
+        (s, t) for s, t, d in g.edges(data=True)
+        if d.get("type") == "implements"
+    ]

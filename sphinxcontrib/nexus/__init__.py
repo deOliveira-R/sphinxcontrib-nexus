@@ -370,7 +370,9 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     check_node_types(graph.nxgraph, project_root=settings.project.root)
     write_verifies_edges(graph.nxgraph)
     write_catches_edges(graph.nxgraph)
-    apply_pending_edges(app.env, graph.nxgraph)
+    apply_pending_edges(
+        app.env, graph.nxgraph, project_root=settings.project.root,
+    )
 
     registry_paths = list(settings.verification_registry)
     # Paths are resolved relative to ``app.srcdir`` — the directory

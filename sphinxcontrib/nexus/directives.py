@@ -44,17 +44,24 @@ edges alongside everything else.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from docutils import nodes
 from docutils.parsers.rst import directives as rst_directives
 from sphinx.util.docutils import SphinxDirective
 
-from sphinxcontrib.nexus._mappings import doc_node_id, resolve_proof_id
+from sphinxcontrib.nexus._mappings import (
+    doc_node_id,
+    node_id,
+    resolve_proof_id,
+)
 from sphinxcontrib.nexus.extractors import _is_auto_proof_label
 from sphinxcontrib.nexus.graph import EdgeType, NodeType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import networkx as nx
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
@@ -121,18 +128,42 @@ def _resolve_enclosing_py_symbol(env: "BuildEnvironment") -> str | None:
     return None
 
 
-def _node_id_for_target(target: str, graph: "nx.MultiDiGraph") -> str | None:
+#: What :func:`_node_id_for_target` tries when no ontology is on hand.
+#: The same three it has always tried — a fallback, not a rule. Every
+#: caller in this module passes the edge's own ``domain`` instead.
+_FALLBACK_TARGET_TYPES: tuple[str, ...] = ("function", "method", "class")
+
+
+def _node_id_for_target(
+    target: str,
+    graph: "nx.MultiDiGraph",
+    node_types: Iterable[str] = _FALLBACK_TARGET_TYPES,
+) -> str | None:
     """Resolve a user-supplied Python symbol name to a concrete node
     id in the graph. Accepts either a bare dotted name (``pkg.mod.func``)
     or an already-prefixed node id (``py:function:pkg.mod.func``).
 
-    Returns the resolved id if a matching function/method/class node
-    exists, otherwise ``None``.
+    ``node_types`` is the edge's own ``domain`` from the ontology, so the
+    resolver admits exactly what the schema admits. It used to hard-code
+    ``function``/``method``/``class``, and resolver and schema then
+    drifted in the worst available direction: a bare
+    ``:by: pkg.mod.SomeTypeVar`` was refused with *"target not found in
+    graph"* — false, the node is right there — while the author's
+    natural workaround, the fully-prefixed
+    ``py:data:pkg.mod.SomeTypeVar``, matched the ``target in graph``
+    line below and skipped the type filter entirely. The natural
+    spelling rejected with a misleading message, the workaround accepted
+    with no check at all (nexus#86).
+
+    ⚠ Still assumes the ``py`` domain, because both edges that reach it
+    (``implements``, ``tests``) have code-only domains. An ontology that
+    admitted a non-code type here would have to carry the domain too —
+    stated rather than silently assumed.
     """
     if target in graph:
         return target
-    for prefix in ("py:function:", "py:method:", "py:class:"):
-        candidate = f"{prefix}{target}"
+    for node_type in node_types:
+        candidate = node_id("py", node_type, target)
         if candidate in graph:
             return candidate
     return None
@@ -410,11 +441,11 @@ def apply_declared_nodes(
             if entry.get("kind") != "error-entry":
                 continue
             entry_id = entry["id"]
-            node_id = f"vv:{NodeType.ERROR.value}:{entry_id}"
-            if node_id in graph:
+            entry_node = node_id("vv", NodeType.ERROR, entry_id)
+            if entry_node in graph:
                 continue
             graph.add_node(
-                node_id,
+                entry_node,
                 type=NodeType.ERROR.value,
                 name=entry_id,
                 display_name=entry.get("title") or entry_id,
@@ -432,7 +463,7 @@ def apply_declared_nodes(
             page = doc_node_id(docname)
             if page in graph:
                 graph.add_edge(
-                    page, node_id,
+                    page, entry_node,
                     type=EdgeType.CONTAINS.value,
                     source="directive",
                 )
@@ -542,6 +573,7 @@ DECLARING_KINDS = frozenset({"error-entry"})
 def apply_pending_edges(
     env: "BuildEnvironment",
     graph: "nx.MultiDiGraph",
+    project_root: "Path | str | None" = None,
 ) -> int:
     """Replay ``env.nexus_pending_edges`` against the graph.
 
@@ -549,6 +581,13 @@ def apply_pending_edges(
     writes the corresponding edge. Missing nodes (target or equation)
     are logged and skipped — directive misuse should be loud without
     breaking the build.
+
+    ``project_root`` locates the project's ``.nexus/ontology.toml``, so
+    an extension it declares is honoured here as it already is at the
+    inference producer. Passing nothing reads the BASE ontology alone,
+    which is the right default for a caller with no project but would
+    silently ignore a project's own widening — hence the call site
+    passes it.
 
     The registry is **not** cleared after replay: directive payloads
     persist across incremental builds so a cached doctree still
@@ -566,6 +605,10 @@ def apply_pending_edges(
     )
     if not registry:
         return 0
+
+    from sphinxcontrib.nexus.ontology import Ontology
+
+    ontology = Ontology.load(project_root)
 
     written = 0
     for docname, entries in registry.items():
@@ -589,7 +632,19 @@ def apply_pending_edges(
             label = entry["label"]
             target = entry["target"]
 
-            resolved = _node_id_for_target(target, graph)
+            # The edge type is settled BEFORE resolution, because it is
+            # what says which node types may carry this edge — the
+            # resolver then admits exactly what the schema admits
+            # instead of a hard-coded three (nexus#86).
+            wanted = (
+                EdgeType.TESTS.value
+                if kind == "verifies"
+                else EdgeType.IMPLEMENTS.value
+            )
+            spec = ontology.edges.get(wanted)
+            admitted = tuple(spec.domain) if spec else _FALLBACK_TARGET_TYPES
+
+            resolved = _node_id_for_target(target, graph, admitted)
             if resolved is None:
                 logger.warning(
                     ".. %s:: %s [%s]: target %r not found in graph — skipping",
@@ -602,6 +657,41 @@ def apply_pending_edges(
                 logger.warning(
                     ".. %s:: %s [%s]: equation %s not found in graph — skipping",
                     kind, label, ctx, eq_id,
+                )
+                continue
+
+            # The ontology is the admission authority for a DECLARATION
+            # too. It always was for a guess — `_infer_implements`
+            # consults it at the producer, on the stated principle that
+            # "an edge that should not exist must never be created" —
+            # and this path did not, which is exactly backwards: a guess
+            # lands at confidence 0.7 and an authored declaration at
+            # 1.0, so the stronger claim was the unchecked one.
+            #
+            # It skips rather than writes, and that is safe here:
+            # `_infer_implements` reads `declared_equations` off the
+            # EDGES in the graph and runs after this pass, so a refused
+            # declaration leaves the inference to proceed normally
+            # rather than standing the guesses down and leaving the
+            # equation with nothing at all.
+            src_attrs = graph.nodes[resolved]
+            refusal = ontology.check_edge(
+                wanted,
+                src_attrs.get("type", ""),
+                graph.nodes[eq_id].get("type", ""),
+                source_attrs=src_attrs,
+                source_id=resolved,
+                target_id=eq_id,
+            )
+            if refusal is not None:
+                # Name the RULE, not just the refusal: the author is
+                # asserting a fact and the schema disagrees, and only
+                # they can decide which of the two is wrong.
+                logger.warning(
+                    ".. %s:: %s [%s]: the ontology refuses this edge — %s "
+                    "(declare a different symbol, or widen [edge.%s] in "
+                    "the project's .nexus/ontology.toml)",
+                    kind, label, ctx, refusal.reason, wanted,
                 )
                 continue
 
