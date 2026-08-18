@@ -4,6 +4,14 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — an `.. error-entry::` node carries the line it was declared on
+
+The directive recorded `self.lineno` in its pending payload and the node mint
+dropped it, so every entry sat at line 0 — which reads as a POSITION rather
+than as "unknown", and `errors()` reported it to every caller (`[M]` 79 of 79
+on ORPHEUS). "Where is ERR-009 declared?" was unanswerable from the graph.
+One line; the information had been captured and discarded.
+
 ### Added — a coverage run says WHICH TEST executed a line (#57)
 
 `coverage.py`'s `dynamic_context = test_function` stamps every executed line

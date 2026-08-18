@@ -338,9 +338,12 @@ def _env_with_error_entries(*entries, docname="catalogue"):
     env.docname = docname
     env.nexus_pending_edges = {
         docname: [
+            # Distinct linenos, so a mint that drops the field cannot be
+            # mistaken for one that carries it: every entry would read
+            # the same number either way if they all shared one.
             {"kind": "error-entry", "id": eid, "title": title,
-             "docname": docname, "lineno": 1}
-            for eid, title in entries
+             "docname": docname, "lineno": 100 + i}
+            for i, (eid, title) in enumerate(entries)
         ]
     }
     return env
@@ -358,6 +361,11 @@ def test_an_error_entry_becomes_a_node():
     assert node["type"] == "error"
     assert node["name"] == "ERR-051"
     assert node["title"] == "Galerkin idempotency"
+    # The directive records where it was written; the mint must carry it.
+    # Without this every entry sat at line 0, which reads as a POSITION
+    # rather than as "unknown", and `errors()` reported it to every
+    # caller — 79 of 79 on ORPHEUS.
+    assert node["lineno"] == 100
 
 
 def test_declaring_the_same_entry_twice_is_idempotent():

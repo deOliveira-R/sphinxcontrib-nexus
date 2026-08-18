@@ -420,6 +420,12 @@ def apply_declared_nodes(
                 display_name=entry.get("title") or entry_id,
                 domain="vv",
                 docname=docname,
+                # The directive already recorded where it was written;
+                # not copying it here left every entry at line 0, which
+                # reads as a position rather than as "unknown" and made
+                # "where is ERR-009 declared?" unanswerable from the
+                # graph. The producer knew and the mint discarded it.
+                lineno=entry.get("lineno", 0),
                 title=entry.get("title", ""),
             )
             created += 1
