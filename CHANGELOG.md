@@ -31,6 +31,44 @@ the last two — `executed`, `observed` (measured, no test reached it),
 99 % unadjudicated would condemn the whole suite; this is `lessons-L56`
 at corpus scale.
 
+### Added — a coverage claim can now be refuted
+
+`verification_coverage(run=…)` and `verification_audit(run=…)` adjudicate
+every claim against what actually ran. Each `TestReference` gains an
+`execution` verdict — `corroborated`, `refuted`, `out_of_capture`,
+`no_implementation` — and the result carries a `CaptureScope` naming the
+runs, their invocation, and how many claimants the capture could even
+have reached. Without `run` the report is byte-for-byte the one it was.
+
+⛔ **Only the first two verdicts are findings.** The other two say the
+claim could not be checked, for two causes needing opposite repairs: a
+wider capture, and a declared `implements` link. `[M]` ORPHEUS
+2026-08-18 over its 2748 declared `tests` edges: **11 corroborated, 10
+refuted, 1751 out-of-capture, 976 no-implementation** — the
+unadjudicable pair is **99.2 %**, and a summary read as "11 verified of
+2748" would be badly wrong. `refuted` is the FALL-THROUGH with both
+guards in front of it; remove them and 2727 claims land there.
+
+A refuted claim travels beside its entry's `code_evidence`, because
+`[M]` 12999 of 13084 `implements` edges are inferred from a shared name
+token (`#82`) — a refutation against a guessed link refutes the guess,
+not the test.
+
+### Fixed — `orphan_code` no longer means "the call graph could not see it"
+
+The code-side rows were built purely from the 1-hop `calls` heuristic,
+and `[M]` that relation has 12–15 % recall against execution. A function
+run by dozens of tests through a property, a dunder or polymorphic
+dispatch arrived with an empty test list and was reported `orphan_code`
+— the audit judged the heuristic's rows while trusting its silence.
+Evidence now ADDS rows (`source="executed"`), and `[M]` **1590** ORPHEUS
+nodes move `orphan_code` → `tested` on two capture slices covering ~28 %
+of the suite, taking the reported orphan count 9274 → 7684.
+
+`executed` sits at confidence 0.8: above both call heuristics because it
+is observed fact rather than inference, below `declared` because running
+a line is not asserting anything about it.
+
 ### Fixed — merging captures keeps each one's invocation
 
 `merge_runs` unioned every metric family and dropped `meta`, so a merged

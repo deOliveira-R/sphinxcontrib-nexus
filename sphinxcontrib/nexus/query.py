@@ -711,6 +711,16 @@ class TestReference:
     source: str = "declared"
     confidence: float = 1.0
     display_name: str = ""
+    execution: str = ""
+    """What execution evidence says about this claim — one of
+    :data:`CORROBORATED` / :data:`REFUTED` / :data:`OUT_OF_CAPTURE` /
+    :data:`NO_IMPLEMENTATION`, or empty when no run was consulted.
+
+    ``source``/``confidence`` above say how the claim was ESTABLISHED;
+    this says whether it survived contact with what actually ran. They
+    are independent: a ``declared`` claim at confidence 1.0 is exactly
+    the kind that can be :data:`REFUTED`, and until this field existed
+    nothing in the graph could say so."""
 
 
 @dataclass
@@ -746,6 +756,9 @@ class CoverageResult:
 
     entries: list[CoverageEntry]
     summary: dict[str, int]
+    capture: CaptureScope | None = None
+    """Present when a run was consulted. Without it every ``execution``
+    field is empty and the report is the pre-evidence one."""
 
 
 @dataclass
@@ -1012,6 +1025,12 @@ class VerificationAuditResult:
     total_equations: int
     group_by: str | None = None
     grouped: dict[str, list[AuditGap]] = field(default_factory=dict)
+    capture: CaptureScope | None = None
+    """Present when ``run`` was given. The ``summary`` then also carries
+    ``claims_corroborated`` / ``claims_refuted`` /
+    ``claims_out_of_capture`` / ``claims_no_implementation`` — and those
+    four must be read together, because the last two are not findings
+    about the suite but statements about what could not be checked."""
 
 
 @dataclass
@@ -1126,6 +1145,41 @@ def _is_dunder(leaf: str) -> bool:
 EXECUTED = "executed"      #: >=1 captured test ran this node's lines
 OBSERVED = "observed"      #: the capture measured it; no captured test ran it
 UNOBSERVED = "unobserved"  #: the capture never bound it - no evidence either way
+
+#: What execution evidence says about one coverage CLAIM. Four verdicts,
+#: and only the first two are findings — the other two say why the claim
+#: could not be adjudicated at all, which is a different fact and must
+#: never read as a refutation. `[M]` ORPHEUS 2026-08-18 under
+#: ``geom_ctx,num_ctx``: 11 / 10 / 1751 / 976 over 2748 ``tests`` edges,
+#: i.e. **the unadjudicable pair is 99.2 % of the corpus** and the two
+#: halves of it need opposite repairs — a wider capture for one, a
+#: declared ``implements`` link for the other.
+CORROBORATED = "corroborated"            #: the claimant executed an implementation
+REFUTED = "refuted"                      #: the claimant ran and executed none
+OUT_OF_CAPTURE = "out_of_capture"        #: the claimant is in no capture
+NO_IMPLEMENTATION = "no_implementation"  #: nothing implements the claimed target
+
+
+@dataclass
+class CaptureScope:
+    """What a capture could and could not have adjudicated.
+
+    Every aggregate built from an :class:`ExecutionLedger` ships this, so
+    a rate is never reported without its denominator. `[M]` the failure
+    it prevents is on record twice: a geometry-only slice made 53 of 53
+    equations look refuted, and the corpus-wide claim set is 99.2 %
+    unadjudicable — a reader handed "11 corroborated" with no scope would
+    reasonably conclude the suite verifies almost nothing.
+    """
+
+    runs: list[str] = field(default_factory=list)
+    note: str = ""
+    """The capture's own invocation. A run taken under ``-m "not slow"``
+    or a parameter subset can make a real dependence look unexercised, so
+    a ``refuted`` verdict is only as strong as this string."""
+    captured_tests: int = 0
+    claimants_total: int = 0
+    claimants_in_capture: int = 0
 
 
 @dataclass(frozen=True)
@@ -2414,10 +2468,50 @@ class GraphQuery:
     # Feature 2: Verification Coverage Map
     # ------------------------------------------------------------------
 
+    def _claim_verdict(
+        self,
+        test_id: str,
+        implementing: list[str],
+        ledger: ExecutionLedger | None,
+    ) -> str:
+        """What execution evidence says about one claim.
+
+        :data:`REFUTED` is the FALL-THROUGH and the two unadjudicable
+        guards stand in front of it. That is the load-bearing structure:
+        a claim must never be refuted for want of something to check it
+        against. `[M]` delete both guards and 2727 of ORPHEUS's 2748
+        declared claims land in ``refuted`` — a 99 %-refuted suite, which
+        is false, alarming, and would be acted on.
+
+        ⚠ The :data:`CORROBORATED` test's position, by contrast, is NOT
+        load-bearing, and no gate here pretends otherwise: it can only
+        fire when the claimant executed an implementation, which already
+        implies both guards would have passed, so hoisting it is a no-op.
+        Measured — reordering it reddens nothing, and shipping a gate for
+        it would have been a gate that cannot fail (vv #17).
+        """
+        if ledger is None or ledger.is_empty:
+            return ""
+        if not implementing:
+            return NO_IMPLEMENTATION
+        if test_id not in ledger.captured_tests:
+            return OUT_OF_CAPTURE
+        if any(test_id in ledger.tests_for(c) for c in implementing):
+            return CORROBORATED
+        return REFUTED
+
     def verification_coverage(
-        self, status_filter: str | None = None,
+        self,
+        status_filter: str | None = None,
+        run: "RuntimeRun | None" = None,
     ) -> CoverageResult:
         """Map verification coverage: equation → code → test chain.
+
+        ``run`` is a contexts-carrying ``coverage`` run. Given one, every
+        :class:`TestReference` gains an ``execution`` verdict and the
+        result carries a :class:`CaptureScope`; without one the report is
+        unchanged, which is what keeps this usable on a project that has
+        captured nothing.
 
         Test evidence is collected in three tiers:
 
@@ -2444,6 +2538,8 @@ class GraphQuery:
         code_types = {"function", "method", "class"}
         entries: list[CoverageEntry] = []
         summary: Counter[str] = Counter()
+        ledger = self.execution_ledger(run) if run is not None else None
+        claimants: set[str] = set()
 
         # Index 1: equation → implementing code via IMPLEMENTS edges.
         eq_to_code: dict[str, list[str]] = {}
@@ -2577,6 +2673,9 @@ class GraphQuery:
             if status_filter and status != status_filter:
                 continue
 
+            for t in tests:
+                t.execution = self._claim_verdict(t.id, implementing, ledger)
+
             declared_n = sum(
                 1 for c in implementing if (c, node_id) not in inferred_links
             )
@@ -2601,9 +2700,20 @@ class GraphQuery:
                     continue
                 if node_id in code_to_eq:
                     continue  # already covered via equation
-                direct_tests = code_to_1hop_tests.get(node_id, [])
-                has_test = bool(direct_tests)
-                status = "tested" if has_test else "orphan_code"
+                direct_tests = list(code_to_1hop_tests.get(node_id, []))
+                # Evidence ADDS rows here, it does not only judge them.
+                # `code_to_1hop_tests` is the `calls` heuristic, and `[M]`
+                # that relation has 12-15 % recall against execution on
+                # ORPHEUS — so a node run by dozens of tests through a
+                # property, a dunder or polymorphic dispatch arrives here
+                # with an EMPTY list and is reported `orphan_code`.
+                # Judging the heuristic's rows while trusting its silence
+                # would leave the audit's largest bucket wrong.
+                seen = set(direct_tests)
+                evidenced = ([t for t in sorted(ledger.tests_for(node_id))
+                              if t not in seen] if ledger else [])
+                status = ("tested" if direct_tests or evidenced
+                          else "orphan_code")
                 if status_filter and status != status_filter:
                     continue
                 entries.append(CoverageEntry(
@@ -2612,24 +2722,62 @@ class GraphQuery:
                     tests=[
                         TestReference(
                             id=t,
-                            source="heuristic-1hop",
-                            confidence=0.7,
+                            source=src,
+                            confidence=conf,
                             display_name=self._g.nodes.get(t, {}).get(
                                 "display_name", ""
                             ),
+                            # A code-level row has no equation between the
+                            # test and the thing it ran, so the node IS
+                            # the implementation to check against.
+                            execution=self._claim_verdict(
+                                t, [node_id], ledger,
+                            ),
                         )
-                        for t in direct_tests
+                        # `executed` outranks both call heuristics: it is
+                        # observed fact rather than inference. It stays
+                        # BELOW `declared` (1.0) all the same, because
+                        # running a line is not asserting anything about
+                        # it — a test that imports and never checks looks
+                        # identical here to one that pins every branch.
+                        for t, src, conf in (
+                            [(t, "heuristic-1hop", 0.7) for t in direct_tests]
+                            + [(t, "executed", 0.8) for t in evidenced]
+                        )
                     ],
                 ))
                 summary[status] += 1
 
-        return CoverageResult(entries=entries, summary=dict(summary))
+        capture = None
+        if ledger is not None:
+            # Tallied HERE, over the finished entry list, rather than at
+            # each of the two sites that build entries. Counting inside
+            # the loops made the equation branch the only one that
+            # incremented, so `claims_refuted` read 212 while the entries
+            # carried 1231 — a summary disagreeing with its own rows.
+            for entry in entries:
+                for t in entry.tests:
+                    if not t.execution:
+                        continue
+                    claimants.add(t.id)
+                    summary[f"claims_{t.execution}"] += 1
+            capture = CaptureScope(
+                runs=list(ledger.runs),
+                note=ledger.note,
+                captured_tests=len(ledger.captured_tests),
+                claimants_total=len(claimants),
+                claimants_in_capture=len(claimants & ledger.captured_tests),
+            )
+        return CoverageResult(
+            entries=entries, summary=dict(summary), capture=capture,
+        )
 
     def verification_audit(
         self,
         *,
         group_by: str | None = None,
         include_tests: bool = False,
+        run: "RuntimeRun | None" = None,
     ) -> VerificationAuditResult:
         """Complete V&V audit with optional grouping.
 
@@ -2650,8 +2798,22 @@ class GraphQuery:
                 ``summary["tests_declared"]`` / ``summary["tests_inferred"]``
                 counts so consumers can judge how much of the
                 verification claim is load-bearing declarative evidence.
+            run: A contexts-carrying ``coverage`` run. Given one, every
+                claim gains an ``execution`` verdict, ``summary`` gains
+                the four ``claims_*`` counts, and ``capture`` says what
+                the run could have adjudicated.
+
+                ⛔ Read the four counts TOGETHER. Only
+                ``claims_corroborated`` and ``claims_refuted`` are
+                findings; ``claims_out_of_capture`` and
+                ``claims_no_implementation`` say the claim could not be
+                checked, for two different reasons needing two different
+                repairs — a wider capture, and a declared ``implements``
+                link. `[M]` ORPHEUS 2026-08-18: 11 / 10 / 1751 / 976, so
+                the unadjudicable pair is **99.2 %** and a summary read
+                as "11 verified out of 2748" would be badly wrong.
         """
-        coverage = self.verification_coverage()
+        coverage = self.verification_coverage(run=run)
         stale = self.staleness()
 
         # Build stale page set for cross-referencing
@@ -2720,6 +2882,7 @@ class GraphQuery:
             ),
             group_by=group_by,
             grouped=grouped,
+            capture=coverage.capture,
         )
 
     def _level_for_gap(self, gap: AuditGap) -> str:
