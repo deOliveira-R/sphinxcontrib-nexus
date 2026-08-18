@@ -399,8 +399,21 @@ def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
         return runs[0]
     if not runs:
         return RuntimeRun(name=name, kind=KIND_MERGED)
+    # `merged_from` names WHICH runs; `command` says HOW each was
+    # captured, and that half used to be dropped. It is not decoration:
+    # a run taken under `-m "not slow"` or a parameter subset can make a
+    # genuine dependence look unexercised, so a consumer that reports
+    # "no test executed this" needs the invocation to qualify it. Losing
+    # it precisely when captures are UNIONED — the normal case for a
+    # whole-suite ledger — is the wrong way round.
+    notes = [
+        f"{r.name}: {(r.meta or {})['command']}"
+        for r in runs if (r.meta or {}).get("command")
+    ]
     merged = RuntimeRun(name=name, kind=KIND_MERGED,
                         meta={"merged_from": [r.name for r in runs]})
+    if notes:
+        merged.meta["command"] = " | ".join(notes)
 
     for run in runs:
         for node_id, m in run.calls.items():

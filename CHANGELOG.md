@@ -4,6 +4,44 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Added — which tests EXECUTED which code is a relation the graph can join
+
+`ExecutionLedger` joins a contexts-carrying `coverage` run onto the graph,
+so "did the test that CLAIMS to verify this actually run it?" becomes
+answerable. A `tests`/`catches` marker is authored, stamped
+`confidence=1.0` and points at an equation rather than at code; nothing
+in the graph could contradict one. This is the relation that can.
+
+Two properties of coverage data shape it, both measured on ORPHEUS
+2026-08-18. **Only `function`/`method` nodes ever bind** — coverage
+attributes lines and a `class` statement owns none of its methods', so
+`[M]` **0 of 438** production classes appear in either of `geom_ctx` /
+`num_ctx`. A class is therefore resolved through the methods it
+`contains`: `PermutationOperator` binds **0** directly and **95** tests
+through 7 of its 8 methods, and 269 classes gain evidence they were
+structurally unable to carry. `attribute`/`data`/`module` have no descent
+target and stay `unobserved` — `[M]` 111 of 255 nodes in
+`numerics/operator.py`, the common case rather than an edge.
+
+And **scope is the limit, not accuracy**: `[M]` under the two runs
+merged, **2720 of 2748** `tests` claim edges have a claimant in no
+capture at all. So `state()` reports three values and never collapses
+the last two — `executed`, `observed` (measured, no test reached it),
+`unobserved` (never bound, no evidence either way). Read as refutations,
+99 % unadjudicated would condemn the whole suite; this is `lessons-L56`
+at corpus scale.
+
+### Fixed — merging captures keeps each one's invocation
+
+`merge_runs` unioned every metric family and dropped `meta`, so a merged
+run knew *which* runs it came from (`merged_from`) and not *how* any of
+them was captured. That qualifier is load-bearing: a run taken under
+`-m "not slow"` or a parameter subset can make a genuine dependence look
+unexercised, so a consumer reporting "no test executed this" needs it —
+and it disappeared precisely when captures are unioned, which is the
+normal case for a whole-suite ledger. Each input's `command` is now
+carried forward, attributed to the run that recorded it.
+
 ### Fixed — the `type_checking` fact reaches the reply, and stops a false `times: 2`
 
 `#88` stamped the edge; no tool could read it. `EdgeResult` had no field

@@ -1120,6 +1120,81 @@ def _is_dunder(leaf: str) -> bool:
     return leaf.startswith("__") and leaf.endswith("__")
 
 
+#: A node's standing in a capture. Three states, and the third must never
+#: be printed as the second: *we did not look* is not *we looked and saw
+#: nothing* (``lessons-L56``).
+EXECUTED = "executed"      #: >=1 captured test ran this node's lines
+OBSERVED = "observed"      #: the capture measured it; no captured test ran it
+UNOBSERVED = "unobserved"  #: the capture never bound it - no evidence either way
+
+
+@dataclass(frozen=True)
+class ExecutionLedger:
+    """Which tests EXECUTED which code — evidence, joined to the graph.
+
+    A ``tests``/``catches`` marker is a coverage CLAIM: authored, stamped
+    ``confidence=1.0``, pointing at an equation rather than at code, and
+    until this join existed nothing in the graph could contradict one.
+    This is the relation that can, because it records what actually ran.
+
+    Built from one or more ``coverage`` runs captured WITH contexts. Two
+    properties of the underlying data shape everything here, both
+    measured on ORPHEUS 2026-08-18:
+
+    - **Only ``function`` and ``method`` nodes ever bind.** Coverage
+      attributes LINES, and a class statement owns none of its methods'
+      lines — `[M]` **0 of 438** production classes appear in either of
+      ``geom_ctx``/``num_ctx``. So a class is resolved through the
+      methods it ``contains``: ``PermutationOperator`` binds **0**
+      directly and **43** tests through 7 of its 8 methods. Without the
+      descent every class-level question answers a false zero.
+      ⛔ ``attribute``/``data``/``module`` nodes have no descent target
+      and stay :data:`UNOBSERVED` — `[M]` for ``numerics/operator.py``
+      that is 111 of 255 nodes, so this is the common case, not an edge.
+
+    - **Scope is the limit, not accuracy.** `[M]` under
+      ``geom_ctx,num_ctx`` merged, **2720 of 2748** ``tests`` claim edges
+      have a claimant in NO capture. A reader who cannot tell that from a
+      refutation reads 99 % unadjudicated as 99 % refuted, so
+      :meth:`state` never collapses the two, and :attr:`runs` /
+      :attr:`note` travel with every answer built from this.
+    """
+
+    #: node id -> the captured tests that ran it, class descent INCLUDED.
+    exercised_by: dict[str, frozenset[str]]
+    #: nodes that bound directly, i.e. not reached through a member. The
+    #: difference matters to a reader auditing why a class has evidence.
+    direct: frozenset[str]
+    #: every test the capture attributed anything to — the denominator
+    #: that makes "not exercised" mean something.
+    captured_tests: frozenset[str]
+    #: nodes the capture MEASURED, whether or not a test reached them.
+    observed_nodes: frozenset[str]
+    #: run names this was built from, in the order given.
+    runs: tuple[str, ...] = ()
+    #: the capture's own invocation, when it recorded one. A run taken
+    #: under ``-m "not slow"`` or a parameter subset can make a genuine
+    #: dependence look unexercised, so a verdict must carry it.
+    note: str = ""
+
+    def tests_for(self, node_id: str) -> frozenset[str]:
+        """Captured tests that executed ``node_id`` (or a member of it)."""
+        return self.exercised_by.get(node_id, frozenset())
+
+    def state(self, node_id: str) -> str:
+        """:data:`EXECUTED` / :data:`OBSERVED` / :data:`UNOBSERVED`."""
+        if self.exercised_by.get(node_id):
+            return EXECUTED
+        return OBSERVED if node_id in self.observed_nodes else UNOBSERVED
+
+    @property
+    def is_empty(self) -> bool:
+        """No attribution at all — the caller was handed a run that can
+        adjudicate nothing, and owes its reader that fact rather than a
+        report of universal refutation."""
+        return not self.exercised_by
+
+
 class GraphQuery:
     """Query interface over a KnowledgeGraph or raw nx.MultiDiGraph.
 
@@ -1311,6 +1386,97 @@ class GraphQuery:
         attrs = self._g.nodes.get(node_id, {})
         facts = self._test_facts(attrs)
         return facts.pytest_id if facts and facts.pytest_id else node_id
+
+    def _contained_methods(self, class_id: str) -> list[str]:
+        """The ``function``/``method`` nodes a class ``contains``.
+
+        The descent :class:`ExecutionLedger` needs, and the reason it
+        needs one: coverage binds lines, so a class node never appears in
+        a capture. `[M]` ORPHEUS carries 4809 ``class -contains-> method``
+        edges and 1193 of 1357 classes have at least one; the 164 without
+        are attribute-only dataclasses, enums and bare exception
+        subclasses, for which a false zero and a true zero coincide.
+
+        ⚠ The type filter has **no arithmetic effect** on the ledger, and
+        that is worth saying so nobody "simplifies" it away: `[M]` a class
+        ``contains`` only methods (4809), attributes (2394) and equations
+        (1), and neither of the latter two can appear in a capture, so
+        admitting them would change no union. It earns its place two other
+        ways — the helper's own contract (a thing named
+        ``_contained_methods`` must not hand back an equation), and
+        keeping the class lift's inputs disjoint from its outputs, which
+        is what makes that loop independent of node iteration order. It is
+        therefore gated directly, in
+        ``test_contained_methods_returns_only_what_can_CARRY_evidence``;
+        through the ledger it is unfalsifiable, and a gate there would
+        have been one that cannot fail (vv #17).
+
+        Deliberately NOT routed through :meth:`neighbors`, which builds a
+        full ``NodeResult``/``EdgeResult`` pair per neighbour — this runs
+        once per class over the whole graph.
+        """
+        out: list[str] = []
+        for _, target, data in self._g.out_edges(class_id, data=True):
+            if data.get("type") != EdgeType.CONTAINS:
+                continue
+            if self._g.nodes.get(target, {}).get("type") in (
+                "function", "method",
+            ):
+                out.append(target)
+        return out
+
+    def execution_ledger(self, run: "RuntimeRun") -> ExecutionLedger:
+        """Join a captured run onto the graph — see :class:`ExecutionLedger`.
+
+        Two filters, both load-bearing. Tests and nodes absent from the
+        graph are dropped, because a ledger that names ids nothing can
+        resolve cannot be joined to a claim. And a class is credited with
+        the union of its members' exercisers, which is the whole reason
+        this is a method on the query rather than a field on the run: the
+        ``contains`` relation lives in the graph, not in the capture.
+        """
+        exercised: dict[str, frozenset[str]] = {}
+        captured: set[str] = set()
+        for node_id, tests in run.exercised_by.items():
+            if node_id not in self._g:
+                continue
+            known = frozenset(t for t in tests if t in self._g)
+            if not known:
+                continue
+            exercised[node_id] = known
+            captured |= known
+        direct = frozenset(exercised)
+
+        observed = {n for n in run.coverage if n in self._g}
+        # Lift both relations from members to their class. A class is
+        # EXECUTED when any method of it ran, and OBSERVED when the
+        # capture measured any method — otherwise every class-level
+        # question answers a false zero (`PermutationOperator`: 0 -> 43).
+        for node_id, attrs in self._g.nodes(data=True):
+            if attrs.get("type") != "class":
+                continue
+            members = self._contained_methods(node_id)
+            if not members:
+                continue
+            from_members = frozenset().union(
+                *(exercised.get(m, frozenset()) for m in members)
+            ) if members else frozenset()
+            if from_members:
+                exercised[node_id] = exercised.get(
+                    node_id, frozenset()
+                ) | from_members
+            if any(m in observed for m in members):
+                observed.add(node_id)
+
+        meta = run.meta or {}
+        return ExecutionLedger(
+            exercised_by=exercised,
+            direct=direct,
+            captured_tests=frozenset(captured),
+            observed_nodes=frozenset(observed),
+            runs=tuple(run.name.split(",")) if run.name else (),
+            note=str(meta.get("command") or meta.get("note") or ""),
+        )
 
     def _test_facts(self, attrs: dict) -> TestFacts | None:
         """The test block for a node, or ``None`` if it is not a test.
