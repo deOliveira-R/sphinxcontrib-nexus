@@ -460,6 +460,80 @@ def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
     return merged
 
 
+#: Overlay family → the attribute carrying it, and the ingest kinds that
+#: can produce it. A run is a bag of orthogonal overlays: a ``cprofile``
+#: ingest fills ``calls``/``edges``, a ``coverage`` ingest fills
+#: ``coverage``, a ``viztracer`` ingest fills ``timeline``.
+#:
+#: Lives here rather than in the MCP server because it is a property of
+#: RUNS, and both front ends need it: the server refused a wrong-kind run
+#: while the CLI answered as though nothing were covered — the same
+#: ``lessons-L56`` confusion the refusal exists to remove, surviving on
+#: the surface that did not share the author.
+RUNTIME_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "calls": ("calls", ("cprofile",)),
+    "edges": ("edges", ("cprofile",)),
+    "coverage": ("coverage", ("coverage",)),
+    "timeline": ("timeline", ("viztracer",)),
+    "markers": ("markers", ("pytest",)),
+    # A coverage run carries this only when the capture asked for
+    # contexts, which is why the "runs that have it" list is filtered on
+    # the payload rather than on the kind.
+    "exercised_by": ("exercised_by", ("coverage",)),
+}
+
+
+def require_family(
+    run: "RuntimeRun",
+    family: str,
+    view: str,
+    store: "RuntimeStore | None" = None,
+) -> None:
+    """Refuse a view of a run that cannot carry it, and say what can.
+
+    Asking a cProfile run for branch coverage used to return ``[]`` —
+    identical to a workload that genuinely exercised nothing. The
+    docstrings even said so ("a coverage run has no timing and returns
+    ``[]``"), which documents the ambiguity rather than removing it.
+
+    `[M]` 2026-08-16, four of nexus's own tools failed this way on
+    ORPHEUS's stored runs: ``runtime_timeline`` and ``runtime_branches``
+    on a cProfile run, ``runtime_hotspots`` and ``runtime_edges`` on a
+    coverage run. Every one answered ``[]``.
+
+    This is ``lessons-L56`` — "nothing found" and "I looked in the wrong
+    place" must not print the same thing — and the remedy is the same
+    one line: name the thing you looked for.
+    """
+    attribute, kinds = RUNTIME_FAMILIES[family]
+    if getattr(run, attribute, None):
+        return
+    # The naming of alternatives is a bonus; the REFUSAL is the point.
+    # Letting a store lookup fail here would replace a precise "wrong
+    # run" message with an AttributeError — turning the one answer that
+    # explains itself into the one that explains nothing.
+    try:
+        available = store.list_runs() if store is not None else []
+    except Exception:                    # no workspace, no store, no matter
+        available = []
+    # Filtered on the FAMILY the run actually carries, not on its kind:
+    # two `coverage` runs differ on whether contexts were captured, and
+    # naming one that cannot answer re-creates the very confusion this
+    # refusal exists to remove. `families` is absent from sidecars listed
+    # by an older store, so fall back to the kind rather than to nothing.
+    usable = [
+        r["name"] for r in available
+        if (family in r["families"] if "families" in r
+            else r.get("kind") in kinds)
+    ] or [f"(none — capture one with kind={kinds[0]!r} and runtime_ingest)"]
+    raise ValueError(
+        f"run {run.name!r} was ingested as kind={run.kind!r} and carries no "
+        f"{family!r} data, so {view} has nothing to read — this is not an "
+        f"empty result, it is the wrong run. {family!r} comes from "
+        f"{' or '.join(repr(k) for k in kinds)}; runs that have it: {usable}"
+    )
+
+
 def load_and_merge(names: str, load) -> RuntimeRun:
     """Load one run, or merge a comma-separated set (the canonical-suite
     aggregate). ``load`` is a ``name -> RuntimeRun`` callable — the server and

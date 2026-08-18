@@ -236,68 +236,24 @@ def _load_runs(names: str):
     return load_and_merge(names, _load_run)
 
 
-#: Overlay family → the attribute carrying it, and the ingest kinds that
-#: can produce it. A run is a bag of orthogonal overlays: a `coverage`
-#: ingest fills `coverage`, a `cprofile` ingest fills `calls` and
-#: `edges`, a `viztracer` ingest fills `timeline`.
-_RUNTIME_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "calls": ("calls", ("cprofile",)),
-    "edges": ("edges", ("cprofile",)),
-    "coverage": ("coverage", ("coverage",)),
-    "timeline": ("timeline", ("viztracer",)),
-    "markers": ("markers", ("pytest",)),
-    # A coverage run carries this only when the capture asked for
-    # contexts, which is why the "runs that have it" list below is
-    # filtered on the payload rather than on the kind.
-    "exercised_by": ("exercised_by", ("coverage",)),
-}
+from sphinxcontrib.nexus.runtime import RUNTIME_FAMILIES, require_family
+
+#: The families table and the refusal now live in `runtime`, where the
+#: concept belongs — the CLI needs the same guard and used to answer as
+#: though nothing were covered. Re-exported under the old private names
+#: so the server's own call sites and their gates read unchanged.
+_RUNTIME_FAMILIES = RUNTIME_FAMILIES
 
 
 def _require_family(run: Any, family: str, view: str) -> None:
-    """Refuse a view of a run that cannot carry it, and say what can.
-
-    Asking a cProfile run for branch coverage used to return ``[]`` —
-    identical to a workload that genuinely exercised nothing. The
-    docstrings even said so ("a coverage run has no timing and returns
-    ``[]``"), which documents the ambiguity rather than removing it.
-
-    `[M]` 2026-08-16, four of nexus's own tools failed this way on
-    ORPHEUS's stored runs: ``runtime_timeline`` and ``runtime_branches``
-    on a cProfile run, ``runtime_hotspots`` and ``runtime_edges`` on a
-    coverage run. Every one answered ``[]``.
-
-    This is ``lessons-L56`` — "nothing found" and "I looked in the wrong
-    place" must not print the same thing — and the remedy is the same
-    one line: name the thing you looked for.
-    """
-    attribute, kinds = _RUNTIME_FAMILIES[family]
-    if getattr(run, attribute, None):
-        return
-    # The naming of alternatives is a bonus; the REFUSAL is the point.
-    # Letting a store lookup fail here would replace a precise "wrong
-    # run" message with an AttributeError — turning the one answer that
-    # explains itself into the one that explains nothing.
+    """Refuse a view of a run that cannot carry it — see
+    :func:`~sphinxcontrib.nexus.runtime.require_family`."""
     try:
         store = _get_runtime_store()
-        available = store.list_runs() if store is not None else []
-    except Exception:                       # no workspace, no store, no matter
-        available = []
-    # Filtered on the FAMILY the run actually carries, not on its kind:
-    # two `coverage` runs differ on whether contexts were captured, and
-    # naming one that cannot answer re-creates the very confusion this
-    # refusal exists to remove. `families` is absent from sidecars listed
-    # by an older store, so fall back to the kind rather than to nothing.
-    usable = [
-        r["name"] for r in available
-        if (family in r["families"] if "families" in r
-            else r.get("kind") in kinds)
-    ] or [f"(none — capture one with kind={kinds[0]!r} and runtime_ingest)"]
-    raise ValueError(
-        f"run {run.name!r} was ingested as kind={run.kind!r} and carries no "
-        f"{family!r} data, so {view} has nothing to read — this is not an "
-        f"empty result, it is the wrong run. {family!r} comes from "
-        f"{' or '.join(repr(k) for k in kinds)}; runs that have it: {usable}"
-    )
+    except Exception:
+        store = None
+    require_family(run, family, view, store=store)
+
 
 
 def _active_root() -> Path | None:
@@ -441,7 +397,7 @@ def _mark_stale_positions(payload: str) -> str:
     invites feeding it straight to an editor or ``Read``.
 
     Attached HERE rather than at the 51 producers that emit a position,
-    or at each of the 40 tools: staleness is a property of the *server's
+    or at each tool: staleness is a property of the *server's
     two states* (graph versus working tree), not of any one query, and
     one site cannot drift from another. It marks each affected object in
     place rather than adding a summary key, because the payload may be a
@@ -675,7 +631,7 @@ def nexus_tool(fn):
     Two concerns ride here because both are properties of *every* tool
     call rather than of any tool, and both would otherwise be a line
     each tool author has to remember — which is how position staleness
-    ended up applied by exactly 1 of the 40.
+    ended up applied by exactly 1 of them.
 
     The journal (``~/.nexus/usage.jsonl``; ``NEXUS_USAGE_LOG`` overrides
     the path, empty value disables) is ground truth for evaluating which
@@ -1923,25 +1879,45 @@ def doc_impact(node_id: str, limit: int = 0) -> str:
 
 
 @nexus_tool
-def retest(scope: str = "all") -> str:
+def retest(scope: str = "all", run: str = "", limit: int = 0) -> str:
     """Compute the minimum set of tests to re-run after changes.
 
-    Uses git diff to find changed symbols, then walks the DEPENDENCE
-    cone upstream — ``calls``, ``type_uses``, ``inherits``, the three
-    ways a test's behaviour can depend on a symbol — to a fixed point.
-    ``references``/``imports`` are mention relations and are excluded:
-    following them reaches 78 % of a real suite from any symbol.
+    Uses git diff to find changed symbols, then answers per symbol from
+    the best relation available.
 
-    ``safe_to_skip`` is the complement, counted over COLLECTABLE tests
-    (functions and methods). ``cone_depth`` reports how far the walk had
-    to go, and ``dependence_edges`` what counted — together they make
-    the skip set auditable without shipping thousands of node ids.
+    ⭐ **Pass a `run` and the answer stops being a guess where the
+    capture can speak.** Without one this walks the static cone
+    (``calls``, ``type_uses``, ``inherits``, to a fixed point), and that
+    relation is weak for this question — `[M]` on ORPHEUS 2026-08-18 it
+    has **12-15 % recall** against execution evidence, and **0 of 300**
+    proven test-symbol pairs have any path over it: properties, dunders,
+    callbacks and polymorphic dispatch mint no ``calls`` edge, so
+    ``Mesh1D.__post_init__`` reports a cone of **0** while 81 tests
+    actually run it.
+
+    Every row carries a ``warrant``: ``executed`` means a capture PROVES
+    that test ran the changed code; ``reachable`` means no capture covers
+    the symbol and this is the cone's inference. They are different kinds
+    of claim and the reply does not blur them.
+
+    ⛔ A capture speaks only for the tests it RAN. A cone row the capture
+    collected and did not attribute is dropped (genuinely refuted); a row
+    it never collected is kept, because certifying those is how a partial
+    capture blesses a suite it never executed.
 
     Args:
         scope: "staged", "unstaged", "all", or "branch".
+        run: Coverage run(s) captured WITH contexts, comma-separated to
+            union them. Empty means static-only.
+        limit: Max rows per bucket (0 = the project's list budget).
+            ``omitted`` reports what was dropped.
     """
     q = _get_query()
-    result = q.retest(scope=scope)
+    loaded = None
+    if run:
+        loaded = _load_runs(run)
+        _require_family(loaded, "exercised_by", "retest")
+    result = q.retest(scope=scope, run=loaded, limit=_list_limit(limit))
     return to_json(to_dict(result))
 
 

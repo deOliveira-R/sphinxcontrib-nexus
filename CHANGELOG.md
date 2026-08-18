@@ -31,6 +31,40 @@ the last two — `executed`, `observed` (measured, no test reached it),
 99 % unadjudicated would condemn the whole suite; this is `lessons-L56`
 at corpus scale.
 
+### Added — `retest` answers from evidence where a capture can speak
+
+`retest(run=…)` (CLI `--run`, MCP `run`) answers each changed symbol from
+the best relation available. The static cone is a poor instrument for
+this question and the numbers say so: `[M]` **12–15 % recall** against
+execution, and **0 of 300** proven test-symbol pairs have any path over
+it — properties, dunders, callbacks and polymorphic dispatch mint no
+`calls` edge, so `Mesh1D.__post_init__` reports a cone of **0** while 81
+tests actually run it. It over-claims too (944 in-capture pairs reachable
+and provably never executed), and that is not a filter bug: excluding
+builtin hubs leaves 250 of 250 still reachable project-internally (`#60`).
+
+Every row carries a `warrant` — `executed` (a capture proves it) or
+`reachable` (the cone's inference) — and rows are runnable pytest
+selectors rather than `NodeResult`s. `[M]` the reply on one ORPHEUS file
+goes **225 071 → 78 518** characters, and `limit` now exists, so the
+truncation note stops advising arguments the verb did not have.
+
+⛔ **A capture speaks only for the tests it RAN.** A cone row the capture
+collected and did not attribute is dropped (genuinely refuted); a row it
+never collected is KEPT. Without that second half, two slices covering
+1499 of 5278 ORPHEUS tests reported `safe_to_skip = 5161` for a geometry
+change — 3779 tests declared safe on the strength of never having been
+looked at.
+
+### Fixed — the CLI refuses a wrong-kind run instead of answering empty
+
+`require_family` and the families table move to `runtime`, where the
+concept belongs. The MCP server has refused a run that cannot carry a
+family since 2026-08-16; the CLI refused only a *missing* run, so
+`--run <cprofile-run>` answered as though nothing were covered — the
+`lessons-L56` confusion surviving on the surface that did not share the
+author. Both front ends now call one function.
+
 ### Added — a coverage claim can now be refuted
 
 `verification_coverage(run=…)` and `verification_audit(run=…)` adjudicate

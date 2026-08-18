@@ -76,7 +76,7 @@ nexus briefing --db <path>
 
 ```bash
 nexus changes --db <path> [--scope all|staged|unstaged|branch]
-nexus retest --db <path> [--scope ...]
+nexus retest --db <path> [--scope ...] [--run <cov-run>[,...]] [--limit N]
 nexus impact <node_id> --db <path>
 nexus rename <old> <new> --db <path> [--apply]
 nexus trace <test_node_id> --db <path>

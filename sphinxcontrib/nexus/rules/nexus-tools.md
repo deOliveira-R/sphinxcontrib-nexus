@@ -22,6 +22,8 @@ You have **freedom of tool choice** — route by what the question actually is:
 | Equation / citation traceability | Nexus `provenance_chain` | links code ↔ docs |
 | Verification coverage | Nexus `verification_audit` | maps equation → code → test |
 | Docs referencing symbols that no longer exist | Nexus `dead_references` | renders as plain text; no build warning |
+| Which tests must re-run after this change | Nexus `retest` (pass `run=`) | with a coverage capture it answers from what EXECUTED; the static cone alone has 12-15 % recall |
+| Does the test that CLAIMS to verify this actually run it | Nexus `verification_audit` (pass `run=`) | a `verifies` marker is authored and unfalsifiable until evidence adjudicates it |
 | Failing-test diagnosis | Nexus `trace_error` | walks the call graph to the suspect equation |
 | Safe rename / refactor | Nexus `rename`, `impact` | finds references by graph, not text |
 | "Who uses dependency X" (incl. aliased imports) | Nexus `graph_query` / `type_uses` | grep misses aliased / late / `TYPE_CHECKING` imports |

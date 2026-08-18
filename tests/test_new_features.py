@@ -8,7 +8,7 @@ import subprocess
 import networkx as nx
 import pytest
 
-from sphinxcontrib.nexus.query import GraphQuery
+from sphinxcontrib.nexus.query import REACHABLE, GraphQuery
 from sphinxcontrib.nexus.workspace import NoWorkspaceError, Workspace
 
 
@@ -756,9 +756,13 @@ def test_retest_with_git(dream_graph, tmp_path):
 
     q = GraphQuery(dream_graph, workspace=Workspace.for_root(tmp_path))
     result = q.retest(scope="unstaged")
-    # Should find the test that calls sweep_spherical
-    must_ids = {t.id for t in result.must_retest}
+    # Rows are runnable pytest selectors now, not `NodeResult`s. A node
+    # carrying no file/line falls back to its id, which is what these
+    # hand-built fixtures produce.
+    must_ids = {t.test for t in result.must_retest}
     assert "py:function:test_sweep.test_spherical" in must_ids
+    assert all(t.warrant == REACHABLE for t in result.must_retest), (
+        "no run was given, so every row is the static cone's inference")
 
 
 # ── retest: the cone is walked to a fixed point (#62) ────────────────
@@ -826,8 +830,8 @@ def test_a_test_five_hops_up_is_not_reported_safe_to_skip(tmp_path):
                    workspace=Workspace.for_root(tmp_path))
     result = q.retest(scope="unstaged")
 
-    assert {t.id for t in result.must_retest} == {"py:function:test_k.test_direct"}
-    assert "py:function:test_k.test_deep" in {t.id for t in result.should_retest}
+    assert {t.test for t in result.must_retest} == {"py:function:test_k.test_direct"}
+    assert "py:function:test_k.test_deep" in {t.test for t in result.should_retest}
     assert result.cone_depth >= 5, result.cone_depth
 
 
@@ -839,7 +843,8 @@ def test_a_test_that_only_MENTIONS_the_change_stays_skippable(tmp_path):
                    workspace=Workspace.for_root(tmp_path))
     result = q.retest(scope="unstaged")
 
-    reached = {t.id for t in result.must_retest} | {t.id for t in result.should_retest}
+    reached = ({t.test for t in result.must_retest}
+               | {t.test for t in result.should_retest})
     assert "py:function:test_k.test_only_mentions" not in reached
     assert "references" not in result.dependence_edges
 

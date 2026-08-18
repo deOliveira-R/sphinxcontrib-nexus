@@ -28,8 +28,8 @@ This file is shared across all nexus-* skills.
 |------|----------------|----------|
 | `impact` | Blast radius analysis | `target`, `direction`, `max_depth`, `edge_types` |
 | `detect_changes` | Git diff → graph mapping | `scope` |
-| `retest` | Minimum test set after changes | `scope` |
-| `doc_impact` | `retest`'s dual — documented claims a change to this symbol puts in question, with `page:line#anchor` and a verified flag | `node_id`, `limit` |
+| `retest` | Minimum test set after changes — pass `run` and a covered symbol is answered from EXECUTION, not from the 12-15 %-recall call cone | `scope`, `run`, `limit` |
+| `doc_impact` | the static-cone dual of `retest` — documented claims a change to this symbol puts in question, with `page:line#anchor` and a verified flag | `node_id`, `limit` |
 | `rename` | Safe multi-file rename | `old_name`, `new_name`, `dry_run` |
 
 ### Architecture Smells (missing-abstraction family)
@@ -170,6 +170,7 @@ nexus runtime-branches --db <path> [--run NAME[,NAME...]] [--node SUBSTR] [--all
 nexus runtime-exercisers --db <path> [--run NAME[,NAME...]] [--node SUBSTR] [--limit 50]
 nexus runtime-timeline --db <path> [--run NAME] [--max-depth N] [--limit 50]
 nexus retest --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
+               [--run <cov-run>[,<cov-run>]] [--limit N]
 nexus changes --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
 nexus rename <old> <new> --db <path> [--project-root .] [--apply]
 ```

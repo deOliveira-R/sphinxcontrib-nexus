@@ -4,7 +4,7 @@ A unified code + documentation knowledge graph extracted from Sphinx builds and 
 
 **What makes it unique:** Nexus is the only tool that puts code structure (call graphs, imports, inheritance, type annotations) and documentation structure (equations, cross-references, citations, theory pages) in the same graph. This enables queries that are impossible with code-only or doc-only tools — like tracing from a literature citation through an equation to the function that implements it.
 
-**Documentation:** `docs/` builds a full guide with Sphinx — [authoring](docs/guide/authoring.md) (what you write, what you get), [vocabulary](docs/guide/vocabulary.md) (node and edge types, id format), [tools](docs/guide/tools.md) (the 40 MCP tools by the question they answer), and [CLI](docs/guide/cli.md). The docs enable the extension, so building them is also an end-to-end exercise of nexus against a real project — its own.
+**Documentation:** `docs/` builds a full guide with Sphinx — [authoring](docs/guide/authoring.md) (what you write, what you get), [vocabulary](docs/guide/vocabulary.md) (node and edge types, id format), [tools](docs/guide/tools.md) (the MCP tools by the question they answer), and [CLI](docs/guide/cli.md). The docs enable the extension, so building them is also an end-to-end exercise of nexus against a real project — its own.
 
 ```bash
 pip install -e ".[docs]"
@@ -202,7 +202,7 @@ nexus_source_exclude_patterns = ["scratch/*"]
 - **`impact`** — blast radius analysis (what breaks if you change X); depth buckets token-budgeted (`limit_per_depth`, default 50) while `total_affected` stays the true count
 - **`detect_changes`** — map git diff to affected symbols
 - **`rename`** — safe multi-file rename with confidence tagging
-- **`retest`** — minimum set of tests to re-run after changes
+- **`retest`** — minimum set of tests to re-run after changes; with a coverage `run`, answered from what actually executed
 - **`doc_impact`** — its dual: which documented claims a change puts in question, each with a `page:line#anchor` to open and whether any test would catch it becoming false
 - **`communities`** — detect functional groupings with cohesion scores
 - **`graph_query`** — Cypher-like pattern matching (`"function -calls-> function"`)

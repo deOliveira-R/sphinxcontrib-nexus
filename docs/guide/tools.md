@@ -1,4 +1,4 @@
-# Tools: 40 MCP tools by the question they answer
+# Tools: the MCP tools by the question they answer
 
 This page is for whoever drives the MCP server — an agent, or the person
 configuring one. Tools are grouped by the question, not by implementation,
@@ -104,8 +104,8 @@ function -type_uses-> external WHERE name=numpy*
 |---|---|---|
 | `impact` | What breaks if I change this? | `target`, `direction`, `max_depth`, `edge_types` |
 | `detect_changes` | What did my git diff actually touch, in graph terms? | `scope` |
-| `retest` | What is the minimum test set for these changes? | `scope` |
-| `doc_impact` | Which documented claims did my change put in question? The same cone as `retest`, ending in equations instead of tests | `node_id`, `limit` |
+| `retest` | What is the minimum test set for these changes? Pass `run` and a covered symbol is answered from execution evidence rather than the static cone | `scope`, `run`, `limit` |
+| `doc_impact` | Which documented claims did my change put in question? The same STATIC cone `retest` falls back to, ending in equations instead of tests (it has no evidence path) | `node_id`, `limit` |
 | `rename` | Rename across files, safely | `old_name`, `new_name`, `dry_run` |
 | `migration_plan` | How do I get from this dependency to that one? | `from_dep`, `to_dep` |
 

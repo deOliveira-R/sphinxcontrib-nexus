@@ -368,3 +368,49 @@ class TestRuntimeIngestReportsAZeroJoin:
         # `len(calls) or len(coverage)` read 0 for a successful viztracer
         # run, because viztracer fills `timeline`.
         assert "nodes:      1" in out
+
+
+class TestRetestRefusesTheWrongRun:
+    """The CLI's half of the wrong-run refusal.
+
+    The MCP server has refused a run that cannot carry a family since
+    2026-08-16; the CLI refused only a MISSING run, so a wrong-KIND one
+    was answered as though nothing were covered — `lessons-L56`
+    surviving on the surface that did not share the author. Both now
+    call one `runtime.require_family`.
+    """
+
+    def _project(self, tmp_path):
+        from sphinxcontrib.nexus.runtime import RuntimeRun, RuntimeStore
+        kg = KnowledgeGraph()
+        kg.add_node(GraphNode(
+            id="py:function:m.f", type="function", name="m.f",
+            metadata={"file_path": str(tmp_path / "m.py"), "lineno": 1},
+        ))
+        db = tmp_path / "graph.db"
+        write_sqlite(kg, db)
+        store = RuntimeStore.beside(db)
+        # A cProfile run: real, stored, and structurally unable to say
+        # which test executed anything.
+        store.write(RuntimeRun(name="prof", kind="cprofile",
+                               calls={"py:function:m.f": {
+                                   "ncalls": 1, "tottime": 0.1, "cumtime": 0.1}}))
+        return db
+
+    def test_a_run_that_cannot_carry_attribution_is_REFUSED(self, tmp_path, capsys):
+        db = self._project(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            main(["retest", "--db", str(db), "--project-root", str(tmp_path),
+                  "--run", "prof"])
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "exercised_by" in err and "wrong run" in err
+        assert "retest" in err, "the refusal names the view that asked"
+
+    def test_a_MISSING_run_is_still_refused_by_name(self, tmp_path, capsys):
+        db = self._project(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            main(["retest", "--db", str(db), "--project-root", str(tmp_path),
+                  "--run", "nope"])
+        assert exc.value.code == 1
+        assert "no runtime run 'nope'" in capsys.readouterr().err

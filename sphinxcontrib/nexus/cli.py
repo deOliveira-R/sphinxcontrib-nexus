@@ -476,6 +476,16 @@ def main(argv: list[str] | None = None) -> int:
         choices=["staged", "unstaged", "all", "branch"],
         help="Git diff scope (default: all).",
     )
+    retest_cmd.add_argument(
+        "--run", default="",
+        help="Coverage run(s) with contexts, comma-separated. Given one, "
+             "a changed symbol the capture covers is answered from what "
+             "actually ran instead of from the static cone.",
+    )
+    retest_cmd.add_argument(
+        "--limit", type=int, default=0,
+        help="Max rows per bucket (0 = all). `omitted` reports the drop.",
+    )
 
     # --- changes ---
     changes_cmd = sub.add_parser(
@@ -1958,6 +1968,16 @@ def _runtime_load(db_path: Path, name: str):
     return run
 
 
+def _runtime_require(db_path: Path, run, family: str, view: str) -> None:
+    """The server's wrong-run refusal, on the CLI side."""
+    from sphinxcontrib.nexus.runtime import require_family
+    try:
+        require_family(run, family, view, store=_runtime_store(db_path))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _runtime_load_many(db_path: Path, names: str):
     """Load one run, or merge a comma-separated set (canonical-suite union)."""
     from sphinxcontrib.nexus.runtime import load_and_merge
@@ -2102,7 +2122,15 @@ def _run_trace(args: argparse.Namespace) -> int:
 def _run_retest(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args)
-    return _json_out(to_dict(q.retest(scope=args.scope)))
+    run = None
+    if args.run:
+        run = _runtime_load_many(args.db, args.run)
+        # Same refusal the MCP server gives. Without it a cProfile run
+        # here would answer as though nothing were covered — the
+        # `lessons-L56` failure, on the surface that lacked the guard.
+        _runtime_require(args.db, run, "exercised_by", "retest")
+    return _json_out(to_dict(
+        q.retest(scope=args.scope, run=run, limit=args.limit)))
 
 
 def _run_changes(args: argparse.Namespace) -> int:

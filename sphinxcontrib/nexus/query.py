@@ -899,6 +899,32 @@ class BriefingResult:
     )
 
 
+#: A ``retest`` row's warrant. :data:`EXECUTED` is reused from the ledger
+#: deliberately — it is the same fact, established the same way.
+REACHABLE = "reachable"  #: static cone only: inference, not evidence
+
+
+@dataclass
+class RetestEntry:
+    """One test to re-run, and WHY it is in the answer.
+
+    ``test`` is a runnable pytest selector rather than a ``NodeResult``,
+    for the reason the sibling verb already recorded: a ``NodeResult``
+    costs ~250 characters against a selector's ~70, and `[M]` ``retest``
+    produced a **225 071**-character reply on one ORPHEUS file — trimmed
+    by the budget to 14 of 250 rows, under a note advising the caller to
+    use ``limit``/``offset`` arguments the verb did not have.
+    """
+
+    test: str
+    warrant: str
+    """:data:`EXECUTED` — a capture PROVES this test ran the changed code.
+    :data:`REACHABLE` — no capture covers the changed symbol, so this is
+    the static cone's inference, and `[M]` that relation has 12-15 %
+    recall against execution on ORPHEUS. Two different kinds of claim;
+    the reply does not blur them."""
+
+
 @dataclass
 class RetestResult:
     """Minimum set of tests to re-run.
@@ -909,15 +935,35 @@ class RetestResult:
     AUDITABLE travel with it — ``dependence_edges`` says what counted as
     a dependency, and ``cone_depth`` how far the walk actually had to go
     (it runs to a fixed point, so this is a measurement, not a setting).
+
+    ⚠ With no ``run``, ``safe_to_skip`` rests entirely on the static
+    cone, and `[M]` **0 of 300** proven test-symbol pairs on ORPHEUS have
+    ANY path over that relation — properties, dunders and polymorphic
+    dispatch are invisible to it. So the skip set is a claim the relation
+    cannot support on its own; :attr:`capture` says whether evidence was
+    consulted, and ``evidence_symbols``/``inferred_symbols`` say for how
+    much of the change.
     """
 
-    must_retest: list[NodeResult]
-    should_retest: list[NodeResult]
+    must_retest: list[RetestEntry]
+    should_retest: list[RetestEntry]
     changed_symbols: list[str]
     total_tests: int
     safe_to_skip: int
     dependence_edges: list[str] = field(default_factory=list)
     cone_depth: int = 0
+    capture: CaptureScope | None = None
+    evidence_symbols: int = 0
+    """Changed symbols a capture could speak for — their rows are exact."""
+    inferred_symbols: int = 0
+    """Changed symbols no capture covers — their rows are the static
+    cone's guess. `[M]` 44 % of a typical ORPHEUS file's changed symbols
+    are node kinds coverage can never bind (classes are descended;
+    attributes, data and modules have no descent target), so this stays
+    non-zero even under a whole-suite capture."""
+    omitted: int = 0
+    """Rows dropped by ``limit``. The verb's own truncation note used to
+    advise arguments it did not have."""
 
 
 @dataclass
@@ -3755,12 +3801,42 @@ class GraphQuery:
     #: does not move the depth at which it converges.
     _RETEST_DEPENDENCE_EDGES = ("calls", "type_uses", "inherits")
 
-    def retest(self, scope: str = "all") -> RetestResult:
+    def retest(
+        self,
+        scope: str = "all",
+        run: "RuntimeRun | None" = None,
+        limit: int = 0,
+    ) -> RetestResult:
         """Compute the minimum set of tests to re-run after changes.
 
         Walks the dependence cone (:data:`_RETEST_DEPENDENCE_EDGES`)
         upstream to a FIXED POINT, so ``safe_to_skip`` is a claim rather
         than an artefact of where the walk stopped.
+
+        ⭐ **Give it a ``run`` and the answer stops being a guess where
+        the capture can speak.** The static cone is a poor instrument
+        for this question and the measurements say so plainly (ORPHEUS
+        2026-08-18, against execution evidence): **12-15 % recall**, and
+        **0 of 300** proven test-symbol pairs have any path over it —
+        properties, dunders, callbacks and polymorphic dispatch mint no
+        ``calls`` edge, so ``Mesh1D.__post_init__`` reports a cone of
+        **0** while 81 tests actually run it. It also over-claims: 944
+        in-capture pairs are reachable and provably never executed, and
+        that is not a filter bug — excluding builtin hubs leaves 250 of
+        250 still reachable through project-internal paths (nexus#60).
+
+        So per changed symbol, one of two things happens:
+
+        * the capture covers it ⟹ its ``exercised_by`` set IS the answer,
+          marked :data:`EXECUTED`. The cone is not consulted; its
+          in-capture rows are a subset of this plus ones evidence
+          refutes.
+        * no capture covers it ⟹ the cone answers, marked
+          :data:`REACHABLE`, and the reply says so rather than passing
+          inference off as evidence.
+
+        ``evidence_symbols``/``inferred_symbols`` report the split, so a
+        caller can see how much of the answer rests on which.
 
         ⛔ It used to stop at a hard-coded ``max_depth=3``, and the harm
         was invisible to a spot check because cone depth is a property of
@@ -3799,11 +3875,22 @@ class GraphQuery:
             and attrs.get("type") in ("function", "method")
         }
 
+        ledger = self.execution_ledger(run) if run is not None else None
+        proven: set[str] = set()      # a capture PROVES these ran the change
         must_retest: set[str] = set()
         should_retest: set[str] = set()
         deepest = 0
+        evidenced = inferred = 0
 
         for entry in changes.changed_symbols:
+            covered = (ledger is not None
+                       and ledger.state(entry.node.id) != UNOBSERVED)
+            if covered:
+                evidenced += 1
+                proven |= ledger.tests_for(entry.node.id) & all_tests
+            elif ledger is not None:
+                inferred += 1
+
             result = self.impact(
                 entry.node.id,
                 direction="upstream",
@@ -3813,24 +3900,69 @@ class GraphQuery:
             for depth, nodes in result.by_depth.items():
                 deepest = max(deepest, depth)
                 for n in nodes:
-                    if n.id in all_tests:
-                        if depth == 1:
-                            must_retest.add(n.id)
-                        else:
-                            should_retest.add(n.id)
+                    if n.id not in all_tests:
+                        continue
+                    # ⛔ A capture speaks ONLY for the tests it ran. Where
+                    # it covers the changed symbol, its verdict is exact
+                    # for those tests — a cone row the capture ran and
+                    # did not attribute here is genuinely refuted and is
+                    # dropped. It says NOTHING about a test it never
+                    # collected, and dropping those too is how a partial
+                    # capture certifies a suite it never executed: `[M]`
+                    # two slices covering 1499 of 5278 ORPHEUS tests once
+                    # reported `safe_to_skip = 5161` for a geometry
+                    # change — 3779 tests declared safe on the strength
+                    # of never having been looked at.
+                    if covered and n.id in ledger.captured_tests:
+                        continue
+                    if depth == 1:
+                        must_retest.add(n.id)
+                    else:
+                        should_retest.add(n.id)
 
-        # Remove overlap
+        # Proven rows outrank both cone buckets: a test that DID run the
+        # changed code cannot be demoted to "should".
+        must_retest = (must_retest | proven)
         should_retest -= must_retest
         safe_to_skip = len(all_tests) - len(must_retest) - len(should_retest)
 
+        def rows(ids: set[str]) -> list[RetestEntry]:
+            return sorted(
+                (RetestEntry(
+                    test=self._runnable_test_id(t),
+                    warrant=EXECUTED if t in proven else REACHABLE,
+                ) for t in ids),
+                key=lambda e: (e.warrant != EXECUTED, e.test),
+            )
+
+        must_rows, should_rows = rows(must_retest), rows(should_retest)
+        omitted = 0
+        if limit and limit > 0:
+            omitted = max(0, len(must_rows) - limit) + max(
+                0, len(should_rows) - limit)
+            must_rows, should_rows = must_rows[:limit], should_rows[:limit]
+
+        capture = None
+        if ledger is not None:
+            capture = CaptureScope(
+                runs=list(ledger.runs),
+                note=ledger.note,
+                captured_tests=len(ledger.captured_tests),
+                claimants_total=len(changes.changed_symbols),
+                claimants_in_capture=evidenced,
+            )
         return RetestResult(
-            must_retest=[self._node_result(t) for t in must_retest],
-            should_retest=[self._node_result(t) for t in should_retest],
-            changed_symbols=[e.node.name for e in changes.changed_symbols],
+            must_retest=must_rows,
+            should_retest=should_rows,
+            changed_symbols=[e.node.id for e in changes.changed_symbols],
             total_tests=len(all_tests),
             safe_to_skip=max(0, safe_to_skip),
             dependence_edges=list(self._RETEST_DEPENDENCE_EDGES),
             cone_depth=deepest,
+            capture=capture,
+            evidence_symbols=evidenced,
+            inferred_symbols=inferred,
+            omitted=omitted,
         )
 
     def doc_impact(self, node_id: str) -> DocImpactResult:
