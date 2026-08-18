@@ -564,3 +564,89 @@ probes except a mutation run.**
 ⚠ Still owed, unchanged: **F1-honesty** and **F4-recall**. And now a
 fifth: **nothing measures answer GRANULARITY**, the class `#72` was —
 148 answers where 9 are true. It passed every existing row.
+
+---
+
+## Round 6 — 2026-08-17 · nexus `eb05200`→`0d6bfdf` · ORPHEUS @ `5ae4cd6d`
+
+Probes plus targeted stress. **No multi-agent field trial**, so the two
+new findings below are one agent's shape — Part 2 still owed.
+
+| class | reading | note |
+|---|---|---|
+| F8 chains | **4/4** | holds |
+| F3 handles | **182/182**, docnames **50/50** | holds |
+| F5 declared:inferred | **1 : 4.6**; `implements` **85/13084** | #82 moving |
+| F1 false zeros | 72.5% no-caller — **announced, not fixed** | see below |
+| F2 coverage | 58.8% | ⛔ **unreadable** — rides on F5, which moved |
+| F6 payload | ~184 B/entry | holds |
+
+Ground truth: the RULE is **unmoved** (2.0% precision / 32.9% recall),
+which is the designed behaviour — it simulates over a fixed population
+and must not move when authors declare. CORPUS: 45 of 56 labelled
+equations declared; the residual 239 guesses sit entirely on the 11
+equations that *cannot* have an implementer (blocked on `#85`).
+
+**F1 is now honest.** `OperatorSum.apply` still reports `total=0` against
+**1641** unresolved calls — but the reply carries the count, the
+spellings, and *"confirm with grep before treating an empty caller list
+as 'uncalled'"*. `#59`'s ruling landed: the zero no longer lies.
+
+### ⭐ New class — F9, and it is the GRANULARITY probe this file said was owed
+
+| id | graded on | class | the tell | founding case |
+|---|---|---|---|---|
+| **F9** | signal | **Granularity collapse** — the relation is present, at a coarseness that destroys it | a "hub" whose degree equals the number of edges that lost their target | `imports` kept only `name.split(".")[0]`: `[M]` **5298 of 5299** ORPHEUS project imports landed on bare `py:module:orpheus`, the graph's #1 `god_nodes` hit |
+
+Fixed at `0d6bfdf` — degree **5299 → 1**, the same edges over **293**
+submodule targets, cross-layer edges **1 → 365**.
+
+**Why it is a class and not a bug.** The information was never lost: the
+full dotted path sat one line below in `metadata["full_import"]`. Only
+the *edge target* was coarsened, so every existence check passed, every
+aggregate looked healthy, and the corpus answered "is there an edge?"
+correctly while answering "between what?" uselessly. That is `#72`'s
+shape — 148 page-adjacent answers where 9 implementers were true — in a
+second tool, which is what makes it a class.
+
+⛔ **And the cost was a wrong architectural conclusion, not a wrong
+number.** A consuming project ran two sub-agents independently over the
+question *"can a test-dependence DAG be derived?"*, both found `calls`
+symmetric, and both concluded **no antisymmetric relation exists**. The
+reasoning was sound and the corpus was lying: ORPHEUS declares and
+machine-enforces a layered import contract, and it was flattened to a
+star before either agent looked. `[M]` after the fix, **351 of 365**
+cross-layer edges honour the contract and all 14 exceptions are
+`TYPE_CHECKING` imports the contract explicitly tolerates.
+
+⟹ the transferable form, and it belongs beside Part 5's rules:
+**a collapse that preserves the edge COUNT is invisible to every
+aggregate, including the ones built to detect flattering aggregates.**
+Degree centrality does not merely miss it — it promotes the collapse to
+the top of the hub list, where it displaces the real hubs and is read as
+architecture.
+
+### Two smaller findings
+
+**The F4 probe commits the defect the tools fixed.** Test-side reads
+**0/6**, which looks like `#75` regressing. It is not: two of its six
+samples are `__init__.py`, and the brief demonstrably answers when the
+file has data (`gates: 24 (L1 11 · L2 13)` + `verifies:` + `catches`).
+For the rest the brief is silent **because the source is** (`gates: 14
+(no level in source 14)`). The probe cannot tell *graph is silent* from
+*source is silent* — `#59`'s own distinction, inside the instrument.
+Part 5 rule 3 applies to probes measuring probes.
+
+**Four tools are MCP-only** — `node_at`, `runtime_markers`,
+`use_workspace`, `stats` have no CLI verb, so a probe, a hook, a CI
+script or a `!` injection cannot reach them. F6's mirror: unreachable
+from a shell rather than unrequestable from a session. (A first pass
+reported 11; seven were the *documented* `audit`↔`verification_audit`
+aliasing — check the alias table before counting.)
+
+### Still owed
+
+**F1-honesty**, **F4-recall**, and Part 2 — a real multi-agent trial.
+F9 arrived from use (an architectural question), not from the probe set,
+which is the founding round's lesson repeating: probes regress what you
+know.
