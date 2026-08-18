@@ -218,10 +218,41 @@ def test_imports_edge():
     assert ("py:module:testmod", "py:module:numpy", "imports") in edges
 
 
-def test_imports_from_edge():
+def test_imports_from_edge_keeps_the_SUBMODULE():
+    """The edge targets `scipy.sparse`, not `scipy`.
+
+    It pinned the top-level package until 2026-08-17, which made every
+    intra-project import land on ONE node: `[M]` on ORPHEUS, 5298 of
+    5299 project import edges pointed at bare `py:module:orpheus`, and
+    that node was the graph's #1 hub by degree — a phantom made entirely
+    of the collapse. A layered codebase's import DAG is unreadable that
+    way, and `migration_plan("scipy.special")` could not match, though
+    its own docstring advertises dotted deps.
+    """
     v = _visit_source("from scipy.sparse import csr_matrix")
     edges = _edge_tuples(v, "imports")
-    assert ("py:module:testmod", "py:module:scipy", "imports") in edges
+    assert ("py:module:testmod", "py:module:scipy.sparse", "imports") in edges
+    assert ("py:module:testmod", "py:module:scipy", "imports") not in edges
+
+
+def test_a_relative_import_resolves_to_its_ANCHORED_submodule():
+    """`from .mesh import X` inside a package targets `<pkg>.mesh`.
+
+    The relative arm collapsed twice over — it discarded `node.module`
+    entirely and then took the anchor's top segment, so every relative
+    import in a nested package landed on the top-level package too.
+    """
+    v = _visit_source("from .mesh import Thing", module_name="pkg.sub.solver")
+    edges = _edge_tuples(v, "imports")
+    assert ("py:module:pkg.sub.solver", "py:module:pkg.sub.mesh",
+            "imports") in edges
+
+
+def test_a_deep_import_targets_the_deep_module():
+    v = _visit_source("import orpheus.numerics.operator")
+    edges = _edge_tuples(v, "imports")
+    assert ("py:module:testmod", "py:module:orpheus.numerics.operator",
+            "imports") in edges
 
 
 def test_calls_edge():

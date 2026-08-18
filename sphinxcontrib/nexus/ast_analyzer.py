@@ -968,10 +968,9 @@ class CodeVisitor(ast.NodeVisitor):
         self._imports.add_import(node)
         module_id = self._node_id("module", self._module_name)
         for alias in node.names:
-            target_module = alias.name.split(".")[0]
             self.edges.append(GraphEdge(
                 source=module_id,
-                target=self._node_id("module", target_module),
+                target=self._node_id("module", alias.name),
                 type=EdgeType.IMPORTS,
                 metadata={"full_import": alias.name, "source": "ast"},
             ))
@@ -980,11 +979,13 @@ class CodeVisitor(ast.NodeVisitor):
         self._imports.add_import_from(node)
         if node.module and node.module != "__future__":
             module_id = self._node_id("module", self._module_name)
-            target_module = node.module.split(".")[0]
-            # Resolve relative imports
+            target_module = node.module
+            # Resolve relative imports against their anchoring package,
+            # so `from .mesh import X` in `orpheus/sn/solver.py` targets
+            # `orpheus.sn.mesh` rather than the anchor alone.
             if node.level > 0:
                 base = self._imports.relative_anchor(node.level)
-                target_module = base.split(".")[0] if base else target_module
+                target_module = f"{base}.{node.module}" if base else node.module
             self.edges.append(GraphEdge(
                 source=module_id,
                 target=self._node_id("module", target_module),
