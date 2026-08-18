@@ -43,12 +43,12 @@ edges alongside everything else.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from docutils import nodes
 from docutils.parsers.rst import directives as rst_directives
+from sphinx.util import logging
 from sphinx.util.docutils import SphinxDirective
 
 from sphinxcontrib.nexus._mappings import (
@@ -67,6 +67,31 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 logger = logging.getLogger(__name__)
+
+#: Warning category for everything this module reports. Every message
+#: here is DIRECTIVE MISUSE — a `:by:` that names nothing, a label that
+#: resolves to nothing, an edge the ontology refuses — and each one
+#: silently loses an authored declaration.
+#:
+#: ⛔ It used to log through stdlib `logging`, which Sphinx's
+#: warning machinery never sees: `[M]` 2026-08-18, ORPHEUS built
+#: `-E -W` GREEN while emitting two ontology refusals. So a typo in a
+#: `:by:` was indistinguishable from a landed declaration, in the
+#: flattering direction — the V&V matrix simply went on showing the
+#: inferred edge (nexus#90).
+#:
+#: `type`/`subtype` give projects the escape hatch that keeps `-W`
+#: usable: `suppress_warnings = ["nexus.directive"]` silences these
+#: alone rather than forcing a project to drop `-W` wholesale.
+WARNING_TYPE = "nexus"
+WARNING_SUBTYPE = "directive"
+
+
+def _where(docname: str, lineno: Any) -> "tuple[str, int] | str":
+    """Sphinx's `location`, as a `(docname, lineno)` pair when the line
+    is known. The pending registry defaults `lineno` to ``"?"``, and a
+    non-integer there would render as a broken source reference."""
+    return (docname, lineno) if isinstance(lineno, int) else docname
 
 #: Directive name → edge type for the statement-to-statement relations.
 #: Every entry must have a query that consumes it (``provenance_chain``
@@ -519,7 +544,7 @@ class ImplementsDirective(_VerificationDirectiveBase):
 def _apply_relation(
     entry: dict[str, Any],
     graph: "nx.MultiDiGraph",
-    ctx: str,
+    where: "tuple[str, int] | str",
 ) -> int:
     """Write one statement-to-statement edge. Returns 1 if it landed.
 
@@ -534,16 +559,18 @@ def _apply_relation(
     source_id = _resolve_statement_id(from_label, graph)
     if source_id is None:
         logger.warning(
-            ".. %s:: [%s]: source statement %r not found in graph — skipping",
-            kind, ctx, from_label,
+            ".. %s:: source statement %r not found in graph — skipping",
+            kind, from_label,
+            location=where, type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
         )
         return 0
 
     target_id = _resolve_statement_id(to_label, graph)
     if target_id is None:
         logger.warning(
-            ".. %s:: [%s]: target statement %r not found in graph — skipping",
-            kind, ctx, to_label,
+            ".. %s:: target statement %r not found in graph — skipping",
+            kind, to_label,
+            location=where, type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
         )
         return 0
 
@@ -615,10 +642,11 @@ def apply_pending_edges(
         for entry in entries:
             kind = entry["kind"]
             lineno = entry.get("lineno", "?")
-            ctx = f"{docname}:{lineno}"
 
             if kind in EQUATION_RELATIONS:
-                written += _apply_relation(entry, graph, ctx)
+                written += _apply_relation(
+                    entry, graph, _where(docname, lineno),
+                )
                 continue
 
             # Declaring directives share this registry (one store keeps
@@ -647,16 +675,18 @@ def apply_pending_edges(
             resolved = _node_id_for_target(target, graph, admitted)
             if resolved is None:
                 logger.warning(
-                    ".. %s:: %s [%s]: target %r not found in graph — skipping",
-                    kind, label, ctx, target,
+                    ".. %s:: %s: target %r not found in graph — skipping",
+                    kind, label, target,
+                    location=_where(docname, lineno), type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
                 )
                 continue
 
             eq_id = f"math:equation:{label}"
             if eq_id not in graph:
                 logger.warning(
-                    ".. %s:: %s [%s]: equation %s not found in graph — skipping",
-                    kind, label, ctx, eq_id,
+                    ".. %s:: %s: equation %s not found in graph — skipping",
+                    kind, label, eq_id,
+                    location=_where(docname, lineno), type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
                 )
                 continue
 
@@ -688,10 +718,11 @@ def apply_pending_edges(
                 # asserting a fact and the schema disagrees, and only
                 # they can decide which of the two is wrong.
                 logger.warning(
-                    ".. %s:: %s [%s]: the ontology refuses this edge — %s "
+                    ".. %s:: %s: the ontology refuses this edge — %s "
                     "(declare a different symbol, or widen [edge.%s] in "
                     "the project's .nexus/ontology.toml)",
-                    kind, label, ctx, refusal.reason, wanted,
+                    kind, label, refusal.reason, wanted,
+                    location=_where(docname, lineno), type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
                 )
                 continue
 

@@ -4,6 +4,26 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — directive misuse is audible to `-W`
+
+`directives.py` logged through stdlib `logging`, which Sphinx's
+warning-to-error machinery never sees. `[M]` 2026-08-18: ORPHEUS built
+`-E -W` **green** while emitting two ontology refusals. So the whole
+directive-misuse family was advisory — a typo'd `:by:`, a typo'd label,
+a refused edge — and a silently-dropped declaration was
+indistinguishable from a landed one. The failure is in the flattering
+direction: the V&V matrix simply goes on showing the inferred edge,
+which is exactly what a declaration campaign cannot afford.
+
+They now go through `sphinx.util.logging` with a `location`, so a build
+fails and names the source line. `type="nexus"` / `subtype="directive"`
+keeps `-W` usable: a project that has decided to live with these
+silences them with `suppress_warnings = ["nexus.directive"]` rather than
+dropping `-W` wholesale.
+
+⚠ Not a change to the admission itself — a refused edge was never
+written either way. This is about whether CI notices.
+
 ### Fixed — a DECLARATION is admission-controlled, like a guess always was
 
 `apply_pending_edges` resolved a directive's target and wrote the edge

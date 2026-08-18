@@ -7,6 +7,7 @@ Module-scoped: one ``sphinx-build`` per test file, graph loaded once.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -856,3 +857,77 @@ def test_a_type_only_edge_is_visible_and_not_folded_into_its_runtime_twin(
     assert sorted(bool(e.get("type_checking")) for e in helpers) == [False, True]
     # ...and no entry claims a repeat count it does not have.
     assert all("times" not in e for e in helpers), helpers
+
+
+# ---------------------------------------------------------------------------
+# Directive misuse is AUDIBLE to `-W` (nexus#90)
+# ---------------------------------------------------------------------------
+
+
+def _build(src, out, *extra):
+    """Run sphinx-build and hand back the completed process, unchecked —
+    the point of these two gates is the RETURN CODE."""
+    return subprocess.run(
+        [sys.executable, "-m", "sphinx", "-q", "-E", *extra, str(src), str(out)],
+        capture_output=True, text=True,
+    )
+
+
+def _fixture_copy(tmp_path):
+    dst = tmp_path / "src"
+    shutil.copytree(FIXTURE, dst, ignore=shutil.ignore_patterns("__pycache__"))
+    return dst
+
+
+def test_a_typod_declaration_FAILS_a_W_build(tmp_path):
+    """⛔ The gate this exists for, and it needs a real build to witness.
+
+    `directives.py` logged through stdlib `logging`, which Sphinx's
+    warning machinery never sees. `[M]` 2026-08-18 ORPHEUS built
+    `-E -W` **green** while emitting two ontology refusals — so a `:by:`
+    naming nothing was indistinguishable from a landed declaration, and
+    the V&V matrix simply went on showing the inferred edge. The failure
+    was in the flattering direction, which is the one a declaration
+    campaign cannot afford.
+    """
+    src = _fixture_copy(tmp_path)
+    (src / "theory" / "solver.rst").write_text(
+        (src / "theory" / "solver.rst").read_text()
+        + "\n.. implements:: fixture-balance\n"
+          "   :by: solver_pkg.no_such_symbol\n"
+    )
+    done = _build(src, tmp_path / "out", "-W")
+    assert done.returncode != 0, (
+        "a declaration naming nothing must fail a -W build\n" + done.stderr
+    )
+    out = done.stderr + done.stdout
+    assert "no_such_symbol" in out
+    # …and it points AT the source line. A gating warning a reader
+    # cannot locate just moves the search cost onto them.
+    assert "solver.rst:" in out, out
+
+
+def test_the_UNTOUCHED_fixture_still_builds_clean_under_W(tmp_path):
+    """The control. A gate that reddens on everything proves nothing
+    about the one above — and this also pins that the fixture's own
+    deliberate misuse (markers naming equations it does not declare,
+    which `merge` reports) stays advisory, so the new gate is the only
+    thing the assertion above can be detecting."""
+    done = _build(_fixture_copy(tmp_path), tmp_path / "out", "-W")
+    assert done.returncode == 0, done.stderr
+
+
+def test_a_project_can_silence_them_without_dropping_W(tmp_path):
+    """`-W` is only usable if a project can carve out a category it has
+    decided to live with. Without `type`/`subtype` the only escape from
+    one noisy warning is dropping `-W` everywhere."""
+    src = _fixture_copy(tmp_path)
+    (src / "theory" / "solver.rst").write_text(
+        (src / "theory" / "solver.rst").read_text()
+        + "\n.. implements:: fixture-balance\n"
+          "   :by: solver_pkg.no_such_symbol\n"
+    )
+    conf = src / "conf.py"
+    conf.write_text(conf.read_text() + '\nsuppress_warnings = ["nexus.directive"]\n')
+    done = _build(src, tmp_path / "out", "-W")
+    assert done.returncode == 0, done.stderr

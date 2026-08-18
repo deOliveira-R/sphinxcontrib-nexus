@@ -16,6 +16,7 @@ import pytest
 
 from sphinxcontrib.nexus.directives import (
     _node_id_for_target,
+    _where,
     _resolve_enclosing_py_symbol,
     apply_pending_edges,
     merge_env,
@@ -656,3 +657,12 @@ def test_the_resolver_admits_what_the_PROJECT_ontology_admits(tmp_path):
         (s, t) for s, t, d in g.edges(data=True)
         if d.get("type") == "implements"
     ]
+
+
+def test_where_degrades_to_the_DOCNAME_when_no_line_is_known():
+    """The pending registry defaults `lineno` to "?", and Sphinx renders
+    a `(docname, lineno)` pair as a source reference — a non-integer
+    there produces a broken one, so the pair is only formed when the
+    line is really known."""
+    assert _where("theory/index", 42) == ("theory/index", 42)
+    assert _where("theory/index", "?") == "theory/index"
