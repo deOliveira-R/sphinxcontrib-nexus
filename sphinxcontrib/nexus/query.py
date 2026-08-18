@@ -516,6 +516,25 @@ class BranchCoverageResult:
 
 
 @dataclass
+class ExercisedResult:
+    """A node with the tests that actually EXECUTED it in a run.
+
+    The falsifier for a coverage claim. Every other runtime family says a
+    node was reached; this says by whom — so a test that *claims* to
+    verify something and never runs it is visible for the first time.
+
+    ⚠ ``executed`` is not ``asserted``. A test that imports a module and
+    never looks at it appears here beside the one that pins its every
+    branch. Read a row as a NECESSARY condition on a catcher, never a
+    sufficient one: absence disproves, presence does not prove.
+    """
+
+    node: NodeResult
+    tests: list[NodeResult] = field(default_factory=list)
+    test_count: int = 0
+
+
+@dataclass
 class ChangeEntry:
     """A symbol affected by a git change."""
 
@@ -4516,6 +4535,66 @@ class GraphQuery:
                 depth=depth,
             ))
         out.sort(key=lambda e: e.first_ts)
+        return out if limit <= 0 else out[:limit]
+
+    def runtime_exercisers(
+        self,
+        run: "RuntimeRun",
+        node: str = "",
+        limit: int = 50,
+    ) -> list[ExercisedResult]:
+        """Which tests EXECUTED a node — evidence, not inference.
+
+        Reads ``run.exercised_by`` (a ``coverage`` run captured with
+        contexts). It is the only query here that can falsify a coverage
+        CLAIM: a ``verifies`` / ``catches`` marker asserts that a test
+        pins a thing, and until now nothing in the graph could contradict
+        it — every ``tests`` edge is authored, stamped ``confidence=1.0``,
+        and points at an equation rather than at code.
+
+        ``node`` restricts to node-ids containing the substring, which is
+        how you ask the load-bearing question: *"I changed this symbol —
+        which tests rest on it?"*
+
+        Most-exercised first, so a truncated answer keeps the hubs.
+
+        ⚠ **Executed, not asserted** — see :class:`ExercisedResult`.
+
+        ⚠ **Absence of a run is not absence of exercise**, and this is
+        the trap to know before comparing claims against evidence: the
+        query reports the workload that was CAPTURED, so a node no run
+        touched is untested *by that capture* — a different claim from
+        untested. `[M]` 2026-08-18, on this feature's own first use: a
+        capture of one directory (``tests/geometry``, 426 tests) made
+        **53 of 53** equations look like every claiming test executed
+        nothing of their implementation. `[M]` **0** of ``alpha-recursion``'s
+        39 claimants and 0 of ``wdd-closure``'s 38 were in the capture at
+        all — they are SN tests, and the slice was geometry. The whole
+        signal was the slice.
+        ⟹ before reading a zero as a refuted claim, intersect the
+        claiming tests with the ones the run actually contains; if that
+        intersection is empty the comparison is void, not negative. The
+        ledger's ``unknown_context`` answers the other half — whether the
+        capture's contexts were understood at all.
+
+        The inverse view — *given a test, what did it run* — is one dict
+        inversion away and is deliberately not a second verb until a
+        caller needs it (there is no second consumer yet, and a verb pair
+        that shares one relation is how the two drift apart).
+        """
+        out: list[ExercisedResult] = []
+        for node_id, tests in run.exercised_by.items():
+            if node_id not in self._g:
+                continue
+            if node and node not in node_id:
+                continue
+            known = [t for t in tests if t in self._g]
+            out.append(ExercisedResult(
+                node=self._node_result(node_id),
+                tests=[self._node_result(t) for t in known],
+                test_count=len(known),
+            ))
+        out.sort(key=lambda r: (-r.test_count, r.node.id))
         return out if limit <= 0 else out[:limit]
 
     # ------------------------------------------------------------------

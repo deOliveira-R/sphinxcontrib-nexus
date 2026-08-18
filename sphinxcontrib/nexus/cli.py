@@ -790,6 +790,18 @@ def main(argv: list[str] | None = None) -> int:
     rt_br.add_argument("--limit", type=int, default=50,
                        help="Max nodes (default: 50; 0 = all).")
 
+    rt_ex = sub.add_parser(
+        "runtime-exercisers",
+        help="Which tests EXECUTED a node — the falsifier for a coverage claim (JSON)",
+    )
+    rt_ex.add_argument("--db", type=Path, default=None)
+    rt_ex.add_argument("--run", type=str, default="default",
+                       help="Run name, or comma-separated names to union.")
+    rt_ex.add_argument("--node", type=str, default="",
+                       help="Restrict to node ids containing this substring.")
+    rt_ex.add_argument("--limit", type=int, default=50,
+                       help="Max nodes (default: 50; 0 = all).")
+
     rt_tl = sub.add_parser(
         "runtime-timeline",
         help="Observed execution sequence from a viztracer run — the stage DAG (JSON)",
@@ -1026,6 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime-hotspots": _run_runtime_hotspots,
         "runtime-edges": _run_runtime_edges,
         "runtime-branches": _run_runtime_branches,
+        "runtime-exercisers": _run_runtime_exercisers,
         "runtime-timeline": _run_runtime_timeline,
         "processes": _run_processes,
         "shortest-path": _run_shortest_path,
@@ -1999,6 +2012,15 @@ def _run_runtime_ingest(args: argparse.Namespace) -> int:
     print(f"    outside scope:      {ledger.outside_scope}")
     print(f"    file not in graph:  {ledger.unindexed_file}")
     print(f"    no enclosing node:  {ledger.no_enclosing_node}")
+    # Per-test attribution reports only when the capture carried contexts,
+    # because for every other run the honest line is no line at all. When
+    # it DID carry them, both numbers are printed even at zero: a silent
+    # summary cannot distinguish "contexts resolved" from "every context
+    # was a spelling I do not understand", which is the same
+    # nothing-found-vs-wrong-place confusion the ledger exists to remove.
+    if run.exercised_by or ledger.unknown_context:
+        print(f"  tests attributed to {len(run.exercised_by)} node(s)")
+        print(f"    unresolved contexts: {ledger.unknown_context}")
 
     if diagnosis is not None:
         print(f"\n  root was: {Path(root).resolve()}", file=sys.stderr)
@@ -2035,6 +2057,14 @@ def _run_runtime_branches(args: argparse.Namespace) -> int:
     run = _runtime_load_many(args.db, args.run)
     results = q.runtime_branches(
         run, node=args.node, partial_only=not args.all, limit=args.limit)
+    return _json_out(to_dict(results))
+
+
+def _run_runtime_exercisers(args: argparse.Namespace) -> int:
+    from sphinxcontrib.nexus._serialize import to_dict
+    q = _load_query(args)
+    run = _runtime_load_many(args.db, args.run)
+    results = q.runtime_exercisers(run, node=args.node, limit=args.limit)
     return _json_out(to_dict(results))
 
 

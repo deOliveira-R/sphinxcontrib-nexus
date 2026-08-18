@@ -93,6 +93,7 @@ nexus runtime-runs --db <path>
 nexus runtime-hotspots --db <path> [--run NAME[,NAME...]] [--by cumtime|ncalls|tottime]
 nexus runtime-edges --db <path> [--mode dynamic_only|fired|dead] [--substantive-only]
 nexus runtime-branches --db <path> [--all]
+nexus runtime-exercisers --db <path> [--run NAME] [--node SUBSTR]
 nexus runtime-timeline --db <path> [--max-depth N]
 ```
 

@@ -230,8 +230,27 @@ class PositionIndex:
             for key, defs in by_file.items()
         }
         self._modules = modules
+        self._positioned = frozenset(
+            d.node_id for defs in self._by_file.values() for d in defs
+        )
 
     # ── the two questions ───────────────────────────────────────────
+
+    def knows_node(self, node_id: str) -> bool:
+        """Is this node id one the index positioned?
+
+        The third question, and the one asked by NAME rather than by
+        position: a coverage *context* arrives as a dotted qualname with
+        no line attached, so its node cannot be found by
+        :meth:`defined_at`. Answering from the set this index already
+        built keeps one authority over "which nodes have a position" —
+        the alternative was threading a second view of the same graph
+        into every overlay that needs to check a name.
+
+        Module nodes are deliberately excluded, matching
+        :meth:`defined_at`: only something with a def/end span is here.
+        """
+        return node_id in self._positioned
 
     def enclosing(self, file: Path | str, line: int) -> str | None:
         """The innermost node containing a position — the navigator's

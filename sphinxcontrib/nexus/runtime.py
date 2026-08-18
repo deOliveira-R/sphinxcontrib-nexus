@@ -37,7 +37,11 @@ from typing import Any
 
 import networkx as nx
 
-from sphinxcontrib.nexus.graph import KnowledgeGraph
+# Aliased: five functions in this module bind a LOCAL `node_id` string,
+# and a shadowed import is a landmine for the next editor. The alias is
+# the verb `_mappings.node_id`'s own docstring uses.
+from sphinxcontrib.nexus._mappings import node_id as spell_node_id
+from sphinxcontrib.nexus.graph import KnowledgeGraph, NodeType
 from sphinxcontrib.nexus.position import Definition, PositionIndex
 from sphinxcontrib.nexus.workspace import canonical_path
 
@@ -91,6 +95,13 @@ class JoinLedger:
     #: file is indexed, but no function/method span contains the line.
     #: By design this is lambdas, comprehensions and nested closures.
     no_enclosing_node: int = 0
+    #: a coverage CONTEXT named no node — the per-test attribution's own
+    #: recall gap. Deliberately NOT part of :attr:`considered`: every other
+    #: field counts one ``(file, line)`` lookup, while this counts one
+    #: context NAME. Folding two units into one denominator is the
+    #: unverified-denominator defect this class exists to prevent, so
+    #: :meth:`diagnosis` goes on reasoning about lookups alone.
+    unknown_context: int = 0
 
     @property
     def considered(self) -> int:
@@ -106,6 +117,7 @@ class JoinLedger:
         self.outside_scope += other.outside_scope
         self.unindexed_file += other.unindexed_file
         self.no_enclosing_node += other.no_enclosing_node
+        self.unknown_context += other.unknown_context
 
     def diagnosis(self) -> str | None:
         """The likely cause when an ingest bound nothing, or ``None``.
@@ -302,6 +314,18 @@ class RuntimeRun:
     markers: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: node_id -> [pytest node id, …]  (pytest) — the runnable spelling
     pytest_ids: dict[str, list[str]] = field(default_factory=dict)
+    #: node_id -> [test node id, …]  (coverage, with contexts) — which
+    #: tests EXECUTED this node. Every other family answers "was this
+    #: reached by the run"; this one answers "by which test", which is
+    #: the only evidence that can falsify a coverage CLAIM.
+    #:
+    #: ⚠ It reaches *executed*, never *asserted*. A test that imports a
+    #: module and never looks at it is recorded here exactly like the one
+    #: that pins its every branch — no edge quality separates those
+    #: rungs, and only mutation can. Read it as a NECESSARY condition on
+    #: a catcher (a test that never ran the line cannot catch a defect
+    #: in it), not as a sufficient one.
+    exercised_by: dict[str, list[str]] = field(default_factory=dict)
     #: why records did or did not bind — the ingest's own audit trail
     ledger: JoinLedger = field(default_factory=JoinLedger)
 
@@ -343,6 +367,7 @@ class RuntimeRun:
             timeline=data.get("timeline", {}),
             markers=data.get("markers", {}),
             pytest_ids=data.get("pytest_ids", {}),
+            exercised_by=data.get("exercised_by", {}),
             ledger=ledger,
         )
 
@@ -362,6 +387,9 @@ def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
     * **coverage** — a branch is *hit* if hit in any run, so the merged
       ``missing_arcs`` is the INTERSECTION of each run's missing arcs (arcs no
       run ever took); ``branches_total`` is structural (max across runs).
+    * **exercised_by** — a plain set union: a node exercised by test ``T`` in
+      ANY run is exercised by ``T``. Exact, unlike ``lines_hit`` above, because
+      what is stored is the test SET rather than a count of it.
     * **timeline** — NOT merged (timestamps are per-run and incomparable);
       use a single run for ``runtime_timeline``.
 
@@ -410,6 +438,12 @@ def merge_runs(runs: list[RuntimeRun], name: str = "merged") -> RuntimeRun:
             "branches_total": total,
             "missing_arcs": [list(a) for a in sorted(still_missing)],
         }
+
+    exercised: dict[str, set[str]] = {}
+    for run in runs:
+        for node_id, tests in run.exercised_by.items():
+            exercised.setdefault(node_id, set()).update(tests)
+    merged.exercised_by = {n: sorted(t) for n, t in exercised.items()}
     return merged
 
 
@@ -501,6 +535,61 @@ def ingest_cprofile(
 
 # ── coverage.py --branch backend ────────────────────────────────────
 
+#: A pytest node id — ``tests/g/test_x.py::TestFoo::test_bar[case]`` — as
+#: emitted by ``pytest-cov --cov-context=test``. The other capture route,
+#: coverage.py's own ``dynamic_context = test_function``, already emits the
+#: dotted qualname, so only this one needs normalising.
+_PYTEST_NODEID = re.compile(r"^(?P<file>[^:]+\.py)::(?P<rest>.+)$")
+
+
+def _context_qualname(context: str) -> str:
+    """One spelling for a coverage context, whichever route captured it.
+
+    Two tools stamp contexts and they disagree. coverage.py's
+    ``dynamic_context = test_function`` writes the dotted qualname
+    (``tests.geometry.test_bc.TestFoo.test_bar``); ``pytest-cov
+    --cov-context=test`` writes the pytest node id
+    (``tests/geometry/test_bc.py::TestFoo::test_bar``). Normalising both
+    to the qualname HERE, once, is Pattern 7 — a consumer that did it
+    per call site would be one convention drift per consumer.
+
+    Parametrisation is dropped: ``test_bar[case-a]`` and ``test_bar[b]``
+    are two pytest ids and ONE graph node, the same many-to-one
+    :func:`overlay_pytest` documents. (coverage.py's own route already
+    collapses them — `[M]` 0 of 426 contexts on an ORPHEUS slice carried
+    a bracket.)
+    """
+    # pytest-cov appends the PHASE — `…::test_bar|setup`, `|run`,
+    # `|teardown` — so the same test arrives as up to three contexts.
+    # They are one node; the phase is dropped rather than kept, because
+    # nothing downstream asks "did this run in setup".
+    context = context.split("|", 1)[0]
+    m = _PYTEST_NODEID.match(context)
+    if m:
+        module = m.group("file")[: -len(".py")].replace("/", ".")
+        context = f"{module}.{m.group('rest').replace('::', '.')}"
+    return context.split("[", 1)[0]
+
+
+def _context_node(context: str, index: PositionIndex) -> str | None:
+    """The test node a coverage context names, or ``None``.
+
+    A context is a NAME, not a ``(file, line)`` record, so it cannot go
+    through :meth:`NodeBinder.node` — but the name it carries is exactly a
+    node id's final segment, so the join is a lookup rather than a parse.
+    The id is spelled with the canonical
+    :func:`~sphinxcontrib.nexus._mappings.node_id` (the grammar has one
+    author) and then CHECKED against the index, so a spelling that does
+    not exist returns ``None`` and is ledgered — this can fail to
+    resolve, it cannot resolve wrongly.
+    """
+    qualname = _context_qualname(context)
+    for node_type in (NodeType.METHOD, NodeType.FUNCTION):
+        candidate = spell_node_id("py", node_type, qualname)
+        if index.knows_node(candidate):
+            return candidate
+    return None
+
 
 def overlay_coverage(
     cov_json: dict[str, Any],
@@ -529,9 +618,45 @@ def overlay_coverage(
     report's own ``meta`` carries only ``format``/``version``/
     ``timestamp``/``branch_coverage``/``show_contexts``, and records the
     rundir **nowhere**.
+
+    **Per-test attribution.** When the report carries ``contexts`` — the
+    capture asked for them — each is resolved to the test node that
+    executed the line and the result lands in
+    :attr:`RuntimeRun.exercised_by`. That is the only family here that can
+    falsify a coverage CLAIM: every other one says a node was reached,
+    this one says by whom. Capture it with ``dynamic_context =
+    test_function`` in the coverage config (there is no CLI flag) and
+    ``coverage json --show-contexts``; ``pytest-cov --cov-context=test``
+    is normalised too. A context naming no node is counted in
+    :attr:`JoinLedger.unknown_context` rather than dropped, so a capture
+    whose spelling this does not understand reports a number instead of
+    an empty family.
+
+    ⚠ **Contexts make the REPORT enormous, not the overlay.** `[M]`
+    2026-08-18 on ORPHEUS ``tests/geometry`` (19 files, 792 tests): the
+    ``--show-contexts`` JSON is **265 MB**, and the ``exercised_by`` it
+    reduces to is **1.44 MB** — 184×. So the cost is transient and lands
+    on whoever runs the capture; slice the suite rather than expecting one
+    whole-suite report to be manageable.
     """
     run = RuntimeRun(name=name, kind=KIND_COVERAGE, meta=dict(meta or {}))
     binder = NodeBinder(index, source_prefixes=source_prefixes, root=root)
+
+    # Resolve every distinct context ONCE, before the file walk. Contexts
+    # repeat on thousands of lines and across files, so resolving them in
+    # place would re-ask the same question per line AND count the same
+    # miss once per line — an inflated denominator in the one field whose
+    # job is to be an honest one.
+    test_node: dict[str, str | None] = {}
+    for fdata in cov_json.get("files", {}).values():
+        for contexts in (fdata.get("contexts") or {}).values():
+            for context in contexts:
+                # "" is coverage's context for a line executed outside any
+                # test — import time, collection, a session fixture. It
+                # names no test and is not a failure to resolve one.
+                if context and context not in test_node:
+                    test_node[context] = _context_node(context, index)
+    binder.ledger.unknown_context = sum(1 for v in test_node.values() if v is None)
 
     for filename, fdata in cov_json.get("files", {}).items():
         defs = binder.definitions(filename)
@@ -541,6 +666,10 @@ def overlay_coverage(
         miss_lines = set(fdata.get("missing_lines", []))
         exec_arcs = [tuple(a) for a in fdata.get("executed_branches", [])]
         miss_arcs = [tuple(a) for a in fdata.get("missing_branches", [])]
+        ctx_lines = [
+            (int(ln), contexts)
+            for ln, contexts in (fdata.get("contexts") or {}).items()
+        ]
 
         for d in defs:
             # The BODY range, not the decorator extent: a decorator line
@@ -553,6 +682,27 @@ def overlay_coverage(
             hit_arcs = [a for a in exec_arcs if lineno <= a[0] <= end]
             missing = [a for a in miss_arcs if lineno <= a[0] <= end]
             total_arcs = len(hit_arcs) + len(missing)
+            # Attribution is recorded BEFORE the coverage guard below,
+            # because the two answer different questions. `# pragma: no
+            # cover` puts a line in `excluded_lines` — removed from
+            # coverage's numerator AND denominator — while coverage goes
+            # on stamping contexts on it, since it did run. Scoring and
+            # dependence are not the same fact: a pragma says "do not
+            # grade this", never "this did not execute", and for "which
+            # tests re-run if I change this" the execution IS the answer.
+            # `[M]` 2026-08-18: gating on the guard drops exactly 4
+            # ORPHEUS nodes on the tests/geometry slice, every one a
+            # pragma'd guard — `DiscreteMeasure.__post_init__` is run by
+            # **131** tests and would have reported none.
+            exercisers = {
+                resolved
+                for ln, contexts in ctx_lines
+                if lineno <= ln <= end
+                for resolved in (test_node.get(c) for c in contexts)
+                if resolved is not None
+            }
+            if exercisers:
+                run.exercised_by[node_id] = sorted(exercisers)
             if lines_hit + lines_miss == 0 and total_arcs == 0:
                 continue  # node not present in this coverage file's scope
             run.coverage[node_id] = {
@@ -793,8 +943,25 @@ class RuntimeStore:
             return None
         return RuntimeRun.from_dict(json.loads(path.read_text()))
 
+    #: Metric families a listing reports presence of. `kind` records
+    #: provenance and does NOT determine these — `merge_runs` produces a
+    #: run carrying several, and a `coverage` run has `exercised_by` only
+    #: when the capture asked for contexts. So "which runs can answer
+    #: this?" must be read off the payload, never inferred from the kind.
+    FAMILIES = ("calls", "edges", "coverage", "timeline", "markers",
+                "exercised_by")
+
     def list_runs(self) -> list[dict[str, Any]]:
-        """Name + kind + meta of every stored run (no metric payloads)."""
+        """Name + kind + meta + which FAMILIES each stored run carries.
+
+        ``families`` exists because kind is provenance, not capability:
+        two runs both ``kind="coverage"`` differ on whether contexts were
+        captured, and a caller told only the kind would be pointed at a
+        run that cannot answer — the same "nothing found" vs "wrong
+        place" confusion (``lessons-L56``) that
+        :func:`~sphinxcontrib.nexus.server._require_family` exists to
+        remove, one level down.
+        """
         if not self.dir.is_dir():
             return []
         out = []
@@ -811,6 +978,7 @@ class RuntimeStore:
                 "meta": data.get("meta", {}),
                 "nodes": len(nodes),
                 "edges": len(data.get("edges", [])),
+                "families": [f for f in self.FAMILIES if data.get(f)],
             })
         return out
 

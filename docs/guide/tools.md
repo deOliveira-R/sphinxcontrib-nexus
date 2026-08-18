@@ -142,6 +142,7 @@ with the derived artefacts.
 | `runtime_hotspots` | Where did time and iterations go? | `run`, `by`, `limit` |
 | `runtime_edges` | `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only` |
 | `runtime_branches` | Which branches never fired? Discriminators ranked first | `run`, `node`, `partial_only` |
+| `runtime_exercisers` | Which tests EXECUTED this node? The falsifier for a coverage claim | `run`, `node`, `limit` |
 | `runtime_markers` | Which tests carry this marker — **as pytest resolved it** | `run`, `marker`, `node` |
 | `runtime_timeline` | In what order did things execute? | `run`, `max_depth`, `limit` |
 

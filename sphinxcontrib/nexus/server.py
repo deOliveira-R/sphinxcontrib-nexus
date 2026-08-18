@@ -246,6 +246,10 @@ _RUNTIME_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "coverage": ("coverage", ("coverage",)),
     "timeline": ("timeline", ("viztracer",)),
     "markers": ("markers", ("pytest",)),
+    # A coverage run carries this only when the capture asked for
+    # contexts, which is why the "runs that have it" list below is
+    # filtered on the payload rather than on the kind.
+    "exercised_by": ("exercised_by", ("coverage",)),
 }
 
 
@@ -278,8 +282,15 @@ def _require_family(run: Any, family: str, view: str) -> None:
         available = store.list_runs() if store is not None else []
     except Exception:                       # no workspace, no store, no matter
         available = []
+    # Filtered on the FAMILY the run actually carries, not on its kind:
+    # two `coverage` runs differ on whether contexts were captured, and
+    # naming one that cannot answer re-creates the very confusion this
+    # refusal exists to remove. `families` is absent from sidecars listed
+    # by an older store, so fall back to the kind rather than to nothing.
     usable = [
-        r["name"] for r in available if r.get("kind") in kinds
+        r["name"] for r in available
+        if (family in r["families"] if "families" in r
+            else r.get("kind") in kinds)
     ] or [f"(none — capture one with kind={kinds[0]!r} and runtime_ingest)"]
     raise ValueError(
         f"run {run.name!r} was ingested as kind={run.kind!r} and carries no "
@@ -1388,6 +1399,49 @@ def runtime_branches(
     _require_family(loaded, "coverage", "runtime_branches")
     results = q.runtime_branches(
         loaded, node=node, partial_only=partial_only, limit=_list_limit(limit))
+    return to_json(to_dict(results))
+
+
+@nexus_tool
+def runtime_exercisers(
+    run: str = "default", node: str = "", limit: int = 0,
+) -> str:
+    """Which tests EXECUTED a node — evidence, against a claim.
+
+    Every `verifies` / `catches` marker is a coverage CLAIM: authored,
+    stamped `confidence=1.0`, and pointing at an equation rather than at
+    code. Nothing in the static graph can contradict one. This can: it
+    reads which tests actually ran the lines, so a marker on a test that
+    never reaches the code is visible.
+
+    Ask it the load-bearing question with `node`: *"I changed this
+    symbol — which tests rest on it?"* Most-exercised first.
+
+    Needs a `coverage` run captured WITH contexts: `dynamic_context =
+    test_function` in the coverage config (config-only — there is no CLI
+    flag) plus `coverage json --show-contexts`; `pytest-cov
+    --cov-context=test` is understood too. A coverage run captured
+    without them carries no such data and is refused by name rather than
+    answering `[]`.
+
+    ⚠ **Executed, not asserted.** A test that imports a module and never
+    looks at it appears here beside one that pins its every branch. A row
+    is a NECESSARY condition on a catcher — absence disproves, presence
+    does not prove — and only mutation separates the rungs.
+
+    ⚠ **Absence of a run is not absence of exercise**: this reports the
+    workload that was captured. A node no run touched is untested *by
+    that capture*, which is a different claim from untested.
+
+    Args:
+        run: Stored run name, or comma-separated names to union.
+        node: Restrict to node ids containing this substring.
+        limit: Max nodes (default 50; 0 = all).
+    """
+    q = _get_query()
+    loaded = _load_runs(run)
+    _require_family(loaded, "exercised_by", "runtime_exercisers")
+    results = q.runtime_exercisers(loaded, node=node, limit=_list_limit(limit))
     return to_json(to_dict(results))
 
 

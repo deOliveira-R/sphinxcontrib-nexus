@@ -4,6 +4,57 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Added — a coverage run says WHICH TEST executed a line (#57)
+
+`coverage.py`'s `dynamic_context = test_function` stamps every executed line
+with the test that executed it, and the overlay threw it away. It now lands in
+`RuntimeRun.exercised_by` (code node → the tests that ran it), reachable as
+`runtime_exercisers` / `nexus runtime-exercisers`.
+
+This is the only evidence in the graph that can contradict a coverage CLAIM.
+Every `tests` edge is authored, stamped `confidence=1.0`, and points at an
+equation rather than at code, so until now nothing could disagree with a
+`verifies` / `catches` marker.
+
+`[M]` on ORPHEUS `tests/geometry` (19 files, 792 tests): **426 contexts, 426
+resolved, 0 unknown**; 931 code nodes, 11 182 (code, test) pairs.
+
+- **A context is a NAME, not a `(file, line)` record**, so it cannot go through
+  `NodeBinder`. It is spelled with the canonical `_mappings.node_id` and then
+  CHECKED against the index, so a spelling that does not exist resolves to
+  nothing and is counted — it can fail to resolve, it cannot resolve wrongly.
+  Both capture routes are normalised at the boundary: coverage.py's dotted
+  qualname and `pytest-cov --cov-context=test`'s node id — the latter with its
+  `|setup` / `|run` / `|teardown` phase suffix and its parametrisation both
+  stripped, since up to six spellings there are one graph node.
+- **Attribution is recorded BEFORE the coverage guard**, because scoring and
+  dependence are different facts. `# pragma: no cover` removes a line from
+  coverage's numerator *and* denominator while coverage goes on stamping
+  contexts on it — it ran. `[M]` gating on the guard drops 4 ORPHEUS nodes,
+  every one a pragma'd guard; `DiscreteMeasure.__post_init__` is executed by
+  **131** tests and would have reported none.
+- **The recall gap is a number.** `JoinLedger.unknown_context` counts contexts
+  that named no node, and the ingest summary prints it whenever a capture
+  carried contexts at all — a silent summary cannot tell "contexts resolved"
+  from "every context was a spelling I do not understand". It is deliberately
+  NOT part of `considered`, which counts lookups; two units in one denominator
+  is the defect that class exists to prevent.
+- **`list_runs` now reports `families`** — which metric families each stored
+  run actually carries — and `_require_family` names alternatives from that
+  rather than from `kind`. Kind is provenance, not capability: two runs both
+  `kind="coverage"` differ on whether contexts were captured, and suggesting
+  one that cannot answer re-creates the confusion the refusal exists to remove.
+- ⚠ **Contexts make the REPORT enormous, not the overlay.** `[M]` the
+  `--show-contexts` JSON for that one directory is **265 MB** and reduces to a
+  **1.44 MB** `exercised_by` — 184×. The cost is transient; slice the suite.
+- ⚠ **Absence of a run is not absence of exercise**, learned on first use: the
+  geometry-only capture made **53 of 53** equations look like every claiming
+  test executed nothing of their implementation. `[M]` **0** of
+  `alpha-recursion`'s 39 claimants were in the capture — they are SN tests. The
+  whole signal was the slice. Before reading a zero as a refuted claim,
+  intersect the claimants with the tests the run contains.
+
+
 ### Fixed — `provenance_chain` answers the question it was asked (#72)
 
 It walked `code ←documents– page –contains→ every equation on that page` and

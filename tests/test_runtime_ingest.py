@@ -595,3 +595,166 @@ def test_a_decorator_stack_longer_than_the_window_still_binds():
     # window can find it. The recorded extent can.
     assert idx.defined_at(SRC, 40) == "py:function:mod.heavy"
     assert idx.defined_at(SRC, 47) == "py:function:mod.heavy"  # mid-stack
+
+
+# ── per-test attribution (coverage contexts) ────────────────────────
+#
+# `exercised_by` is the only family that can falsify a coverage CLAIM, so
+# these gates are written to catch the two ways it could lie: a context
+# that resolves to the WRONG node, and a context that silently resolves to
+# nothing. The second is the dangerous one — it reads as "this code is
+# untested" rather than as "the join failed".
+
+TESTSRC = "/proj/tests/test_x.py"
+
+
+def _graph_with_tests() -> nx.MultiDiGraph:
+    """`_graph()` plus two test nodes for contexts to resolve onto.
+
+    One plain function and one method, because the resolver tries the two
+    node types in order and a fixture with only functions would leave the
+    method arm unexercised (vv #17: mutate/gate each arm separately).
+    """
+    g = _graph()
+    g.add_node("py:function:tests.test_x.test_alpha", type="function",
+               name="tests.test_x.test_alpha",
+               file_path=TESTSRC, lineno=5, end_lineno=8)
+    g.add_node("py:method:tests.test_x.TestK.test_beta", type="method",
+               name="tests.test_x.TestK.test_beta",
+               file_path=TESTSRC, lineno=12, end_lineno=15)
+    return g
+
+
+def _cov_json_ctx():
+    """`_cov_json()` with a contexts map exercising every branch.
+
+    * 10, 12 → ``foo``      — one test, then two on one line
+    * 13     → ``foo``      — a context naming NO node (the recall gap)
+    * 30     → ``bar``      — the method arm
+    * 33     → ``bar``      — the EMPTY context (import time, not a test)
+    * 71     → ``C.legacy`` — a line coverage EXCLUDED (`# pragma: no
+      cover`), so the node has no coverage row at all, yet ran
+    """
+    d = _cov_json()
+    d["meta"]["show_contexts"] = True
+    d["files"][SRC]["contexts"] = {
+        "10": ["tests.test_x.test_alpha"],
+        "12": ["tests.test_x.test_alpha", "tests.test_x.TestK.test_beta"],
+        "13": ["tests.test_x.test_vanished"],
+        "30": ["tests.test_x.TestK.test_beta"],
+        "33": [""],
+        "71": ["tests.test_x.test_alpha"],
+    }
+    return d
+
+
+def test_contexts_attribute_tests_to_the_nodes_they_executed():
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(_cov_json_ctx(), idx, "c", source_prefixes=[SRC])
+    assert run.exercised_by["py:function:mod.foo"] == [
+        "py:function:tests.test_x.test_alpha",
+        "py:method:tests.test_x.TestK.test_beta",
+    ]
+    assert run.exercised_by["py:function:mod.bar"] == [
+        "py:method:tests.test_x.TestK.test_beta",
+    ]
+
+
+def test_a_context_naming_no_node_is_counted_not_dropped():
+    """The recall gap must be a NUMBER, not an empty family.
+
+    A capture whose contexts this cannot resolve — a different tool, a
+    stale graph — would otherwise report every node as exercised by
+    nobody, which reads exactly like a suite that tests nothing.
+    """
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(_cov_json_ctx(), idx, "c", source_prefixes=[SRC])
+    assert run.ledger.unknown_context == 1          # test_vanished only
+    # …and the empty context is NOT counted as one: it is coverage's
+    # spelling for "no test was running", a fact rather than a miss.
+    # (Were it counted, this would read 2 and the recall gap would be
+    # overstated on every real report — 3761 such lines on the ORPHEUS
+    # slice this was built from.)
+    assert all(t for tests in run.exercised_by.values() for t in tests)
+
+
+def test_the_empty_context_does_not_become_a_test():
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(_cov_json_ctx(), idx, "c", source_prefixes=[SRC])
+    # line 33 is inside bar and carries ONLY the empty context, so bar's
+    # exercisers come from line 30 alone.
+    assert len(run.exercised_by["py:function:mod.bar"]) == 1
+
+
+def test_a_pragma_excluded_node_still_reports_who_ran_it():
+    """§6c witness: the case the ordering decision exists to catch.
+
+    ``# pragma: no cover`` removes a line from coverage's numerator AND
+    denominator, so ``C.legacy`` has no coverage row — but the code ran,
+    and coverage says which test ran it. Scoring and dependence are
+    different facts. Measured on ORPHEUS: gating attribution on the
+    coverage guard drops 4 nodes, one of them a ``__post_init__`` that
+    **131** tests execute.
+    """
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(_cov_json_ctx(), idx, "c", source_prefixes=[SRC])
+    assert "py:method:mod.C.legacy" not in run.coverage      # not scored…
+    assert run.exercised_by["py:method:mod.C.legacy"] == [   # …but it RAN
+        "py:function:tests.test_x.test_alpha",
+    ]
+
+
+def test_a_pytest_cov_nodeid_resolves_like_a_qualname():
+    """The other capture route, normalised at the boundary (Pattern 7).
+
+    ``pytest-cov --cov-context=test`` writes the pytest node id where
+    coverage.py's own ``dynamic_context`` writes the dotted qualname.
+    Both must land on one node, and parametrisation must collapse — two
+    ids, one graph node, as ``overlay_pytest`` already documents.
+    """
+    d = _cov_json()
+    d["files"][SRC]["contexts"] = {
+        # `|setup` / `|run` / `|teardown` is pytest-cov's phase suffix:
+        # ONE test arrives as up to three contexts and must collapse.
+        "10": ["tests/test_x.py::TestK::test_beta[case-a]|run",
+               "tests/test_x.py::TestK::test_beta[case-b]|setup"],
+        "12": ["tests/test_x.py::test_alpha|run"],
+    }
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(d, idx, "c", source_prefixes=[SRC])
+    assert run.exercised_by["py:function:mod.foo"] == [
+        "py:function:tests.test_x.test_alpha",
+        "py:method:tests.test_x.TestK.test_beta",
+    ]
+    assert run.ledger.unknown_context == 0
+
+
+def test_a_report_without_contexts_leaves_the_family_empty():
+    """No contexts captured is not a join failure — it is no data."""
+    idx = PositionIndex(_graph_with_tests())
+    run = overlay_coverage(_cov_json(), idx, "c", source_prefixes=[SRC])
+    assert run.exercised_by == {}
+    assert run.ledger.unknown_context == 0
+
+
+def test_merge_unions_the_exercisers():
+    """Exact, unlike the merged ``lines_hit``: the test SET is stored."""
+    a = RuntimeRun(name="a", kind="coverage",
+                   exercised_by={"n": ["t1"], "only_a": ["t9"]})
+    b = RuntimeRun(name="b", kind="coverage",
+                   exercised_by={"n": ["t2", "t1"]})
+    m = merge_runs([a, b])
+    assert m.exercised_by["n"] == ["t1", "t2"]
+    assert m.exercised_by["only_a"] == ["t9"]
+
+
+def test_exercised_by_survives_the_sidecar_round_trip(tmp_path):
+    store = RuntimeStore(tmp_path / "traces")
+    run = RuntimeRun(name="r", kind="coverage",
+                     exercised_by={"py:function:mod.foo": ["py:function:t.a"]})
+    run.ledger.unknown_context = 3
+    store.write(run)
+    back = store.load("r")
+    assert back is not None
+    assert back.exercised_by == run.exercised_by
+    assert back.ledger.unknown_context == 3

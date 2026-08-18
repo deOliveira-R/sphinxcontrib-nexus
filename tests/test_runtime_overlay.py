@@ -260,3 +260,69 @@ def test_overlay_queries_survive_stale_nodes_after_rebuild():
     fired = q.runtime_edges(run, mode="fired")
     assert {(r.source.id, r.target.id) for r in fired} == {
         ("py:function:m.A", "py:function:m.B")}
+
+
+# ── runtime_exercisers — evidence against a claim ───────────────────
+
+
+def _exercised_run() -> RuntimeRun:
+    """A exercised by two tests, B by one, D by none.
+
+    D is the interesting row: it is IN the graph and absent from the
+    family, which is the shape "no test ran this" — the answer the whole
+    query exists to be able to give.
+    """
+    return RuntimeRun(
+        name="cov", kind="coverage",
+        exercised_by={
+            "py:function:m.A": ["py:function:t.test_one", "py:function:t.test_two"],
+            "py:function:m.B": ["py:function:t.test_one"],
+            "py:function:m.gone": ["py:function:t.test_one"],
+        },
+    )
+
+
+def _graph_with_tests() -> nx.MultiDiGraph:
+    g = _graph()
+    for name in ("test_one", "test_two"):
+        g.add_node(f"py:function:t.{name}", type="function", name=f"t.{name}",
+                   domain="py", file_path="/p/t.py", lineno=1, end_lineno=3)
+    return g
+
+
+def test_exercisers_ranks_most_exercised_first():
+    q = GraphQuery(_graph_with_tests())
+    rows = q.runtime_exercisers(_exercised_run())
+    assert [r.node.id for r in rows] == ["py:function:m.A", "py:function:m.B"]
+    assert rows[0].test_count == 2
+    assert [t.name for t in rows[0].tests] == ["t.test_one", "t.test_two"]
+
+
+def test_exercisers_drops_nodes_the_graph_no_longer_has():
+    """A sidecar outlives the graph it was joined against.
+
+    ``m.gone`` is in the run and not in the graph — a symbol retired
+    since capture. Reporting it would resurrect a dead id into an answer
+    a caller cannot act on.
+    """
+    q = GraphQuery(_graph_with_tests())
+    ids = {r.node.id for r in q.runtime_exercisers(_exercised_run())}
+    assert "py:function:m.gone" not in ids
+
+
+def test_exercisers_node_filter_answers_the_load_bearing_question():
+    q = GraphQuery(_graph_with_tests())
+    rows = q.runtime_exercisers(_exercised_run(), node="m.B")
+    assert [r.node.id for r in rows] == ["py:function:m.B"]
+
+
+def test_exercisers_serialises_its_tests():
+    """The payload must carry the test NAMES, not just a count.
+
+    ``_compact_node`` drops falsy values and fields that repeat an id
+    segment, so a result type can lose exactly the field it exists to
+    deliver — this pins that ``tests`` survives to JSON.
+    """
+    q = GraphQuery(_graph_with_tests())
+    payload = to_json(to_dict(q.runtime_exercisers(_exercised_run())))
+    assert "t.test_two" in payload

@@ -3,7 +3,7 @@
 Full tool, resource, and schema reference for the Nexus knowledge graph.
 This file is shared across all nexus-* skills.
 
-## Tools (44)
+## Tools (45)
 
 ### Exploration
 | Tool | What it answers | Key args |
@@ -51,6 +51,7 @@ The static graph is *what can run*; a runtime overlay is *what actually ran*. Ca
 | `runtime_edges` | Fired-vs-static edges: `dynamic_only` (dispatch the static graph missed), `fired`, `dead` | `run`, `mode`, `node`, `substantive_only`, `limit` |
 | `runtime_markers` | Tests by marker, **as pytest resolved it** (module-level `pytestmark`, class marks, conftest hooks — invisible to a decorator walk); carries runnable pytest ids | `run`, `marker`, `node`, `limit` |
 | `runtime_branches` | Partial-branch nodes; discriminators ranked first (missing-type suspects) | `run`, `node`, `partial_only`, `limit` |
+| `runtime_exercisers` | Which tests EXECUTED a node — the falsifier for a coverage claim (needs contexts) | `run`, `node`, `limit` |
 | `runtime_timeline` | Observed execution sequence (a viztracer run): nodes by first entry | `run`, `max_depth`, `limit` |
 
 ### Code+Doc Fusion
@@ -166,6 +167,7 @@ nexus runtime-runs --db <path>
 nexus runtime-hotspots --db <path> [--run NAME[,NAME...]] [--by cumtime|ncalls|tottime] [--limit 20]
 nexus runtime-edges --db <path> [--run NAME[,NAME...]] [--mode dynamic_only|fired|dead] [--node SUBSTR] [--substantive-only] [--limit 50]
 nexus runtime-branches --db <path> [--run NAME[,NAME...]] [--node SUBSTR] [--all] [--limit 50]
+nexus runtime-exercisers --db <path> [--run NAME[,NAME...]] [--node SUBSTR] [--limit 50]
 nexus runtime-timeline --db <path> [--run NAME] [--max-depth N] [--limit 50]
 nexus retest --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
 nexus changes --db <path> [--project-root .] [--scope all|staged|unstaged|branch]
