@@ -778,13 +778,81 @@ def test_a_nested_extra_source_dir_is_not_scanned_twice(fixture_graph):
         "gate can no longer see the defect it was written for"
     )
 
-    pairs = Counter(
-        (u, v)
-        for u, v, d in fixture_graph.edges(data=True)
+    # Counted against the SOURCE, not against itself. "No duplicated
+    # (source, target) pair" would be the obvious check and it is WRONG:
+    # two `from X import a` / `from X import b` statements legitimately
+    # mint two edges to X, as does a runtime import beside a type-only
+    # one. A double scan is not "some pair repeats" — it is "every
+    # module has more edges than its file has import statements", and
+    # only an independent census of the source can say that.
+    import ast
+
+    per_module = Counter(
+        u for u, _, d in fixture_graph.edges(data=True)
         if d.get("type") == "imports"
     )
-    duplicated = {p: n for p, n in pairs.items() if n > 1}
-    assert not duplicated, {
-        f"{u.split(':')[-1]} -> {v.split(':')[-1]}": n
-        for (u, v), n in duplicated.items()
-    }
+    for node, data in fixture_graph.nodes(data=True):
+        path = data.get("file_path")
+        if data.get("type") != "module" or not path:
+            continue
+        if not str(path).startswith(str(FIXTURE)):
+            continue
+        # Descend into `if` / `try` / class bodies but NOT into function
+        # bodies: the analyzer never visits those statement-wise (see
+        # `ast_analyzer.CodeVisitor.__init__`), so a function-scope
+        # import mints no edge and a plain `ast.walk` over-counts.
+        def _count(node) -> int:
+            total = 0
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if isinstance(child, ast.ImportFrom):
+                    total += bool(child.module and child.module != "__future__")
+                elif isinstance(child, ast.Import):
+                    total += len(child.names)
+                total += _count(child)
+            return total
+
+        expected = _count(ast.parse(Path(path).read_text()))
+        assert per_module.get(node, 0) == expected, (
+            f"{node}: {per_module.get(node, 0)} import edges for "
+            f"{expected} import statements in {path}"
+        )
+
+
+def test_a_type_only_edge_is_visible_and_not_folded_into_its_runtime_twin(
+    fixture_kg,
+):
+    """The `type_checking` fact reaches the REPLY, and keeps it honest.
+
+    Two claims, and the second is why this matters more than tidiness.
+
+    1. A consumer can SEE the fact. It was in the database and in no
+       tool's output — a stamp nothing can read is inert.
+    2. ``solver_pkg`` imports ``.helpers`` at runtime AND under the
+       guard. Those are two IMPORTS edges on one (source, target) pair,
+       so with no distinguishing field they serialise identically and
+       ``_dedupe_parallel`` folds them into ``times: 2`` — reporting
+       "imported twice" for one runtime edge and one that does not
+       exist at runtime.
+
+    `[M]` the same shape ships in ORPHEUS:
+    ``orpheus/diffusion/augmented_mesh.py`` imports
+    ``orpheus.geometry.boundary`` at line 95 and line 113.
+    """
+    from sphinxcontrib.nexus._serialize import assemble_neighbors
+    from sphinxcontrib.nexus.query import GraphQuery
+
+    entries = assemble_neighbors(
+        GraphQuery(fixture_kg), "py:module:solver_pkg",
+        direction="out", edge_types=["imports"],
+    )
+    helpers = [e for e in entries if e["id"] == "py:module:solver_pkg.helpers"]
+
+    assert len(helpers) == 2, (
+        "the runtime and type-only imports of solver_pkg.helpers collapsed "
+        f"into one entry: {helpers}"
+    )
+    assert sorted(bool(e.get("type_checking")) for e in helpers) == [False, True]
+    # ...and no entry claims a repeat count it does not have.
+    assert all("times" not in e for e in helpers), helpers

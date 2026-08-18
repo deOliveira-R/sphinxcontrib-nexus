@@ -15,4 +15,11 @@ from .helpers import Mesh
 if TYPE_CHECKING:  # NOT a runtime public path — nexus#88
     from .typing_only import FluxProfile
 
+    # ...and the BOTH-WAYS case: `.helpers` is imported at runtime just
+    # above AND type-only here, so the two IMPORTS edges are the same
+    # (source, target) pair differing only in `type_checking`. Without
+    # that field on the entry they serialise identically and collapse
+    # into `times: 2`, which asserts a sameness that does not hold.
+    from .helpers import Mesh as _MeshForAnnotations
+
 __all__ = ["Mesh"]

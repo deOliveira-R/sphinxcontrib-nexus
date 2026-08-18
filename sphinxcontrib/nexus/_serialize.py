@@ -122,8 +122,13 @@ def _compact_node(node: Any) -> dict:
 _INFERRED = "inferred"
 
 
-def _mark_evidence(entry: dict, edge: Any) -> dict:
-    """Flag an entry whose edge is a GUESS, and say what produced it.
+def _mark_edge_caveats(entry: dict, edge: Any) -> dict:
+    """Flag what a reader must know before trusting this edge.
+
+    Two caveats, one shape: each says *do not read this adjacency
+    naively*, and each is silent by default so a normal edge costs no
+    bytes. ``inferred`` says the edge is a GUESS; ``type_checking``
+    says it does not exist at RUNTIME.
 
     Declared is the silent default: an edge minted from a
     ``@pytest.mark.verifies`` or a directive needs no annotation, and
@@ -141,6 +146,8 @@ def _mark_evidence(entry: dict, edge: Any) -> dict:
     to know: :func:`_dedupe_parallel` no longer requires it (see
     :func:`_content_key`), and JSON renders either as an array.
     """
+    if getattr(edge, "type_checking", False):
+        entry["type_checking"] = True
     if getattr(edge, "evidence", "") != _INFERRED:
         return entry
     entry["inferred"] = True
@@ -320,7 +327,7 @@ def assemble_context(
     for neighbor, edge in neighbors:
         buckets = outgoing if edge.source == node_id else incoming
         buckets.setdefault(edge.type, []).append(
-            _mark_evidence(_compact_node(neighbor), edge)
+            _mark_edge_caveats(_compact_node(neighbor), edge)
         )
 
     placeholders = getattr(q, "placeholder_types", _PLACEHOLDER_TYPES)
@@ -463,7 +470,7 @@ def assemble_neighbors(
             # A self-loop reports "out"; it is both, and the pair is one
             # edge, so one of the two names has to win.
             entry["direction"] = "out" if edge.source == node_id else "in"
-        entries.append(_mark_evidence(entry, edge))
+        entries.append(_mark_edge_caveats(entry, edge))
 
     entries = _dedupe_parallel(entries)
     _rank_entries(

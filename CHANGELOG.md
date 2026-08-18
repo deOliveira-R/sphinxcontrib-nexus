@@ -4,6 +4,30 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — the `type_checking` fact reaches the reply, and stops a false `times: 2`
+
+`#88` stamped the edge; no tool could read it. `EdgeResult` had no field
+for it, so `neighbors`, `context` and every consumer downstream saw a
+database attribute that did not exist in any output — inert exactly
+where a consumer would use it.
+
+Worse than absent: **misleading**. `_dedupe_parallel` folds parallel
+edges that serialise identically into one entry carrying `times: N`,
+and its own contract is that "the ENTRY is its own identity key". With
+no field distinguishing them, a module that imports the same target at
+runtime AND under the guard produced two identical entries, folded into
+`times: 2` — reporting "imported twice" for one real edge and one that
+does not exist at runtime. `[M]`
+`orpheus/diffusion/augmented_mesh.py` imports `orpheus.geometry.boundary`
+at line 95 and line 113 and read exactly that way.
+
+`EdgeResult.type_checking` now carries it and the reply hook stamps it,
+so the two entries differ and the fold is correct by the rule it already
+had — no special case. The hook is renamed `_mark_edge_caveats`: it now
+carries two facts of one kind ("do not read this adjacency naively"),
+and `_mark_evidence` named only the first.
+
+
 ### Fixed — an extra source dir inside a scanned root is not scanned twice
 
 `nexus_extra_source_dirs` names dirs to analyse *in addition to* the

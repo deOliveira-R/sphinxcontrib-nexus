@@ -128,6 +128,21 @@ class EdgeResult:
     (``pytest.mark.verifies``, ``directive``, ``ast``). Empty means the
     producer recorded nothing."""
 
+    type_checking: bool = False
+    """This IMPORTS edge was minted inside ``if TYPE_CHECKING:``.
+
+    The import is erased at runtime — the module is never loaded — so
+    the edge is a *type-only* dependence: real for "what does this
+    module reference for typing", wrong for a runtime invalidation
+    cone. False is the silent default and costs no bytes.
+
+    ⚠ It is also what keeps a reply HONEST when a module imports the
+    same target both ways. `[M]` `orpheus/diffusion/augmented_mesh.py`
+    imports `orpheus.geometry.boundary` at line 95 (runtime) and again
+    at line 113 (guarded); without this field both entries serialise
+    identically and :func:`_dedupe_parallel` folds them into
+    ``times: 2`` — asserting a sameness that does not hold."""
+
     via: list[str] = field(default_factory=list)
     """For an inferred edge, the shared tokens that produced the guess.
 
@@ -1349,6 +1364,7 @@ class GraphQuery:
             type=data.get("type", ""),
             key=str(key),
             evidence=data.get("source", ""),
+            type_checking=bool(data.get("type_checking")),
             via=list(data.get("shared_tokens") or ()),
         )
 

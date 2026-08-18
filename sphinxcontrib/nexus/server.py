@@ -868,7 +868,9 @@ def context(node_id: str, limit_per_type: int = 0) -> str:
 
     ⚠ An entry marked `inferred: true` is a GUESS, not a fact: nobody
     declared it, it was minted because two names share a word, and
-    `via` lists the words. Measured on a real project, 12999 of 13084
+    `via` lists the words. An `imports` entry marked `type_checking:
+    true` is guarded by `if TYPE_CHECKING:` — erased at runtime, so it
+    is a type-only dependence rather than a runtime one. Measured on a real project, 12999 of 13084
     `implements` edges are of this kind — so on the `implements`
     bucket the guess is the rule, not the exception. Declared edges
     (a marker, a directive) carry no mark.
@@ -1007,9 +1009,14 @@ def neighbors(
     Entries are ranked project-symbols-first, most-connected-first, so a
     budget-truncated answer keeps the useful half.
 
-    ⚠ An entry marked `inferred: true` is a GUESS — minted from a
-    shared name token, with `via` naming the tokens. Declared edges
-    carry no mark.
+    ⚠ Two caveats mark an entry, both silent by default. `inferred:
+    true` is a GUESS — minted from a shared name token, with `via`
+    naming the tokens. `type_checking: true` on an `imports` edge means
+    the import sits under `if TYPE_CHECKING:` and is ERASED at runtime,
+    so it is a type-only dependence: real for "what does this module
+    reference for typing", wrong for a runtime invalidation cone. A
+    module importing the same target both ways yields TWO entries that
+    differ only in that mark — they are two facts, not a repeat.
 
     Use ``context`` for the same relations grouped by edge type.
 
