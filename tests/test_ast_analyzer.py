@@ -1135,3 +1135,102 @@ def test_a_private_class_method_is_a_METHOD_and_receives_its_calls(tmp_path):
         if d.get("type") == "calls"
     ]
     assert callers == ["py:method:m._Private.run"], callers
+
+
+# ---------------------------------------------------------------------------
+# `if TYPE_CHECKING:` — a type-only import is not a runtime dependence
+# ---------------------------------------------------------------------------
+
+
+def _import_edges(visitor: CodeVisitor) -> dict[str, dict]:
+    """full_import → metadata, for every IMPORTS edge."""
+    return {
+        e.metadata["full_import"]: e.metadata
+        for e in visitor.edges
+        if e.type.value == "imports"
+    }
+
+
+def test_a_type_checking_import_edge_says_it_is_type_only():
+    """The stamp, with its own runtime control beside it.
+
+    A positive reading alone cannot discriminate (vv #11/#19): an
+    analyzer that stamped EVERY import would pass the guarded leg.
+    So the same source carries a runtime import that must stay bare.
+    """
+    v = _visit_source(
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.runtime_dep import Thing\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.type_only import Ghost\n"
+        "    import pkg.plain_type_only\n"
+    )
+    edges = _import_edges(v)
+
+    assert edges["pkg.type_only"].get("type_checking") is True
+    assert edges["pkg.plain_type_only"].get("type_checking") is True
+    # ...and the control: a runtime import carries no stamp at all, so
+    # absence of the key means "runtime" rather than "unknown".
+    assert "type_checking" not in edges["pkg.runtime_dep"]
+
+
+def test_the_else_branch_of_a_type_checking_guard_is_the_runtime_one():
+    """`else:` is what actually executes — it must not inherit the flag."""
+    v = _visit_source(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.erased import A\n"
+        "else:\n"
+        "    from pkg.executed import B\n"
+    )
+    edges = _import_edges(v)
+
+    assert edges["pkg.erased"].get("type_checking") is True
+    assert "type_checking" not in edges["pkg.executed"]
+
+
+def test_the_attribute_spelling_of_type_checking_is_recognised():
+    """``if typing.TYPE_CHECKING:`` — the form no sampled corpus showed."""
+    v = _visit_source(
+        "import typing\n"
+        "if typing.TYPE_CHECKING:\n"
+        "    from pkg.type_only import Ghost\n"
+    )
+    assert _import_edges(v)["pkg.type_only"].get("type_checking") is True
+
+
+def test_an_ordinary_conditional_import_is_still_a_runtime_import():
+    """The discriminator is TYPE_CHECKING, not merely being inside an ``if``.
+
+    A version-gated or optional-dependency import DOES execute, so a
+    cone must keep following it. Without this leg the flag could mean
+    "conditional" and every arm above would still pass.
+    """
+    v = _visit_source(
+        "import sys\n"
+        "if sys.version_info >= (3, 11):\n"
+        "    from pkg.modern import Fast\n"
+    )
+    assert "type_checking" not in _import_edges(v)["pkg.modern"]
+
+
+def test_a_type_only_alias_is_not_a_runtime_public_path():
+    """A guarded alias must not register as a re-export candidate.
+
+    ``reexports`` feeds ``_chase_reexports``, which canonicalizes names
+    — so a phantom entry redirects onto a path that does not exist at
+    runtime. Measured on one real corpus: 12 ``__init__.py`` blocks
+    registered 15 such candidates, all of which ``hasattr`` denies.
+    """
+    v = _visit_source(
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.helpers import Mesh\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.mesh import SNMesh\n",
+        module_name="pkg",
+    )
+
+    assert "pkg.SNMesh" not in v.reexports
+    # ...and the positive control: the real re-export still registers,
+    # so the guard narrowed the map rather than emptying it.
+    assert v.reexports["pkg.Mesh"] == "pkg.helpers.Mesh"

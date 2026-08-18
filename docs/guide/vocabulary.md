@@ -78,6 +78,16 @@ reference out of a symbol that exists.
 | `imports` | Module → module | AST |
 | `inherits` | Class → base class | AST |
 
+:::{note}
+An `imports` edge minted inside `if TYPE_CHECKING:` carries
+`type_checking = true`. That import is **erased at runtime** — the module
+is never loaded and its code never runs — so the edge is a *type-only*
+dependence: real for "what does this module reference for typing",
+wrong for a runtime invalidation cone, which would pull in work that
+cannot have been affected. The attribute is emitted only when true, so
+its absence means "runtime"; read it with `.get("type_checking")`.
+:::
+
 **Behaviour**
 
 | Edge | Asserts | Source |

@@ -171,6 +171,11 @@ domain = ["module"]
 range = ["module", "external", "unresolved"]
 enforcement = "warn"
 sources = ["ast"]
+# `type_checking = true` marks an import guarded by `if TYPE_CHECKING:`.
+# It is erased at runtime, so the edge is a TYPE-ONLY dependence: real
+# for "what does this module reference for typing", wrong for a runtime
+# invalidation cone. Emitted only when true — absence means runtime.
+attributes = ["type_checking"]
 
 [edge.inherits]
 description = "Class → base class."

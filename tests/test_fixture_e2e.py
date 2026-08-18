@@ -20,7 +20,13 @@ FIXTURE = Path(__file__).parent / "fixtures" / "minimal_project"
 
 
 @pytest.fixture(scope="module")
-def fixture_graph(tmp_path_factory):
+def fixture_kg(tmp_path_factory):
+    """The built fixture as a KnowledgeGraph — one build, two views.
+
+    Most tests want the networkx view (``fixture_graph``); a few need
+    ``.metadata`` (the re-export map lives there, not on an edge). Both
+    read this one build rather than paying a second ``sphinx-build``.
+    """
     build = tmp_path_factory.mktemp("fixture-build")
     # Use the current interpreter's sphinx-build so the in-tree
     # sphinxcontrib.nexus from ``.venv`` is the one driving the build.
@@ -30,7 +36,12 @@ def fixture_graph(tmp_path_factory):
     )
     db = build / "_nexus" / "graph.db"
     assert db.exists(), f"Expected {db} to exist after sphinx-build"
-    return load_sqlite(db).nxgraph
+    return load_sqlite(db)
+
+
+@pytest.fixture(scope="module")
+def fixture_graph(fixture_kg):
+    return fixture_kg.nxgraph
 
 
 # ---------------------------------------------------------------------------
@@ -695,3 +706,47 @@ def test_the_uncaught_entry_LEADS_the_errors_answer(fixture_graph):
     assert result.uncaught == 1
     assert result.total_catchers == 1
     assert result.unresolved_markers == []
+
+
+def test_a_type_checking_import_edge_is_marked_through_the_real_build(
+    fixture_graph,
+):
+    """nexus#88 end to end — the stamp survives build → DB → load.
+
+    The in-process visitor test proves the metadata is *computed*; only
+    this proves it is still there after the sqlite round trip, which is
+    where an attribute a consumer will branch on has to be readable.
+
+    ``solver_pkg.typing_only`` is imported ONLY under ``TYPE_CHECKING``,
+    so its edge is unambiguous; ``solver_pkg.helpers`` is the runtime
+    control in the same source file.
+    """
+    def _meta(target: str) -> dict:
+        edges = [
+            d for _, v, d in fixture_graph.out_edges(
+                "py:module:solver_pkg.solver", data=True,
+            )
+            if d.get("type") == "imports" and v == f"py:module:{target}"
+        ]
+        assert len(edges) == 1, (target, edges)
+        return edges[0]
+
+    assert _meta("solver_pkg.typing_only").get("type_checking") is True
+    # The control: a runtime import in the same file stays bare, so a
+    # consumer reading `.get("type_checking")` as falsy is correct.
+    assert "type_checking" not in _meta("solver_pkg.helpers")
+
+
+def test_a_type_only_alias_is_not_a_re_export_after_the_real_build(
+    fixture_kg,
+):
+    """The phantom public path must not reach the canonicalization map.
+
+    ``solver_pkg/__init__.py`` guards ``FluxProfile`` and re-exports
+    ``Mesh`` for real — so this asserts the guard narrowed the map
+    rather than emptying it.
+    """
+    reexports = fixture_kg.metadata.get("reexports") or {}
+    assert reexports, "no re-export map survived the build — test is vacuous"
+    assert "solver_pkg.FluxProfile" not in reexports
+    assert reexports.get("solver_pkg.Mesh") == "solver_pkg.helpers.Mesh"

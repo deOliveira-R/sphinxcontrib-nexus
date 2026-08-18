@@ -1,6 +1,11 @@
 """Toy solver functions with :math: docstring refs."""
+from typing import TYPE_CHECKING
+
 from solver_pkg import Mesh  # re-export path — exercises nexus#3
 from .helpers import _exp_decay
+
+if TYPE_CHECKING:  # erased at runtime — the nexus#88 witness
+    from solver_pkg.typing_only import FluxProfile
 
 
 def build_mesh(size: int = 10) -> Mesh:

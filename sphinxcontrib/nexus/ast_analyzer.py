@@ -758,6 +758,23 @@ def _iter_self_attr_names(stmt: ast.Assign | ast.AnnAssign) -> Iterator[str]:
                 yield elt.attr
 
 
+def _is_type_checking_test(test: ast.expr) -> bool:
+    """Is this ``if``'s test the ``TYPE_CHECKING`` constant?
+
+    Both spellings, because a project may import the name or reach it
+    through the module: ``if TYPE_CHECKING:`` and
+    ``if typing.TYPE_CHECKING:``. Measured on one real corpus only the
+    bare form occurs (91 blocks, 0 attribute form) — which is exactly
+    why the attribute form needs handling here rather than being
+    inferred from a sample.
+    """
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
 class CodeVisitor(ast.NodeVisitor):
     """Walk a Python file's AST and extract nodes and edges."""
 
@@ -817,6 +834,14 @@ class CodeVisitor(ast.NodeVisitor):
         # these into graph metadata so phantom canonicalization can
         # chase re-export chains.
         self.reexports: dict[str, str] = {}
+        # Depth of the ``if TYPE_CHECKING:`` stack. A guarded import is
+        # ERASED at runtime — the module is never loaded and its code
+        # never runs — so the IMPORTS edge it mints is a TYPE-ONLY
+        # dependence, and a runtime cone that walks it invalidates work
+        # that cannot have been affected. Counted the way `_class_depth`
+        # is, and for the same reason: the ``else:`` branch DOES run, so
+        # it is visited at the outer depth rather than the guarded one.
+        self._type_checking_depth = 0
 
         # Create module node
         self.nodes.append(GraphNode(
@@ -964,6 +989,43 @@ class CodeVisitor(ast.NodeVisitor):
                 metadata={"reftype": role, "reftarget": target, "source": "ast"},
             ))
 
+    def visit_If(self, node: ast.If) -> None:
+        """Track ``if TYPE_CHECKING:`` so guarded imports can say so.
+
+        Only the guarded BODY is type-only; the ``else:`` branch is the
+        one that runs, so it is visited back at the outer depth. Body
+        statements are visited directly rather than through
+        ``generic_visit`` for the reason ``visit_ClassDef`` gives —
+        recursing into every descendant can blow the stack on deeply
+        nested expressions. Skipping ``node.test`` is traversal-neutral:
+        it is a Name or an Attribute and this visitor defines no
+        handler for either.
+        """
+        if not _is_type_checking_test(node.test):
+            self.generic_visit(node)
+            return
+        self._type_checking_depth += 1
+        for child in node.body:
+            self.visit(child)
+        self._type_checking_depth -= 1
+        for child in node.orelse:
+            self.visit(child)
+
+    def _import_metadata(self, full_import: str) -> dict[str, object]:
+        """The metadata of one IMPORTS edge — one spelling, two callers.
+
+        ``type_checking`` is emitted ONLY when true, so its absence
+        means "runtime import" and the flag costs nothing on the
+        overwhelming majority of edges. A consumer reads it with
+        ``.get("type_checking")``.
+        """
+        meta: dict[str, object] = {
+            "full_import": full_import, "source": "ast",
+        }
+        if self._type_checking_depth:
+            meta["type_checking"] = True
+        return meta
+
     def visit_Import(self, node: ast.Import) -> None:
         self._imports.add_import(node)
         module_id = self._node_id("module", self._module_name)
@@ -972,7 +1034,7 @@ class CodeVisitor(ast.NodeVisitor):
                 source=module_id,
                 target=self._node_id("module", alias.name),
                 type=EdgeType.IMPORTS,
-                metadata={"full_import": alias.name, "source": "ast"},
+                metadata=self._import_metadata(alias.name),
             ))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -990,14 +1052,22 @@ class CodeVisitor(ast.NodeVisitor):
                 source=module_id,
                 target=self._node_id("module", target_module),
                 type=EdgeType.IMPORTS,
-                metadata={"full_import": node.module, "source": "ast"},
+                metadata=self._import_metadata(node.module),
             ))
         # Record module-scope aliases as re-export candidates:
         # ``from .mesh import Thing`` in ``pkg/__init__.py`` makes
         # ``pkg.Thing`` a live public path for ``pkg.mesh.Thing``.
         # ImportTracker has just registered the alias, so resolving
         # the local name yields the defining dotted path.
-        if self._class_depth == 0 and node.module != "__future__":
+        # ...but NOT under ``TYPE_CHECKING``: that alias is erased, so
+        # ``pkg.Thing`` is a phantom public path. [M] on one real corpus
+        # 12 such blocks in ``__init__.py`` registered 15 candidates,
+        # every one of which `hasattr` answers False for at runtime.
+        if (
+            self._class_depth == 0
+            and self._type_checking_depth == 0
+            and node.module != "__future__"
+        ):
             for alias in node.names:
                 if alias.name == "*":
                     continue

@@ -4,6 +4,28 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Added — a `TYPE_CHECKING` import says it is type-only (#88)
+
+`visit_ImportFrom` minted the same `imports` edge whether or not the
+statement sat inside `if TYPE_CHECKING:`, but those are different
+relations: the guarded one is erased at runtime, so no runtime
+dependence exists. The edge now carries `type_checking = true` (emitted
+only when true — absence means runtime), declared on `[edge.imports]`.
+The edge is kept rather than dropped: "what does this module reference
+for typing" is how annotation-mediated dispatch (#76) is recovered.
+
+`[M]` on ORPHEUS **199 of 4045** intra-project import edges are
+type-only. The issue's headline "14 of 365" measured a different
+predicate — *cross-layer* edges only.
+
+### Fixed — a type-only alias is not a runtime public path
+
+The same guard leaked into re-export candidates: `from .x import Y`
+under `TYPE_CHECKING` in an `__init__.py` registered `pkg.Y` in the
+`reexports` map that `_chase_reexports` canonicalizes through, though
+that path does not exist at runtime. `[M]` on ORPHEUS 12 such blocks
+registered 15 candidates, every one of which `hasattr` denies.
+
 ### Fixed — an `.. error-entry::` node carries the line it was declared on
 
 The directive recorded `self.lineno` in its pending payload and the node mint
