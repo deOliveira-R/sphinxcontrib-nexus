@@ -71,5 +71,11 @@ smell family (`twin_paths`, `discriminations`, `native_place`, `protocol_conform
 - **Stale graph:** rebuild the docs first; the MCP server auto-reloads.
 - **Git worktrees:** the session's MCP server may have been launched against the MAIN
   checkout's graph, so every query answers from the wrong branch until you switch. Build
-  inside the worktree, then `use_workspace(<worktree root>)`. `session_briefing` warns
-  when a sibling checkout carries a fresher graph.
+  inside the worktree, then `use_workspace(<worktree root>)`; `workspaces` lists every
+  checkout and its graph.
+  ⚠ **`session_briefing` warns when files the graph INDEXES have changed — not when the
+  branch differs.** Those are different questions, and reading the second into the first
+  makes the warning look broken: an ordinary ff-merge-and-delete leaves the graph
+  describing the checkout exactly while the branch name has moved on (`[M]` 2026-08-16:
+  25 files differed from the build commit, **0 of them indexed**, and the briefing was
+  right to stay quiet). ⟹ *silence means the indexed sources match*, not "same branch".
