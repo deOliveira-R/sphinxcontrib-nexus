@@ -252,6 +252,30 @@ consumer project gets told; editing `.claude/rules/` changes how an
 agent behaves *here*. They are easy to confuse and they have opposite
 audiences.
 
+## We dogfood the shipped skills — by SYMLINK, never by copy
+
+`.claude/skills/nexus-*`, `.claude/rules/nexus-tools.md`,
+`.claude/commands/`, `.claude/hooks/` are **symlinks into
+`sphinxcontrib/nexus/`**. Editing the shipped source IS editing what this
+repo's own agent loads, so an upstream change is exercised here before any
+consumer sees it, and the two copies cannot drift because there is one copy.
+
+⛔ **Do not "fix" a symlink by replacing it with a file, and do not run
+`nexus setup` here expecting to install** — `setup` writes real files, which
+is right for a consumer and wrong for us. If `setup --check` ever reports
+anything but "Everything up to date" in this repo, a symlink was replaced;
+restore it rather than editing the copy.
+
+Why it matters, measured: nexus shipped eleven skills it never loaded. On
+2026-08-19 a consumer was found running a **57-line** `nexus-verification`
+skill against upstream's **120-line** one — the consumer's copy did not know
+a coverage claim could be refuted, which is the feature the release existed
+to ship. Nothing detected it, because nothing here ever read the file.
+
+`.claude/*` stays gitignored except `rules/` (see `.gitignore`): the rule is
+instruction-authority and belongs to the repo, and a symlink is a better
+tracked form than a copy — it cannot go stale.
+
 ## Drift surfaces (guarded by tests — keep them green)
 
 - README "MCP Tools (N)" header and tool bullets ↔ MCP registry

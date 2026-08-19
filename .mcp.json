@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nexus": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/nexus",
+      "args": [
+        "serve",
+        "--project-root",
+        "${CLAUDE_PROJECT_DIR:-.}"
+      ]
+    }
+  }
+}

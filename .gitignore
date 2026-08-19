@@ -20,5 +20,8 @@ build/
 # than the directory itself.
 .claude/*
 !.claude/rules/
+# NOTE: the tracked `.claude/rules/nexus-tools.md` is a SYMLINK into
+# sphinxcontrib/nexus/rules/ — we dogfood the shipped copy rather than
+# keeping a second one. See CLAUDE.md. Do not replace it with a file.
 # Sphinx output for nexus's own docs (includes the self-graph).
 docs/_build/
