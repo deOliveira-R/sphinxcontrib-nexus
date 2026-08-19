@@ -303,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     cov_cmd.add_argument(
         "--status", default="",
-        help="Filter: verified, tested, implemented, documented, orphan_code.",
+        help="Filter: verified, tested, implemented, documented, "
+             "no_implementation, orphan_code.",
     )
     cov_cmd.add_argument(
         "--limit", type=int, default=0,
@@ -312,6 +313,13 @@ def main(argv: list[str] | None = None) -> int:
     cov_cmd.add_argument(
         "--offset", type=int, default=0,
         help="Skip this many entries from the start of the list.",
+    )
+    cov_cmd.add_argument(
+        "--run", default="",
+        help="Coverage run(s) captured WITH contexts, comma-separated to "
+             "union them. Given one, every coverage CLAIM gains an execution "
+             "verdict — corroborated / refuted / out_of_capture / "
+             "no_implementation. Without one, nothing can contradict a claim.",
     )
 
     # --- staleness ---
@@ -970,6 +978,13 @@ def main(argv: list[str] | None = None) -> int:
         "--include-tests",
         action="store_true",
         help="Report tests_declared / tests_inferred counts in the summary.",
+    )
+    audit_cmd.add_argument(
+        "--run", default="",
+        help="Coverage run(s) captured WITH contexts, comma-separated to "
+             "union them. Given one, every coverage CLAIM gains an execution "
+             "verdict — corroborated / refuted / out_of_capture / "
+             "no_implementation. Without one, nothing can contradict a claim.",
     )
 
     # --- gaps ---
@@ -1680,7 +1695,8 @@ def _run_provenance(args: argparse.Namespace) -> int:
 def _run_coverage(args: argparse.Namespace) -> int:
     q = _load_query(args)
     filt = args.status if args.status else None
-    result = q.verification_coverage(status_filter=filt)
+    result = q.verification_coverage(
+        status_filter=filt, run=_runtime_for_claims(args, "coverage"))
     print("Summary:")
     for status, count in sorted(result.summary.items()):
         print(f"  {status:20s} {count}")
@@ -2119,16 +2135,25 @@ def _run_trace(args: argparse.Namespace) -> int:
     return _json_out(to_dict(q.trace_error(args.test_node_id)))
 
 
+def _runtime_for_claims(args: argparse.Namespace, verb: str):
+    """Resolve ``--run`` for a verb that adjudicates coverage CLAIMS.
+
+    Shared by `retest`, `coverage` and `audit` rather than written three
+    times: the load and the family guard belong together, and a consumer
+    that loads without guarding answers as though nothing were covered —
+    the `lessons-L56` failure, silently and in the flattering direction.
+    """
+    if not getattr(args, "run", ""):
+        return None
+    run = _runtime_load_many(args.db, args.run)
+    _runtime_require(args.db, run, "exercised_by", verb)
+    return run
+
+
 def _run_retest(args: argparse.Namespace) -> int:
     from sphinxcontrib.nexus._serialize import to_dict
     q = _load_query(args)
-    run = None
-    if args.run:
-        run = _runtime_load_many(args.db, args.run)
-        # Same refusal the MCP server gives. Without it a cProfile run
-        # here would answer as though nothing were covered — the
-        # `lessons-L56` failure, on the surface that lacked the guard.
-        _runtime_require(args.db, run, "exercised_by", "retest")
+    run = _runtime_for_claims(args, "retest")
     return _json_out(to_dict(
         q.retest(scope=args.scope, run=run, limit=args.limit)))
 
@@ -2212,6 +2237,7 @@ def _run_audit(args: argparse.Namespace) -> int:
     return _json_out(to_dict(q.verification_audit(
         group_by=args.group_by,
         include_tests=args.include_tests,
+        run=_runtime_for_claims(args, "audit"),
     )))
 
 

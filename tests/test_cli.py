@@ -414,3 +414,29 @@ class TestRetestRefusesTheWrongRun:
                   "--run", "nope"])
         assert exc.value.code == 1
         assert "no runtime run 'nope'" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("verb", ["retest", "coverage", "audit"])
+    def test_EVERY_claim_adjudicating_verb_refuses_the_wrong_run(
+        self, tmp_path, capsys, verb,
+    ):
+        """The three verbs that can contradict a coverage claim share one
+        guard, so they must share one refusal.
+
+        ⛔ `coverage` and `audit` had **no `--run` at all** until 2026-08-19:
+        the MCP tools gained it and the CLI did not, so the ledger was
+        unreachable from the command line for exactly the two verification
+        verbs. Parametrized rather than written three times, because the
+        failure mode is one verb silently drifting off the shared helper —
+        and a verb that loads a run WITHOUT the family guard answers as
+        though nothing were covered, which is the flattering direction.
+        """
+        db = self._project(tmp_path)
+        argv = [verb, "--db", str(db), "--run", "prof"]
+        if verb != "coverage":
+            argv += ["--project-root", str(tmp_path)]
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "exercised_by" in err and "wrong run" in err
+        assert verb in err, "the refusal names the view that asked"
