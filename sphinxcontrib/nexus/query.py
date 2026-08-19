@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, Any, Literal
 import networkx as nx
 
 from sphinxcontrib.nexus.fingerprint import jaccard
-from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
+from sphinxcontrib.nexus.graph import (
+    NO_IMPLEMENTATION_ATTR,
+    EdgeType,
+    KnowledgeGraph,
+    NodeType,
+)
 from sphinxcontrib.nexus.position import (
     COLLECTABLE_TYPES,
     PositionIndex,
@@ -728,7 +733,8 @@ class CoverageEntry:
     """Verification coverage status of one equation or function."""
 
     node: NodeResult
-    status: str  # "verified", "tested", "implemented", "documented", "orphan_code"
+    status: str  # "verified", "tested", "implemented", "documented",
+    #             "no_implementation", "orphan_code"
     equation: NodeResult | None = None
     implementing_code: list[NodeResult] = field(default_factory=list)
     tests: list[TestReference] = field(default_factory=list)
@@ -748,6 +754,15 @@ class CoverageEntry:
     The test side has carried ``source``/``confidence`` on every
     :class:`TestReference` since it was written; this is the missing
     half."""
+    no_implementation_kind: str = ""
+    """Why nothing implements this statement, when an author has said so:
+    ``identity`` / ``law`` / ``canonical-form`` / ``definition``, or a
+    kind the project's ontology adds. Empty on every other row.
+
+    Set exactly when ``status`` is ``no_implementation``, so the two are
+    one fact rather than two — and the reason travels with the verdict
+    instead of the reader having to go read the page to find out whether
+    the declaration is credible."""
 
 
 @dataclass
@@ -1200,6 +1215,14 @@ UNOBSERVED = "unobserved"  #: the capture never bound it - no evidence either wa
 #: i.e. **the unadjudicable pair is 99.2 % of the corpus** and the two
 #: halves of it need opposite repairs — a wider capture for one, a
 #: declared ``implements`` link for the other.
+#: Coverage status: an author declared that NOTHING implements this
+#: statement, via ``.. no-implementation::``. Distinct from
+#: ``documented`` — that one means "no implementing code AND nobody has
+#: said anything", which is a gap a person could close. This one is an
+#: answer, and the entry's :attr:`CoverageEntry.no_implementation_kind`
+#: says which kind of answer.
+NO_IMPLEMENTATION_STATUS = "no_implementation"
+
 CORROBORATED = "corroborated"            #: the claimant executed an implementation
 REFUTED = "refuted"                      #: the claimant ran and executed none
 OUT_OF_CAPTURE = "out_of_capture"        #: the claimant is in no capture
@@ -2580,7 +2603,11 @@ class GraphQuery:
 
         - ``"verified"``    — equation has at least one test (any tier).
         - ``"implemented"`` — equation has implementing code, no test.
-        - ``"documented"``  — equation only, no implementing code.
+        - ``"documented"``  — equation only, no implementing code, and
+          nobody has said whether that is a gap.
+        - ``"no_implementation"`` — an author declared that NOTHING
+          implements it (``.. no-implementation::``), and the entry
+          carries the kind. Not a gap: it is the answer.
         - ``"tested"``      — code with test, no equation link (orphan code).
         - ``"orphan_code"`` — code with no equation and no test.
         """
@@ -2712,10 +2739,19 @@ class GraphQuery:
 
             has_code = len(implementing) > 0
             has_test = len(tests) > 0
+            # An authored "nothing implements this". Read BEFORE the code
+            # branches only in the sense of being the answer to the same
+            # question — it cannot coexist with implementing code, because
+            # the directive refuses to annotate a statement that has a
+            # declared implementer and the inference stands down for one
+            # that carries this.
+            declared_nothing = attrs.get(NO_IMPLEMENTATION_ATTR, "")
             if has_test:
                 status = "verified"
             elif has_code:
                 status = "implemented"
+            elif declared_nothing:
+                status = NO_IMPLEMENTATION_STATUS
             else:
                 status = "documented"
 
@@ -2738,6 +2774,9 @@ class GraphQuery:
                     else "declared" if declared_n == len(implementing)
                     else "inferred" if declared_n == 0
                     else "mixed"
+                ),
+                no_implementation_kind=(
+                    declared_nothing if status == NO_IMPLEMENTATION_STATUS else ""
                 ),
             ))
             summary[status] += 1
@@ -2887,6 +2926,13 @@ class GraphQuery:
                 continue
             if entry.status in ("tested", "orphan_code"):
                 continue  # these are code-level, not equation-level
+            if entry.status == NO_IMPLEMENTATION_STATUS:
+                # An author declared that nothing implements it. A gap is
+                # something a person could close; this is the answer, and
+                # listing it as a gap is what made 244 wrong guesses look
+                # like unfinished work. The count stays visible in
+                # ``summary`` — it leaves the WORK LIST, not the report.
+                continue
 
             # Find the theory page this equation lives on
             theory_page = entry.node.docname or ""
@@ -3042,6 +3088,10 @@ class GraphQuery:
         unverified: list[VerificationGap] = []
         coverage = self.verification_coverage()
         for entry in coverage.entries:
+            # An inclusion list, so ``no_implementation`` is already out —
+            # and out for the right reason: an equation an author declared
+            # nothing implements is not an unverified equation, it is a
+            # statement with nothing to verify.
             if entry.status not in ("implemented", "documented"):
                 continue
             if not _matches_module(entry.node.id):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sphinxcontrib.nexus.graph import (
+    NO_IMPLEMENTATION_ATTR,
     EdgeType,
     GraphEdge,
     GraphNode,
@@ -1004,3 +1005,41 @@ def test_a_documented_property_is_ONE_node_carrying_both_views():
     assert attrs["decorators"] == ("property",)   # it is still a property
     kinds = {d.get("type") for _s, _t, d in g.in_edges(nid, data=True)}
     assert kinds == {"contains", "calls"}         # both graphs, one node
+
+
+def test_declaring_that_NOTHING_implements_it_stands_the_guesses_down():
+    """The other way to answer an equation (#85).
+
+    ``.. no-implementation::`` writes no edge, so the stand-down cannot
+    find it by walking ``implements``. Reading the annotation is what
+    makes the two answers cost the same — and it is why there is no
+    second suppression path to keep in step with this one.
+
+    ``[M]`` ORPHEUS 2026-08-18: the eleven hand-verified no-implementer
+    equations on two theory pages carried **244** guesses between them,
+    every one wrong by construction, and they were the *only* inferred
+    edges left on that labelled set.
+    """
+    kg = _stand_down_fixture()
+    kg.nxgraph.nodes[_GAUGE_EQ][NO_IMPLEMENTATION_ATTR] = "identity"
+
+    _infer_implements(kg.nxgraph)
+
+    assert _implementers(kg.nxgraph, _GAUGE_EQ) == {}
+    # …and it answers ITS equation only, exactly as a declared
+    # implementer does. The sibling on the same page keeps its guess.
+    assert _implementers(kg.nxgraph, "math:equation:kernel-normalisation")
+
+
+def test_an_EMPTY_kind_does_not_stand_anything_down():
+    """The attribute's PRESENCE is the fact, so an empty string must not
+    be one. A node that acquired the key with no value — from a partial
+    write, or a project's own pass — would otherwise silence every guess
+    while recording no reason, which is the suppression-without-knowledge
+    the required ``:kind:`` exists to prevent."""
+    kg = _stand_down_fixture()
+    kg.nxgraph.nodes[_GAUGE_EQ][NO_IMPLEMENTATION_ATTR] = ""
+
+    _infer_implements(kg.nxgraph)
+
+    assert set(_implementers(kg.nxgraph, _GAUGE_EQ)) == set(_GUESSERS)

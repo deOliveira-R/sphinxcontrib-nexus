@@ -652,3 +652,79 @@ def test_a_page_does_not_contain_itself():
         (s, d.get("type")) for s, t, d in kg.nxgraph.edges(data=True) if s == t
     ]
     assert [x for x in loops if x[1] == "contains"] == [], loops
+
+
+# ---------------------------------------------------------------------------
+# An ENUMERATED attribute is extendable, by the same monotone union (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_the_shipped_no_implementation_kinds_are_the_four_measured_ones():
+    """The vocabulary is closed, so its contents are an API.
+
+    A project reading a graph built by another nexus must recognise every
+    kind it meets; that only holds if the base set is stable and only
+    ever grows. Adding one here is a deliberate act, not a refactor.
+    """
+    spec = Ontology.load().attributes["no_implementation_kind"]
+    assert spec.applies_to == "node"
+    assert set(spec.values) == {
+        "identity", "law", "canonical-form", "definition",
+    }
+
+
+def test_a_project_may_add_a_kind_its_corpus_needs(tmp_path):
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [extend.attribute.no_implementation_kind]
+        values = ["convention"]
+        """,
+    )
+    spec = Ontology.load(root).attributes["no_implementation_kind"]
+    assert "convention" in spec.values
+    # The base kinds survive — a project that could REMOVE one would
+    # silently break every pass written against the base vocabulary,
+    # which is the same reason narrowing an edge's range is refused.
+    assert {"identity", "law", "canonical-form", "definition"} <= set(spec.values)
+
+
+def test_an_extension_may_not_narrow_an_attributes_values(tmp_path):
+    """Redefinition, not widening — and it must be refused by the same
+    guard that refuses redefining a base node or edge."""
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [attribute.no_implementation_kind]
+        values = ["identity"]
+        """,
+    )
+    with pytest.raises(ValueError, match="may not be redefined") as err:
+        Ontology.load(root)
+    # …and it names the way forward for an ATTRIBUTE, not an edge's
+    # field set. The message used to read "domain/range/sources/
+    # attributes" whatever the kind was.
+    assert "values" in str(err.value)
+    assert "domain" not in str(err.value)
+
+
+def test_an_attribute_extension_may_only_touch_values(tmp_path):
+    """``description`` and ``type`` are scalars with no wider value."""
+    root = _write_project_ontology(
+        tmp_path,
+        """
+        [extend.attribute.no_implementation_kind]
+        type = "int"
+        """,
+    )
+    with pytest.raises(ValueError, match="may only widen"):
+        Ontology.load(root)
+
+
+def test_extending_an_attribute_that_does_not_exist_is_an_error(tmp_path):
+    root = _write_project_ontology(
+        tmp_path,
+        '[extend.attribute.no_implementaton_kind]\nvalues = ["x"]\n',
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        Ontology.load(root)

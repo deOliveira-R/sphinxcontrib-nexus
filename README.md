@@ -384,6 +384,23 @@ Declare verification edges directly in theory prose:
 
 Both directives accept an explicit `:by:` option naming the Python symbol. When omitted, they fall back to inspecting `env.ref_context` so usage nested inside `.. py:function::` / `.. autofunction::` blocks picks up the enclosing signature automatically. Directive edges are tagged `source="directive"` and survive incremental builds via a docname-keyed pending queue with an `env-purge-doc` handler.
 
+An equation that nothing implements says so with a third directive, and says
+what kind of statement it is:
+
+```rst
+.. no-implementation:: apply-solve-neumann-series
+   :kind: identity
+```
+
+It writes no edge — the fact is a property of the equation. It stands the
+inference down for that equation exactly as a declared implementer does, and
+moves it out of `verification_audit`'s gap list, because "no implementer" is
+an answer rather than unfinished work. `:kind:` is required and drawn from a
+closed set (`identity` / `law` / `canonical-form` / `definition`, extendable
+per project via `[extend.attribute.no_implementation_kind]`): without it the
+declaration would suppress every guess while recording no reason, hiding a
+real gap with the same keystroke that closes a false one.
+
 ### Relating equations to each other
 
 Equations used to be graph leaves: code implemented them, tests verified them, and that was all the graph knew. Three directives declare the structure of the math itself, so `provenance_chain` returns a spine instead of a flat list — *this test verifies the discrete form, which discretizes this continuous one*:

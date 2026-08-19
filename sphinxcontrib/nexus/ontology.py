@@ -238,7 +238,9 @@ class Ontology:
                     f"vocabulary; it has nothing to extend. Edit the [node] / "
                     f"[edge] tables directly."
                 )
-            for kind, registry in (("node", nodes), ("edge", edges)):
+            for kind, registry in (
+                ("node", nodes), ("edge", edges), ("attribute", attributes),
+            ):
                 for name, patch in (extend.get(kind) or {}).items():
                     current = registry.get(name)
                     if current is None:
@@ -324,21 +326,6 @@ def _read(path: Path) -> Mapping[str, Any]:
         return tomllib.load(handle)
 
 
-def _guard_redefinition(
-    kind: str, name: str, is_base: bool, base_names: set[str], path: Path
-) -> None:
-    """A project extension may add, never silently redefine a base entry."""
-    if is_base:
-        return
-    if f"{kind}:{name}" in base_names:
-        raise ValueError(
-            f"{path}: {kind} {name!r} is defined by the base ontology and may "
-            f"not be redefined by a project extension — use [extend.{kind}."
-            f"{name}] to WIDEN its domain/range/sources/attributes, choose "
-            f"another name, or propose the change upstream."
-        )
-
-
 #: Fields an extension may widen, per kind. Every one is a SET, and the only
 #: operation is union — which is what makes widening safe to reason about:
 #: anything the base admitted, the extension still admits.
@@ -354,7 +341,35 @@ def _guard_redefinition(
 _WIDENABLE: Mapping[str, frozenset[str]] = {
     "edge": frozenset({"domain", "range", "sources", "attributes"}),
     "node": frozenset({"attributes"}),
+    # An enumerated attribute's legal values. Same monotone union as the
+    # rest: a project may add a kind its corpus needs without editing
+    # nexus, and may not remove one nexus ships — so a pass written
+    # against the base vocabulary still recognises every value it knew.
+    "attribute": frozenset({"values"}),
 }
+
+
+def _guard_redefinition(
+    kind: str, name: str, is_base: bool, base_names: set[str], path: Path
+) -> None:
+    """A project extension may add, never silently redefine a base entry.
+
+    The way forward it names is read from :data:`_WIDENABLE`, not spelled
+    out: this message used to say "domain/range/sources/attributes" for
+    every kind, which is an edge's field set and names nothing a node or
+    an attribute has. A guard that points at the wrong verb is a guard
+    the author cannot act on.
+    """
+    if is_base:
+        return
+    if f"{kind}:{name}" in base_names:
+        widenable = "/".join(sorted(_WIDENABLE.get(kind, ())))
+        raise ValueError(
+            f"{path}: {kind} {name!r} is defined by the base ontology and may "
+            f"not be redefined by a project extension — use [extend.{kind}."
+            f"{name}] to WIDEN its {widenable}, choose "
+            f"another name, or propose the change upstream."
+        )
 
 
 def _widen(spec: Any, kind: str, name: str, patch: Mapping[str, Any], path: Path):

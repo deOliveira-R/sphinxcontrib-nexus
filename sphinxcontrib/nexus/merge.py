@@ -11,7 +11,12 @@ from sphinxcontrib.nexus._mappings import (
     candidates_are_ambiguous,
     test_node_is_off_limits,
 )
-from sphinxcontrib.nexus.graph import EdgeType, KnowledgeGraph, NodeType
+from sphinxcontrib.nexus.graph import (
+    NO_IMPLEMENTATION_ATTR,
+    EdgeType,
+    KnowledgeGraph,
+    NodeType,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -364,6 +369,17 @@ def _infer_implements(
         for _, tgt, data in g.edges(data=True)
         if data.get("type") == "implements"
         and data.get("source") != "inferred"
+    }
+    # …and the equations an author answered with "nothing implements this".
+    # Same stand-down, no separate suppression path: `.. no-implementation::`
+    # is an ANSWER, and an answered equation is one this heuristic has no
+    # business guessing at. `[M]` ORPHEUS 2026-08-18 — the eleven
+    # hand-verified no-implementer equations on two theory pages carried
+    # 244 guesses between them, every one wrong by construction.
+    declared_equations |= {
+        node
+        for node, attrs in g.nodes(data=True)
+        if attrs.get(NO_IMPLEMENTATION_ATTR)
     }
     stood_down: set[str] = set()
 

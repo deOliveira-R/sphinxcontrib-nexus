@@ -9,11 +9,14 @@ Here we exercise the pure functions — ``_resolve_enclosing_py_symbol``,
 
 from __future__ import annotations
 
+import logging
 import types
 
 import networkx as nx
 import pytest
+from docutils import nodes
 
+from sphinxcontrib.nexus.graph import NO_IMPLEMENTATION_ATTR
 from sphinxcontrib.nexus.directives import (
     _node_id_for_target,
     _where,
@@ -666,3 +669,191 @@ def test_where_degrades_to_the_DOCNAME_when_no_line_is_known():
     line is really known."""
     assert _where("theory/index", 42) == ("theory/index", 42)
     assert _where("theory/index", "?") == "theory/index"
+
+
+# ---------------------------------------------------------------------------
+# `.. no-implementation::` — an equation declares that nothing implements it
+# ---------------------------------------------------------------------------
+#
+# `apply_declared_annotations` is FOUR early-return arms wearing one name, so
+# it is mutated and gated arm by arm (vv-principles #17's granularity trap): a
+# whole-guard mutation reddens on whichever arm the fixture happens to reach
+# and certifies the other three. Each test below names its arm.
+
+
+def _env_declaring_nothing(label, kind, docname="theory/index", lineno=7):
+    env = types.SimpleNamespace()
+    env.docname = docname
+    env.nexus_pending_edges = {
+        docname: [{
+            "kind": "no-implementation",
+            "label": label,
+            "no_implementation_kind": kind,
+            "docname": docname,
+            "lineno": lineno,
+        }]
+    }
+    return env
+
+
+def test_declaring_no_implementation_annotates_the_equation():
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    annotated = apply_declared_annotations(
+        _env_declaring_nothing("eq-1", "identity"), g,
+    )
+    assert annotated == 1
+    assert g.nodes["math:equation:eq-1"][NO_IMPLEMENTATION_ATTR] == "identity"
+    # It writes NO edge — that is the whole reason it is not an
+    # `implements` variant. A sentinel "nothing" node would sit in every
+    # traversal that never asked about it.
+    assert [d for _, _, d in g.edges(data=True)] == []
+
+
+def test_declaring_no_implementation_is_idempotent():
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    env = _env_declaring_nothing("eq-1", "identity")
+    assert apply_declared_annotations(env, g) == 1
+    assert apply_declared_annotations(env, g) == 0
+
+
+def test_ARM_unknown_kind_is_refused_and_names_the_legal_set(caplog):
+    """ARM 2 — the closed vocabulary. An unrecognised kind must not land:
+    a free-text kind drifts into prose and stops being queryable, which
+    is the defect the enumeration exists to prevent."""
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    with caplog.at_level(logging.WARNING):
+        annotated = apply_declared_annotations(
+            _env_declaring_nothing("eq-1", "vibes"), g,
+        )
+    assert annotated == 0
+    assert NO_IMPLEMENTATION_ATTR not in g.nodes["math:equation:eq-1"]
+    text = caplog.text
+    assert "vibes" in text
+    assert "identity" in text          # the legal set is named…
+    assert "extend.attribute" in text  # …and so is the way to add one
+
+
+def test_ARM_a_missing_statement_is_refused(caplog):
+    """ARM 3 — a label that resolves to nothing is a typo in prose, and
+    it must be as loud as any other directive misuse rather than
+    silently annotating a node into existence."""
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    with caplog.at_level(logging.WARNING):
+        annotated = apply_declared_annotations(
+            _env_declaring_nothing("eq-does-not-exist", "identity"), g,
+        )
+    assert annotated == 0
+    assert "eq-does-not-exist" in caplog.text
+    assert "math:equation:eq-does-not-exist" not in g
+
+
+def test_ARM_a_declared_implementer_CONTRADICTS_it_and_wins_nothing(caplog):
+    """ARM 4 — both are authored assertions at confidence 1.0. Silently
+    preferring one would discard the other, and the annotation is the
+    one that would then suppress the inference too."""
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    g.add_edge(
+        "py:function:pkg.solve", "math:equation:eq-1",
+        type="implements", source="directive", confidence=1.0,
+    )
+    with caplog.at_level(logging.WARNING):
+        annotated = apply_declared_annotations(
+            _env_declaring_nothing("eq-1", "identity"), g,
+        )
+    assert annotated == 0
+    assert NO_IMPLEMENTATION_ATTR not in g.nodes["math:equation:eq-1"]
+    assert "contradicted" in caplog.text
+    assert "py:function:pkg.solve" in caplog.text
+
+
+def test_an_INFERRED_implementer_does_not_contradict_it():
+    """The mirror of ARM 4, and the case that makes it useful: a GUESS is
+    exactly what this declaration exists to remove, so letting one block
+    the declaration would make the feature unusable on precisely the
+    equations that need it (`[M]` ORPHEUS: 244 guesses across the eleven
+    hand-verified no-implementer equations)."""
+    from sphinxcontrib.nexus.directives import apply_declared_annotations
+
+    g = _graph_for_edge_tests()
+    g.add_edge(
+        "py:function:pkg.solve", "math:equation:eq-1",
+        type="implements", source="inferred", confidence=0.7,
+    )
+    annotated = apply_declared_annotations(
+        _env_declaring_nothing("eq-1", "identity"), g,
+    )
+    assert annotated == 1
+    assert g.nodes["math:equation:eq-1"][NO_IMPLEMENTATION_ATTR] == "identity"
+
+
+def test_the_relation_replay_SKIPS_a_no_implementation_declaration():
+    """It shares one pending registry with the edge directives, so the
+    replay must skip it — its payload has no ``target`` to read, and
+    reading on would ``KeyError`` the whole build."""
+    g = _graph_for_edge_tests()
+    written = apply_pending_edges(_env_declaring_nothing("eq-1", "identity"), g)
+    assert written == 0
+
+
+def test_ARM_a_missing_kind_is_refused_at_the_directive():
+    """ARM 1 — the only arm that fires before the pending queue, so it is
+    the only one `apply_declared_annotations` can never see.
+
+    ⚠ It had no witness when written, and neither does its sibling
+    (``.. implements::``'s "needs a ':by:'" arm is untested to this day).
+    That is the shape vv-principles #17 warns about: four arms wearing
+    one name, where a whole-guard mutation reddens on whichever arm the
+    fixture happens to reach.
+
+    Constructed rather than built, because a deliberately-broken
+    directive in the fixture project would emit a warning on every
+    build of it. ``run()`` touches only these four attributes on this
+    path.
+    """
+    from sphinxcontrib.nexus.directives import NoImplementationDirective
+
+    warned: list[str] = []
+    d = NoImplementationDirective.__new__(NoImplementationDirective)
+    d.arguments = ["eq-1"]
+    d.options = {}                       # no :kind:
+    d.lineno = 12
+    d.reporter = types.SimpleNamespace(
+        warning=lambda msg, line=None: warned.append(msg) or nodes.system_message(
+            "", type="WARNING", level=2,
+        )
+    )
+
+    out = d.run()
+    assert len(out) == 1                 # the system_message, not a container
+    assert len(warned) == 1
+    assert "kind" in warned[0]
+    assert "suppression" in warned[0]    # it says WHY, not just that it must
+
+
+def test_a_blank_kind_is_refused_like_a_missing_one():
+    """``:kind:`` with nothing after it parses to the empty string, which
+    is a different value from absent and the same mistake."""
+    from sphinxcontrib.nexus.directives import NoImplementationDirective
+
+    warned: list[str] = []
+    d = NoImplementationDirective.__new__(NoImplementationDirective)
+    d.arguments = ["eq-1"]
+    d.options = {"kind": "   "}
+    d.lineno = 12
+    d.reporter = types.SimpleNamespace(
+        warning=lambda msg, line=None: warned.append(msg) or nodes.system_message(
+            "", type="WARNING", level=2,
+        )
+    )
+    d.run()
+    assert len(warned) == 1

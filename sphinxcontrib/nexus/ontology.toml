@@ -330,6 +330,36 @@ applies_to = "node"
 description = "Verification level lifted from a pytest marker."
 type = "string"
 
+[attribute.no_implementation_kind]
+applies_to = "node"
+description = """
+On an equation: NOTHING implements this, and this is what kind of statement it \
+is. Written by `.. no-implementation::`; its PRESENCE is the fact and its VALUE \
+is the reason, so a bare "nothing implements this" — which invites the next \
+reader to re-add a guess — is unspellable. The `implements` inference stands \
+down for an equation carrying it, exactly as it does for one with a declared \
+implementer.
+
+  identity        A statement of what the algebra equals. No symbol computes \
+                  it; it is true of the operators, not performed by one. \
+                  Several are inequalities or non-equalities.
+  law             A rule the code obeys by ABSENCE — the operation the law \
+                  forbids simply does not exist on the type. An absence has \
+                  no implementer.
+  canonical-form  A form exhibited to show the structure, which no production \
+                  path takes. Implementable in principle; not implemented.
+  definition      Defines a term or a verb whose declaration site is prose. \
+                  Nothing in code is the definition, though things obey it.
+
+⚠ The kind does NOT follow from the equation being "not a solver claim". A \
+typing rule can have a materialized carrier (a class, a Protocol parameter \
+list, typed methods) where an identity cannot — `[M]` on the labelled ORPHEUS \
+set, three equations whose authored rationale reads "a lens, not a type" are \
+declarable and were declared.
+"""
+type = "string"
+values = ["identity", "law", "canonical-form", "definition"]
+
 [attribute.prf_type]
 applies_to = "node"
 description = "sphinx-proof environment kind — theorem, definition, algorithm, and the rest."

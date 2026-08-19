@@ -4,6 +4,68 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Added — an equation can declare that NOTHING implements it (#85)
+
+`.. no-implementation:: <label>` with a required `:kind:`. Some equations
+have no implementer and never will — an identity is a statement of what the
+algebra equals, a law can be enforced by the *absence* of an operation, a
+canonical form can be exhibited without any production path taking it, a
+definition's declaration site can be prose. Until now they were
+indistinguishable from equations whose implementer nobody had declared yet,
+and both attracted guesses.
+
+`[M]` ORPHEUS 2026-08-18, against the hand-verified labelled set in
+`evals/implements_ground_truth.py`: the **11** equations recorded as having
+no implementer carried **244** inferred edges between them — and those 244
+were **every** inferred edge left on the 56-equation set. Guesses do not
+merely land on unimplementable equations; on a well-declared corpus they are
+all that is left there.
+
+- **It writes no edge.** The fact is a property of the equation, and there is
+  no second end for an edge to reach; a sentinel "nothing" node would sit in
+  every traversal that never asked about it. It sets
+  `no_implementation_kind` on the statement, and `merge._infer_implements`
+  reads that alongside declared `implements` edges — one stand-down, not two
+  suppression paths that have to be kept in step.
+- **`:kind:` is required**, from a closed set (`identity`, `law`,
+  `canonical-form`, `definition`). "Nothing implements this" alone suppresses
+  every guess *and* records the equation as answered, so a real gap would be
+  hidden by the same keystroke that legitimately closes a non-gap. The kind
+  is what makes it knowledge rather than suppression.
+- **`verification_coverage` gains the status `no_implementation`**, carrying
+  the kind, and `verification_audit` no longer lists such an equation as a
+  gap — a gap is something a person could close. `documented` keeps its old
+  meaning: no code, and nobody has said whether that is a gap.
+- **Refused when the equation also has a declared implementer.** Both are
+  authored assertions at confidence 1.0; nexus will not choose between them.
+  An *inferred* implementer does not refuse it — a guess is exactly what the
+  declaration exists to remove.
+
+### Added — a project may widen an enumerated attribute's values
+
+`[extend.attribute.<name>] values = [...]`, the same monotone union already
+available for an edge's `domain`/`range`/`sources` and a node's
+`attributes`. So a project whose corpus needs a fifth `no_implementation_kind`
+adds it in its own `.nexus/ontology.toml` instead of editing nexus, and still
+cannot remove one nexus ships — every pass written against the base
+vocabulary keeps recognising every value it knew.
+
+The redefinition guard's "way forward" message now reads the widenable set
+from `_WIDENABLE` rather than spelling out an edge's fields, which is what it
+did for a node and an attribute too.
+
+### Fixed — the ground-truth scorer counted an ANSWER by its edge
+
+`evals/implements_ground_truth.py`'s corpus half derived "declared" from
+having a non-inferred `implements` edge. True until `.. no-implementation::`
+existed, and invalidated by it: the eleven equations the labelled set records
+as having no implementer would have read as undeclared forever, so a finished
+campaign would report `45 of 56` permanently — a proxy the work removes,
+failing in the direction that reads as unfinished work. It now reports the
+two kinds of answer separately. Third instance of `plan-authoring` §10 in
+this campaign, and the first inside the instrument built to be the honest one.
+
+
 ### Fixed — CI is green again: pyright clean, and two false references retired
 
 CI had failed **29 of its last 30 runs**, on two jobs, since well before

@@ -90,6 +90,19 @@ class EdgeType(str, Enum):
     APPROXIMATES = "approximates"
 
 
+#: Node attribute: on a statement, NOTHING implements it, and the value
+#: says what kind of statement it is (``identity`` / ``law`` /
+#: ``canonical-form`` / ``definition``, extendable per project). Written
+#: by ``.. no-implementation::``; read by the ``implements`` stand-down
+#: and by ``verification_coverage``. Its legal values and their meanings
+#: are declared in ``ontology.toml`` under the same name.
+#:
+#: Not an ``EdgeType``, on purpose: there is no second end. The fact is a
+#: property of the statement, and a sentinel node for "nothing" would sit
+#: in every traversal that never asked about it.
+NO_IMPLEMENTATION_ATTR = "no_implementation_kind"
+
+
 @dataclass
 class GraphNode:
     """Construction helper for adding nodes to the graph."""

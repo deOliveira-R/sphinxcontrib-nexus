@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from sphinxcontrib.nexus.export import load_sqlite
+from sphinxcontrib.nexus.graph import NO_IMPLEMENTATION_ATTR
 from sphinxcontrib.nexus.query import GraphQuery
 
 FIXTURE = Path(__file__).parent / "fixtures" / "minimal_project"
@@ -360,6 +361,54 @@ def test_declaring_stands_the_guess_down_through_a_real_build(fixture_graph):
     """
     assert _implementers(fixture_graph, "fixture-mesh-spacing") == {
         "py:function:solver_pkg.solver.build_mesh": "directive",
+    }
+
+
+def test_declaring_that_NOTHING_implements_it_also_stands_the_guess_down(
+    fixture_graph,
+):
+    """The third member of the same family — and the one with no ``:by:``.
+
+    ``fixture-mesh-widths-sum`` shares the token ``mesh`` with the one
+    documented symbol, exactly like the control, so the inference aims a
+    guess at it. ``.. no-implementation::`` writes no edge at all, so the
+    assertion is that the guess is GONE and nothing replaced it — which
+    only holds if the stand-down reads the annotation rather than an
+    edge.
+    """
+    assert _implementers(fixture_graph, "fixture-mesh-widths-sum") == {}
+    assert fixture_graph.nodes["math:equation:fixture-mesh-widths-sum"][
+        NO_IMPLEMENTATION_ATTR
+    ] == "identity"
+
+
+def test_a_declared_nothing_equation_is_not_a_coverage_gap(fixture_graph):
+    """Status and gap list, through the real build.
+
+    ``documented`` means "no code, and nobody said whether that is a
+    gap"; this row is the answer, so it must carry the kind, must be
+    counted under its own status, and must NOT appear in the audit's
+    work list — that last one is the whole point of nexus#85, and it is
+    the assertion a silent fall-through would pass without.
+    """
+    q = GraphQuery(fixture_graph)
+    coverage = q.verification_coverage()
+    entry = next(
+        e for e in coverage.entries
+        if e.node.id == "math:equation:fixture-mesh-widths-sum"
+    )
+    assert entry.status == "no_implementation"
+    assert entry.no_implementation_kind == "identity"
+    assert entry.implementing_code == []
+    assert coverage.summary["no_implementation"] == 1
+
+    audit = q.verification_audit()
+    assert "math:equation:fixture-mesh-widths-sum" not in {
+        g.equation_id for g in audit.gaps
+    }
+    # …while the undeclared control with the same shape still IS one.
+    assert "math:equation:fixture-mesh-count" in {
+        g.equation_id for g in audit.gaps
     }
 
 

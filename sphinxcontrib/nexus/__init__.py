@@ -325,6 +325,7 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
         _resolve_relative_references,
     )
     from sphinxcontrib.nexus.directives import (
+        apply_declared_annotations,
         apply_declared_nodes,
         apply_pending_edges,
     )
@@ -401,6 +402,14 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
             "nexus_verification_registry: loaded %d edges from %s",
             written, rpath,
         )
+
+    # LAST of the declaration passes, and before the inference: it refuses
+    # an equation that also has a declared implementer, so every path that
+    # can write one — the directive replay above AND the registry — must
+    # have run. The inference then reads the annotation it leaves.
+    apply_declared_annotations(
+        app.env, graph.nxgraph, project_root=settings.project.root,
+    )
 
     if settings.infer_implements:
         # Pass the project root, or the inference reads the BASE ontology

@@ -21,6 +21,7 @@ guesses.
 | `.. error-entry:: ERR-051` | an `error` node — a catalogued failure mode |
 | `@pytest.mark.catches("ERR-051")` | `catches` edge, test → error |
 | `.. implements:: foo` | `implements` edge, code → equation |
+| `.. no-implementation:: foo` | that equation marked as one NOTHING implements |
 | `.. discretizes:: foo` | `discretizes` edge between two statements |
 | `#: prose with :class:`X`` above an attribute | edges from that attribute |
 | `Cls.attr = ...` after the class body | an `attribute` node |
@@ -175,6 +176,63 @@ A test **verifies** an equation — it does not implement one. Nexus never
 infers `implements` onto test code, because an equation whose only
 implementer is a test class would read as implemented when nothing
 implements it.
+:::
+
+### When nothing implements it
+
+Some equations have no implementer and never will. An identity is a
+statement about what the algebra *equals*, not a computation anything
+performs; a law can be enforced by the absence of an operation; a
+canonical form can be exhibited to show structure that no production
+path takes; a definition's declaration site can be prose.
+
+Those are the equations guesses land on hardest, because nothing true
+competes with them — and until you can say so, "nobody has declared an
+implementer" and "there is no implementer" look identical:
+
+```rst
+.. no-implementation:: apply-solve-neumann-series
+   :kind: identity
+
+   The series is exhibited to show what production does NOT do:
+   splitting around C is never run.
+```
+
+It writes no edge — the fact is a property of the equation, and there is
+no second end for an edge to reach. What it does:
+
+- the inference stands down for that equation, exactly as a declared
+  implementer would (`[M]` on one real corpus, eleven such equations on
+  two pages carried **244** guesses between them);
+- `verification_coverage` reports it as `no_implementation` instead of
+  `documented`, so it leaves the audit's gap list. A gap is something a
+  person could close; this is the answer;
+- the kind is queryable, so *"which of our equations are laws?"* stops
+  being a grep over prose.
+
+**`:kind:` is required, and that is the point.** "Nothing implements
+this" on its own suppresses every guess *and* records the equation as
+answered — so a real gap would be hidden by the same keystroke that
+legitimately closes a non-gap. The kind is what makes it knowledge
+rather than suppression, and it is what the next reader needs in order
+to decide you were wrong.
+
+The vocabulary is closed: `identity`, `law`, `canonical-form`,
+`definition`. An unrecognised kind warns and the declaration is dropped,
+because a free-text kind drifts into prose and stops being queryable —
+which is the defect this exists to fix. A project that needs another one
+adds it in its own `.nexus/ontology.toml`:
+
+```toml
+[extend.attribute.no_implementation_kind]
+values = ["convention"]
+```
+
+:::{warning}
+Declaring this on an equation that *also* has a declared implementer is
+refused, loudly. Both are authored assertions; nexus will not choose
+between them, and quietly preferring one would discard the other along
+with every guess it was suppressing.
 :::
 
 ## Documenting attributes

@@ -72,6 +72,23 @@ inference runs, and nothing else pins that.
    inference would have guessed (``Mesh``), so the assertion can tell a
    stood-down guess from a coincidence.
 
+A third equation completes the family, and it is the one nothing can
+implement. Same page, same shared token, same guesser — so it collects a
+guess exactly like the other two, and the ONLY thing that stands it down
+is the declaration below.
+
+.. math::
+   :label: fixture-mesh-widths-sum
+
+   \sum_i \Delta x_i = L
+
+.. no-implementation:: fixture-mesh-widths-sum
+   :kind: identity
+
+   A statement of what the mesh's widths equal, not a computation any
+   symbol performs. ``build_mesh`` produces a mesh for which this holds;
+   it does not implement the identity, and neither does anything else.
+
 The error catalogue
 -------------------
 

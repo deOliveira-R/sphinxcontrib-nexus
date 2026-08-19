@@ -159,6 +159,7 @@ discretize?" is a different question from "what implements it?".
 | `in_test_file` | This **lives in** the test tree — file-based |
 | `annotation` | The declared type of an attribute or data node |
 | `prf_type`, `statement` | `sphinx-proof` environment kind and its prose |
+| `no_implementation_kind` | On a statement: NOTHING implements it, and this is what kind it is (`identity` / `law` / `canonical-form` / `definition`). Written by `.. no-implementation::` |
 | `decorators` | Rendered decorator list |
 
 :::{note}

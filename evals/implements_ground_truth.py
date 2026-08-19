@@ -38,6 +38,7 @@ import re
 import sys
 
 from sphinxcontrib.nexus.export import load_sqlite
+from sphinxcontrib.nexus.graph import NO_IMPLEMENTATION_ATTR
 
 CODE_TYPES = {"function", "method", "class"}
 
@@ -370,11 +371,30 @@ def main() -> int:
                 live[t].add(s)
             else:
                 declared_eqs.add(t)
+        # ⛔ An equation can be ANSWERED without an edge. `.. no-
+        # implementation::` (nexus#85) writes a node attribute, because
+        # there is no second end for an edge to reach — so counting
+        # `declared` off edges alone is a PROXY that #85 removes, and it
+        # fails in the direction that reads as unfinished work: the
+        # eleven equations this labelled set records as having NO
+        # implementer would sit at "45 of 56" forever, however
+        # thoroughly they were declared. Third instance of the same
+        # shape in this campaign (`plan-authoring` §10), and the first
+        # in the ground-truth scorer built to be the honest instrument.
+        answered_nothing = {
+            n for n, a in g.nodes(data=True)
+            if a.get(NO_IMPLEMENTATION_ATTR)
+        }
         labelled = {f"math:equation:{k}" for k in TRUTH}
         still_guessed = sum(len(v) for k, v in live.items() if k in labelled)
+        by_edge = labelled & declared_eqs
+        by_attr = labelled & answered_nothing
         print("\n## the CORPUS (what declaring has actually removed)")
-        print(f"  {'labelled equations declared':38s} "
-              f"{len(labelled & declared_eqs)} of {len(labelled)}")
+        print(f"  {'labelled equations answered':38s} "
+              f"{len(by_edge | by_attr)} of {len(labelled)}")
+        print(f"  {'  …by a declared implementer':38s} {len(by_edge)}")
+        print(f"  {'  …by `.. no-implementation::`':38s} {len(by_attr)} "
+              f"of {sum(1 for v in TRUTH.values() if not v)} with none")
         print(f"  {'inferred edges left on them':38s} {still_guessed}")
         return 0
 

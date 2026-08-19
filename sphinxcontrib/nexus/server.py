@@ -1565,7 +1565,8 @@ def verification_coverage(
 
     Args:
         status_filter: Filter by status: "verified", "tested", "implemented",
-                      "documented", "orphan_code". Empty = all.
+                      "documented", "no_implementation", "orphan_code".
+                      Empty = all.
         limit: Max number of entries to return. ``0`` (default) means
             no limit — return every matching entry. Use with ``offset``
             to page through very large result sets.

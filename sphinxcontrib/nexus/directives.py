@@ -57,7 +57,11 @@ from sphinxcontrib.nexus._mappings import (
     resolve_proof_id,
 )
 from sphinxcontrib.nexus.extractors import _is_auto_proof_label
-from sphinxcontrib.nexus.graph import EdgeType, NodeType
+from sphinxcontrib.nexus.graph import (
+    NO_IMPLEMENTATION_ATTR,
+    EdgeType,
+    NodeType,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -495,6 +499,104 @@ def apply_declared_nodes(
     return created
 
 
+def apply_declared_annotations(
+    env: "BuildEnvironment",
+    graph: "nx.MultiDiGraph",
+    project_root: "Path | str | None" = None,
+) -> int:
+    """Write the node attributes that declaring directives asked for.
+
+    Sibling of :func:`apply_declared_nodes`: that one MINTS a node, this
+    one ANNOTATES one that already exists. Both read the same pending
+    registry, so ``env-purge-doc`` and ``env-merge-info`` keep working
+    for all three families without a second store.
+
+    MUST run **after** every path that writes an explicit ``implements``
+    edge — the directive replay AND the verification registry — because
+    the one thing this refuses is an equation that *also* has a declared
+    implementer, and a check that runs first would see neither. It must
+    still run **before** ``merge._infer_implements``, which is what reads
+    the annotation to stand its guesses down.
+
+    Returns the number of nodes newly annotated (idempotent).
+    """
+    registry: dict[str, list[dict[str, Any]]] | None = getattr(
+        env, "nexus_pending_edges", None
+    )
+    if not registry:
+        return 0
+
+    from sphinxcontrib.nexus.ontology import Ontology
+
+    legal = Ontology.load(project_root).attributes.get(NO_IMPLEMENTATION_ATTR)
+    # A closed vocabulary that resolves to nothing would silently become
+    # an open one, which is the defect `values` exists to prevent.
+    allowed = tuple(legal.values) if legal else ()
+
+    annotated = 0
+    for docname, entries in registry.items():
+        for entry in entries:
+            if entry.get("kind") != "no-implementation":
+                continue
+
+            where = _where(docname, entry.get("lineno", "?"))
+            label = entry["label"]
+            declared_kind = entry[NO_IMPLEMENTATION_ATTR]
+
+            if allowed and declared_kind not in allowed:
+                logger.warning(
+                    ".. no-implementation:: %s: %r is not a declared kind — "
+                    "use one of %s, or add yours with "
+                    "[extend.attribute.%s] values = [...] in the project's "
+                    ".nexus/ontology.toml",
+                    label, declared_kind, list(allowed), NO_IMPLEMENTATION_ATTR,
+                    location=where, type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
+                )
+                continue
+
+            statement = _resolve_statement_id(label, graph)
+            if statement is None:
+                logger.warning(
+                    ".. no-implementation:: %s: statement not found in graph "
+                    "— skipping",
+                    label,
+                    location=where, type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
+                )
+                continue
+
+            # The contradiction. Someone declared an implementer and
+            # someone declared there is none; both are authored assertions
+            # at confidence 1.0, and picking one would discard the other
+            # without saying so.
+            implementers = [
+                src
+                for src, _, data in graph.in_edges(statement, data=True)
+                if data.get("type") == EdgeType.IMPLEMENTS.value
+                and data.get("source") not in (None, "inferred")
+            ]
+            if implementers:
+                logger.warning(
+                    ".. no-implementation:: %s: contradicted — %s is declared "
+                    "to implement it. Retract whichever is wrong; both are "
+                    "authored assertions and nexus will not choose",
+                    label, implementers[0],
+                    location=where, type=WARNING_TYPE, subtype=WARNING_SUBTYPE,
+                )
+                continue
+
+            if graph.nodes[statement].get(NO_IMPLEMENTATION_ATTR) == declared_kind:
+                continue
+            graph.nodes[statement][NO_IMPLEMENTATION_ATTR] = declared_kind
+            annotated += 1
+
+    if annotated:
+        logger.info(
+            "directives: %d statement(s) declared to have no implementation",
+            annotated,
+        )
+    return annotated
+
+
 class VerifiesDirective(_VerificationDirectiveBase):
     """Declare that a Python object verifies (tests) a math equation.
 
@@ -539,6 +641,81 @@ class ImplementsDirective(_VerificationDirectiveBase):
     """
 
     kind = "implements"
+
+
+class NoImplementationDirective(SphinxDirective):
+    """Declare that NOTHING implements an equation, and what kind it is.
+
+    Syntax::
+
+        .. no-implementation:: apply-solve-neumann-series
+           :kind: identity
+
+           The series is exhibited to show what production does NOT do:
+           splitting around C is never run.
+
+    Writes no edge. It sets ``no_implementation_kind`` on the equation
+    node, because the fact is a property of the *equation* — there is no
+    second end for an edge to reach.
+
+    **Why the kind is required.** "Nothing implements this" alone is
+    indistinguishable from "nobody has declared an implementer yet", and
+    it fails in the flattering direction: it suppresses every guess AND
+    records the equation as answered, so a real gap is hidden by the same
+    keystroke that would legitimately close a non-gap. The kind is what
+    makes it knowledge instead of suppression, and it is what a reader
+    needs before deciding the declaration is wrong.
+
+    Consequences, all of which follow from the one attribute:
+
+    - ``merge._infer_implements`` stands down for the equation, exactly as
+      it does for one with a declared implementer — no separate
+      suppression path (``[M]`` ORPHEUS 2026-08-18: the eleven
+      hand-verified no-implementer equations on two theory pages carry
+      **244** guesses between them, every one wrong by construction);
+    - ``verification_coverage`` reports it as ``no_implementation``
+      rather than ``documented``, so it leaves the gap list — a gap is
+      something a person could close, and this is not one;
+    - the kind is queryable, so *"which equations are laws?"* becomes a
+      graph question rather than a grep over prose.
+
+    ⛔ **It is refused when the equation already has a declared
+    implementer.** The two assertions contradict each other and only the
+    author can say which is wrong; guessing would silently discard one.
+    """
+
+    required_arguments = 1
+    has_content = True
+    option_spec = {
+        "kind": rst_directives.unchanged,
+    }
+
+    def run(self) -> list[nodes.Node]:
+        label = self.arguments[0].strip()
+        kind = self.options.get("kind", "").strip()
+
+        if not kind:
+            msg = self.reporter.warning(
+                f".. no-implementation:: {label!r} needs a ':kind:' option — "
+                f"the kind is the durable half, and without it this is "
+                f"suppression rather than knowledge",
+                line=self.lineno,
+            )
+            return [msg]
+
+        pending = _init_pending_queue(self.env, self.env.docname)
+        pending.append({
+            "kind": "no-implementation",
+            "label": label,
+            "no_implementation_kind": kind,
+            "docname": self.env.docname,
+            "lineno": self.lineno,
+        })
+        if self.content:
+            container = nodes.container()
+            self.state.nested_parse(self.content, self.content_offset, container)
+            return [container]
+        return []
 
 
 def _apply_relation(
@@ -594,7 +771,7 @@ def _apply_relation(
 #: directives and are applied by :func:`apply_declared_nodes`, so the
 #: relation replay must skip them — their payload has no ``label`` or
 #: ``target`` to read.
-DECLARING_KINDS = frozenset({"error-entry"})
+DECLARING_KINDS = frozenset({"error-entry", "no-implementation"})
 
 
 def apply_pending_edges(
@@ -805,6 +982,7 @@ def register(app: "Sphinx") -> None:
     app.add_directive("error-entry", ErrorEntryDirective)
     app.add_directive("verifies", VerifiesDirective)
     app.add_directive("implements", ImplementsDirective)
+    app.add_directive("no-implementation", NoImplementationDirective)
     app.add_directive("discretizes", DiscretizesDirective)
     app.add_directive("derives-from", DerivesFromDirective)
     app.add_directive("approximates", ApproximatesDirective)
