@@ -2,7 +2,87 @@
 
 All notable changes to sphinxcontrib-nexus.
 
-## Unreleased
+## 0.18.0 — 2026-08-19
+
+### Added — `coverage` and `audit` can adjudicate from the CLI too
+
+`nexus coverage --run …` and `nexus audit --run …`. `retest` and
+`runtime-exercisers` gained `--run` when the execution ledger landed; the two
+VERIFICATION verbs did not, so the feature whose whole point is that a coverage
+claim can be contradicted was unreachable from the command line for exactly the
+commands that report coverage — CI could not adjudicate anything.
+
+All three now resolve the run through ONE shared helper
+(`_runtime_for_claims`) rather than a third copy of the load-and-guard pair.
+The guard matters more than the load: a verb that resolves a run WITHOUT
+checking the family answers as though nothing were covered, which is the
+flattering direction. Gated by a parametrized test across all three verbs,
+because the failure mode is one verb silently drifting off the shared helper.
+
+`[M]` verified end-to-end on a real corpus: `coverage --run <slice>` returns
+5592 corroborated / 1848 refuted; a `cprofile` run is refused with exit 1 and a
+message naming the runs that do qualify.
+
+### Fixed — the deferred-tool escape hatch is MAIN-AGENT-ONLY
+
+The rule, two skills, the README and `session_briefing`'s own `preload_hint`
+all said: *if `mcp__nexus__*` surface as deferred, ONE `ToolSearch(...)` loads
+them.* `[M]` 2026-08-19 — **a sub-agent has no `ToolSearch` tool at all**
+(probed: 45 `mcp__nexus__*` tools loaded eagerly, no `ToolSearch`). So the
+documented recovery path does not exist for the agent most of that guidance is
+written for.
+
+⭐ The worst instance was not a document but a TOOL REPLY: `session_briefing`
+tells its reader to paste a ToolSearch call, and a sub-agent reading that
+briefing cannot. Corrected on all five surfaces, with the consequence stated:
+for a sub-agent the fix is in the DISPATCH — say in the brief what to do
+without Nexus — because an agent that improvises silently produces a report you
+cannot tell apart from a graph-derived one.
+
+### Fixed — the ledger reached the surfaces that consume it
+
+Four commits of feature work shipped with docstrings and a CHANGELOG entry and
+nothing user-facing: `ExecutionLedger`, `exercised_by`, and the four verdicts
+appeared **0 times** across README, CLAUDE.md and every `docs/guide/` file.
+Worst of it, `skills/nexus-verification/SKILL.md` — the skill an agent loads to
+answer "what's verified?" — had zero mentions of `run=`, `refuted` or
+`corroborated`, and did not know a coverage claim could be contradicted at all.
+
+It now carries the `run=` call form, the four verdicts, the sixth status, and
+the three caveats that decide whether a verdict means anything: the two
+unadjudicable verdicts are not findings; a refutation is only as good as its
+`code_evidence`; and `summary.claims_*` sums authored claims with two heuristic
+BFS tiers, so it inflates as declarations land.
+
+`nexus-exploring`'s Symptom table gains `runtime_exercisers` /
+`runtime_markers` and a per-tool "what this answer does NOT contain" table.
+`nexus-cli` was rewritten against the actual CLI: both copies documented a
+`[graph].db` setting that is **retired** — the path is a convention,
+`<project root>/.nexus/graph.db`, derived by one expression so no two surfaces
+can disagree.
+
+### Fixed — `session_briefing`'s silence means the INDEXED sources match
+
+The worktree note said the briefing "warns when a sibling checkout carries a
+fresher graph", which invites reading its silence as "same branch". `[M]`
+2026-08-16: after an ordinary ff-merge-and-delete, 25 files differed from the
+build commit and **0 were indexed** — the graph described the checkout exactly
+and the briefing was right to stay quiet. A reader expecting a branch warning
+concludes the instrument is broken.
+
+### Changed — nexus dogfoods its own shipped skills, by SYMLINK
+
+nexus shipped eleven skills and a routing rule it never loaded itself, so an
+upstream edit was never exercised before consumers got it. `[M]` what that
+cost: a consumer running a **57-line** `nexus-verification` against upstream's
+**120-line** one, and ten of twelve shipped skill files diverged, undetected.
+
+`.claude/skills/nexus-*`, `.claude/rules/nexus-tools.md`, `.claude/commands/`
+and `.claude/hooks/` are now symlinks into `sphinxcontrib/nexus/`. ⭐ Symlinks
+rather than `nexus setup`, and the distinction is the point: `setup` writes
+real files, which is right for a consumer and would recreate here exactly the
+drift this fixes. A symlink makes drift **unspellable** instead of merely
+detectable — `setup --check` reports "Everything up to date" by construction.
 
 ### Added — an equation can declare that NOTHING implements it (#85)
 
