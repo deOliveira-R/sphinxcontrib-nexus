@@ -20,6 +20,16 @@ standalone `Grep`/`Glob` tools were removed from the scaffolds probed and no
 "always-Grep" directive remains — models route freely. The reclassification
 trick is obsolete; do NOT apply it.
 
+⭐ **Re-verified 2026-08-19, on a newer scaffold and a newer model.** The
+2026-06 finding was about the models of that date, and a claim like this
+rots by being right about a population that has moved. Measured again on
+Opus 5: a sub-agent's tool list carried **no `Grep` and no `Glob`**, and one
+consumer had by then made the removal explicit in its own agent definition
+(*"drops the retired Grep/Glob tools and routes by question shape"*). Two
+scaffolds, two months apart, same result. ⚠ State the models and the date
+when you re-run this — "models route freely" with no denominator is the
+claim that quietly stops being true.
+
 What survives is the *diagnostic*: tool-choice freedom does not guarantee
 tool-choice *correctness*. An agent can still fall back on text-search
 habits, and — the opposite failure, equally real — can over-use Nexus as
@@ -63,6 +73,14 @@ The dominant real cause of Nexus-avoidance today is that `mcp__nexus__*`
 tools surface as **deferred**, and the agent treats deferral as
 unavailability. Fix: ONE `ToolSearch("select:mcp__nexus__<name>")` call
 loads them. Deferral is NOT unavailability.
+
+⛔ **But only the main agent can apply that fix.** `[M]` 2026-08-19: a
+sub-agent probe reported 45 `mcp__nexus__*` tools loaded eagerly and **no
+`ToolSearch` tool at all**. So for a SUB-AGENT this diagnosis has no
+remedy: if its Nexus tools are missing, the fix is in the DISPATCH — say
+in the brief what to do without Nexus — not in the agent. An agent that
+improvises silently produces a report you cannot tell apart from a
+graph-derived one.
 
 ### 3. Check the routing guidance actually reaches the agent
 

@@ -3703,7 +3703,10 @@ class GraphQuery:
                 "Nexus MCP tool schemas are deferred (not loaded by default in "
                 "LLM sessions). Paste the tool_search_call below into a single "
                 "ToolSearch call on the first turn that uses Nexus — this loads "
-                "the eight most-common tools in one round-trip instead of staged."
+                "the eight most-common tools in one round-trip instead of staged. "
+                "⚠ A SUB-AGENT has no ToolSearch tool: if its Nexus tools are "
+                "deferred it cannot load them, and should say so rather than "
+                "silently falling back to grep."
             ),
             tool_search_call=(
                 "select:mcp__nexus__query,mcp__nexus__callers,mcp__nexus__callees,"

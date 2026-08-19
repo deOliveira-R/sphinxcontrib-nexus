@@ -54,7 +54,8 @@ nexus setup --no-rules  # skip the always-on routing rule
 `setup` also installs an always-on routing rule (`.claude/rules/nexus-tools.md`)
 carrying the question→tool table — including when `grep`/`Read` is the *correct*
 choice — and the deferred-tool gotcha (`mcp__nexus__*` surfacing as deferred is
-not unavailability; one `ToolSearch` loads them). Reference it from your
+not unavailability; one `ToolSearch` loads them — main agent only, a
+sub-agent has no such tool). Reference it from your
 `CLAUDE.md` so it auto-loads. Positive routing must be always-on: a skill the
 agent never invokes cannot steer it.
 
