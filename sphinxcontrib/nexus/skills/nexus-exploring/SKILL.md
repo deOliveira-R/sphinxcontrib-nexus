@@ -68,6 +68,20 @@ what generic `query`/`context` exploration approximates in ten:
 | "map the functional areas" / load-bearing hubs | `communities`, `god_nodes` |
 | the few nodes holding separate areas together | `bridges` |
 | what actually RAN (hotspots, fired-vs-static edges, coverage) | `runtime_runs` → `runtime_hotspots` / `runtime_edges` / `runtime_branches` |
+| which TESTS executed a node (the only relation that can REFUTE a claim) | `runtime_exercisers(run, node)` |
+| which marker pytest actually RESOLVED at collection | `runtime_markers` |
+
+### ⛔ The caveat on each answer — skipping it is how a confident wrong answer ships
+
+| the tool | what its answer does NOT contain |
+|---|---|
+| `impact` / `callers` | the cone follows `calls`/`type_uses`/`inherits`. `[M]` 2026-08-18 on a real corpus: **12–15 % recall** against execution evidence, and **0 of 300** proven test↔symbol pairs have ANY path over it — properties, dunders, callbacks and polymorphic dispatch mint no edge. And `callers` **empty ≠ dead**: read the `unresolved` block |
+| `dead_functions` | **candidates, not verdicts.** `unresolved_calls > 0` means it is probably called and the resolver lost the edge |
+| `provenance_chain` | an entry marked `inferred` was minted from a shared name token; `via` names the tokens |
+| `verification_coverage` / `verification_audit` | read `code_evidence` FIRST. `[M]` 2026-08-19: **13 121 of 13 508** `implements` edges on one corpus are still guesses. With `run=`, split verdicts on `TestReference.source == "declared"` — the aggregate sums authored claims with two heuristic BFS tiers, and it INFLATES as declarations land |
+| `runtime_exercisers` and every `run=` consumer | needs a capture with `dynamic_context = test_function` **and an unbroken `__init__.py` chain from the rootdir**. `[M]` 2026-08-19: one missing `__init__.py` made a 3330-test tree unattributable — `exercised_by` **0**, silently, with `rc=0` and a plausible bind count. **Check `exercised_by > 0` before trusting any capture** |
+| `retest` | with `run=` each row carries `warrant: executed` — a capture PROVES it ran. Without one it is the same weak cone as `impact`, labelled `reachable` |
+| `errors` | `total_entries: 0` means nothing is DECLARED, not that the project is clean |
 
 ## What the user actually says
 

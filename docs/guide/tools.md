@@ -157,8 +157,8 @@ from code or docs alone.
 | Tool | Answers | Key args |
 |---|---|---|
 | `provenance_chain` | The citation → equation → code chain, plus the maths-to-maths spine in `relations` | `node_id` |
-| `verification_coverage` | Which equations have code and tests? | `status_filter` |
-| `verification_audit` | The complete V&V picture, one call | — |
+| `verification_coverage` | Which equations have code and tests? Pass `run` and every claim gains an `execution` verdict — `corroborated` / `refuted` / `out_of_capture` / `no_implementation` | `status_filter`, `run`, `limit`, `offset` |
+| `verification_audit` | The complete V&V picture, one call. With `run`, a coverage claim can be REFUTED — the only relation that contradicts an authored marker | `group_by`, `include_tests`, `run` |
 | `verification_gaps` | Untagged tests, unverified equations, missing error catchers | `module`, `level` |
 | `staleness` | Which docs drifted from their code? (git timestamps) | — |
 | `dead_references` | Which references name something that no longer exists? | `limit` |

@@ -57,8 +57,16 @@ smell family (`twin_paths`, `discriminations`, `native_place`, `protocol_conform
 
 **Operational notes**
 
-- **Deferred tools:** if `mcp__nexus__*` surface as deferred, ONE
-  `ToolSearch("select:mcp__nexus__<name>")` loads them — deferral is NOT unavailability.
+- **Deferred tools — ⛔ and the escape hatch is MAIN-AGENT-ONLY.** If `mcp__nexus__*`
+  surface as deferred, ONE `ToolSearch("select:mcp__nexus__<name>")` loads them —
+  deferral is NOT unavailability. ⚠ **A sub-agent has no `ToolSearch` tool**, so this recovery path
+  does not exist for it — `[M]` 2026-08-19, a sub-agent probe reported 45 `mcp__nexus__*`
+  tools loaded eagerly and **no `ToolSearch` at all**. A sub-agent that finds Nexus
+  genuinely absent cannot recover; it must say so and fall back to `Bash` (grep, or
+  `python -c "from sphinxcontrib.nexus.export import load_sqlite"` against the graph DB).
+  ⟹ **when a dispatch depends on Nexus, say in the brief what to do if it is missing** —
+  otherwise the agent improvises silently, and its report cannot be told apart from a
+  grep-derived one.
   This is the most common cause of an agent silently avoiding the graph.
 - **Stale graph:** rebuild the docs first; the MCP server auto-reloads.
 - **Git worktrees:** the session's MCP server may have been launched against the MAIN
