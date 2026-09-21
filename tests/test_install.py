@@ -305,6 +305,28 @@ def test_routing_rule_names_the_deferred_tool_gotcha(tmp_path):
     assert "deferral is not unavailability" in rule.lower()
 
 
+def test_routing_rule_routes_by_shipped_skill_and_names_the_text_routes():
+    """The rule decides WHERE a question goes (a skill, or grep/Read); the
+    tool catalogue lives in the skills. So every skill the rule names must
+    ship (a route to a missing skill is a dead end that reads as a
+    steering failure), `nexus-guide` must be named (the index of the rest),
+    and the two text routes must stay: the controls in ``evals/`` measure
+    over-steering only if the rule says when grep/Read is correct."""
+    import re
+    from pathlib import Path
+
+    import sphinxcontrib.nexus as nexus_pkg
+
+    root = Path(nexus_pkg.__file__).parent
+    rule = (root / "rules" / "nexus-tools.md").read_text()
+    shipped = {p.name for p in (root / "skills").iterdir() if p.is_dir()}
+    named = set(re.findall(r"`(nexus-[a-z-]+)`", rule))
+    assert named, "the rule names no skill"
+    assert named <= shipped, f"the rule routes to skills that do not ship: {sorted(named - shipped)}"
+    assert "nexus-guide" in named
+    assert "`grep`" in rule and "**Read**" in rule, "the text routes must stay so the eval controls can measure over-steering"
+
+
 # ---------------------------------------------------------------------------
 # .mcp.json — same no-clobber discipline as the instruction files
 # ---------------------------------------------------------------------------

@@ -2,6 +2,39 @@
 
 All notable changes to sphinxcontrib-nexus.
 
+## Unreleased
+
+### Changed — the routing rule routes by skill; the tool catalogue lives in the skills
+
+`rules/nexus-tools.md` carried a 16-row question→tool table that restated, tool
+by tool, what `nexus-guide` (the tool list and the 5-row deciding table) and
+`nexus-exploring` (the symptom table, the caveats on each answer, the sweeps
+you run unasked) already carry — two spellings of one routing, drifting
+independently (the ORPHEUS consumer measured the drift when it found its own
+generated copy of the rule 164 diff lines from the shipped one). The rule now
+carries the ten rows that decide where a question goes: seven routes to a
+skill by question shape, the two text routes (`grep`/`rg` for raw strings and
+comments; `Read` for a body you already know) and the "either" row. Two of the
+seven name their tools inside the row (the smell family; the map of a codebase:
+communities, hubs, bridges), because the battery's first round showed those
+names load-bearing for haiku: with them gone from the always-on rule it neither
+loaded the skill nor reached the graph on the direct smell scenarios. The
+symptom bullet keeps its four tool names for the same reason, and the release
+sweep points at `nexus-exploring`'s list. What the rule still pins by test: the
+deferred-tool gotcha, that every skill it names ships, that `nexus-guide` is
+named, and that the text routes stay (the eval controls measure over-steering
+only through them).
+
+Measured before shipping with the two-condition steering battery (current rule
+vs trimmed rule, haiku, 3 replicates): current rule 19/21 steering (direct 13/14, indirect 5/5, proactive 1/2) against the trimmed rule 19/21 (13/14, 4/5, 2/2), controls clean in both; the two cells that differed at three replicates, re-run at six, read equal or better for the trimmed rule (`fuzzy-boundaries` 5/6 against 4/6, `release-doc-health` 4/6 against 3/6). The first trim, with the smell-family tool names removed, read 17/21 (direct 10/14): refuted, and the reason those names stay. The round is in `evals/BASELINE.md`.
+
+### Fixed — `nexus-exploring` said the briefing "warns on branch mismatch"
+
+The opposite of the measured fact the rule has carried since 0.18.0:
+`session_briefing` warns when the INDEXED sources changed since the build, not
+when the branch differs. The skill's worktree note now says so, and why an
+ff-merge-and-delete is silent there.
+
 ## 0.18.0 — 2026-08-19
 
 ### Added — `coverage` and `audit` can adjudicate from the CLI too

@@ -139,3 +139,78 @@ misses, a clobbered `.mcp.json` pointing at a nonexistent graph, a denied
 replicate poisoning its cell. The VOID verdict, the `permission_denials`
 check, and the replicate consensus all exist to make those loud instead of
 silent. **When a result looks dramatic, check the harness first.**
+
+## 2026-09-21 · Haiku 4.5 · nexus 0.18.0 + the routing rule by skill (unreleased)
+
+Two conditions, the question being whether the trimmed rule (nine deciding
+rows routed by skill; the 16-row tool table retired to the skills) steers as
+well as the shipped one. Clean rooms built by `nexus setup` only, each
+`.mcp.json` re-pointed at the ORPHEUS graph (`nexus serve --project-root
+~/git/nuclear/ORPHEUS`; the graph built the same day), subject
+`evals/subject.example.json`, `--model haiku --repeat 3 --parallel 3
+--max-turns 10`; Claude Code 2.1.278; 23 scenarios (14 direct, 5
+indirect, 2 proactive, 2 controls), 138 sessions in round 1 and 69 in round 2, permission denials 0 of 207; the 10-turn cap ended 10 / 9 / 7 cells (current / v1 / v2), which the journal still grades. The dollar figures the runner prints are API-price equivalents from `total_cost_usd`; the runs were on a Claude subscription.
+
+Round 1 (current vs the first trim, the smell-family tool names removed from the rule): current steering 19/21 · controls clean 2/2 · $7.35; trimmed v1 steering 17/21 · controls clean 2/2 · $6.86. Round 2 (the trim with the smell family and the map naming their tools inside the routed row, run alone against the same `current` data): trimmed v2 steering 19/21 · controls clean 2/2 · $6.49.
+
+| scenario | current | trimmed v1 | trimmed v2 |
+|---|---|---|---|
+| `arch-map` | MISS | MISS? | MISS |
+| `bridges` | HIT | MISS? | HIT |
+| `twins` | HIT? | MISS? | HIT? |
+| `discrim` | HIT | MISS? | HIT |
+| `conformers` | HIT | HIT? | HIT |
+| `dead-code` | HIT | HIT? | HIT |
+| `belongs` | HIT? | HIT? | HIT |
+| `dead-docs` | HIT | HIT? | HIT |
+| `stale` | HIT | HIT? | HIT |
+| `impact` | HIT? | HIT | HIT |
+| `provenance` | HIT | HIT | HIT |
+| `gaps` | HIT | HIT | HIT |
+| `connect` | HIT | HIT | HIT |
+| `runtime` | HIT | HIT | HIT? |
+| `cleanup-after-delete` | HIT | HIT | HIT |
+| `release-doc-health` | MISS? | HIT? | HIT |
+| `lockstep-edits` | HIT | HIT | HIT |
+| `parallel-work` | HIT? | HIT | HIT |
+| `onboarding-health` | HIT | HIT | HIT |
+| `fuzzy-boundaries` | HIT | HIT? | MISS? |
+| `risky-change` | HIT? | HIT | HIT? |
+| `todo-control` | PASS | PASS | PASS |
+| `readfile-control` | PASS | PASS | PASS |
+
+
+### What this establishes
+
+**Ship the trim.** At three replicates the trimmed rule and the shipped one tie
+on the aggregate (19/21) and on the direct rows (13/14), the controls are clean
+in both, and the two cells that differ swap one provisional indirect miss for
+one provisional proactive hit. At six replicates on those two cells the
+trimmed rule reads equal or better on both: `fuzzy-boundaries` 5/6 against
+4/6, `release-doc-health` 4/6 against 3/6 (the shipped rule's cell FLAKY).
+The first trim, with the smell-family tool names removed from the rule, is
+refuted (17/21; the direct smell rows fell to two-of-three misses with no
+graph call at all): for haiku a tool's NAME in the always-on rule is what
+makes the tool reachable on a direct prompt, and a route to the skill that
+names it is not. The rule therefore names the smell family's and the map's
+tools inside their routed rows, and still goes from 16 tool rows to 10 route
+rows (5 868 → 5 518 bytes).
+
+The self-grade's warnings, read for what they are: the round-1 flake rate
+(17/42) is why the two cells were re-run; the mix is mostly direct (7/21
+indirect + proactive), so the aggregate is a floor and the two situational
+rows carry the conclusion; there is no bare arm because the question was
+"does the trim steer as well as the shipped rule", both arms instructed, not
+"do instructions steer at all" (the 2026-08-08 round answered that).
+
+### Method notes worth keeping
+
+- A prompt that says "this project" with no placeholder (`arch-map`,
+  `bridges`) reads the clean room as the project: haiku describes the
+  `.claude/` tree or reports "this directory is configuration, not a
+  codebase" and never reaches the graph, in both conditions. Such cells
+  measure the clean room, not the instructions; anchor those prompts with a
+  placeholder next round, or run them from a checkout.
+- `nexus setup` in a directory with no `.venv` writes an `.mcp.json` whose
+  command does not exist there; the "point `.mcp.json` at a real graph" step
+  of the README is a rewrite of that file, by hand, before the first run.
