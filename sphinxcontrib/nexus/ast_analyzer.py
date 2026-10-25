@@ -1616,6 +1616,30 @@ def _nested_git_trees(source_dir: Path) -> set[Path]:
     }
 
 
+# Directory names that hold tools' trees, never the project's own source:
+# virtual environments, caches, VCS metadata, installed packages, Sphinx output.
+TOOL_TREE_NAMES = frozenset({
+    ".venv", "venv", ".tox", "__pycache__", "node_modules", ".git",
+    "site-packages", "_build",
+})
+# Packaging outputs, judged only at the TOP of the tree: `pip install .`
+# leaves setuptools' copy of the package in `build/lib/`, while a project's
+# own subpackage may legitimately be named `build`.
+PACKAGING_OUTPUT_NAMES = frozenset({"build", "dist"})
+
+
+def is_tool_tree(rel_parts: tuple[str, ...]) -> bool:
+    """Whether a directory, given by its parts RELATIVE to the project root, is a tool's tree.
+
+    Relative, because an absolute path's parts name wherever the checkout
+    happens to live: a project cloned under ``/srv/build/`` is not a
+    packaging output.
+    """
+    if rel_parts and rel_parts[0] in PACKAGING_OUTPUT_NAMES:
+        return True
+    return any(p in TOOL_TREE_NAMES or p.endswith(".egg-info") for p in rel_parts)
+
+
 def analyze_directory(
     source_dir: Path,
     project_root: Path | None = None,
@@ -1650,13 +1674,12 @@ def analyze_directory(
     # consumers can chase re-export chains.
     reexports: dict[str, str] = {}
 
-    # Pre-compute exclusion directory names for fast filtering
-    _skip_dirs = {".venv", "venv", "__pycache__", "node_modules", ".tox", ".git"}
     nested_trees = _nested_git_trees(source_dir)
     py_files = sorted(source_dir.rglob("*.py"))
     for filepath in py_files:
-        # Skip files under excluded directories
-        if _skip_dirs & set(filepath.parts):
+        # Skip files under a tool's tree (a venv, a cache, a packaging output).
+        anchor = project_root if filepath.is_relative_to(project_root) else source_dir
+        if is_tool_tree(filepath.parent.relative_to(anchor).parts):
             continue
         # Skip files inside nested git working trees (worktrees,
         # vendored clones, submodules) — foreign checkouts, not this
