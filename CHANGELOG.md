@@ -2,7 +2,7 @@
 
 All notable changes to sphinxcontrib-nexus.
 
-## Unreleased
+## 0.18.1 — 2026-10-25
 
 ### Fixed — the interpreter's own `sys.path` entry is not a declared source root
 
