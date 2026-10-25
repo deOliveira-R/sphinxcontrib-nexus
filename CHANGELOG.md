@@ -4,6 +4,37 @@ All notable changes to sphinxcontrib-nexus.
 
 ## Unreleased
 
+### Fixed — the interpreter's own `sys.path` entry is not a declared source root
+
+The AST analysis scans the directories `conf.py` put on `sys.path` under the
+project root, and the project root when it put none. It read EVERY such entry
+as declared, including the one the interpreter prepends at startup: the working
+directory for `python -m` / `-c`, the script's directory for a script. Read the
+Docs builds with `cd docs && python -m sphinx . out`, so the docs directory was
+taken as the only source root and the code graph came out partial: on ORPHEUS
+the module count fell from 1243 to 876 and 409 `.. implements::` directives
+warned (target not found, or the source read as `external`), while the same
+build run from the project root warned 0 times. The entry the interpreter
+prepended is now computed from `sys.orig_argv` (none under `-P` /
+`PYTHONSAFEPATH`) and one occurrence of it is set aside; a `conf.py` that
+inserts the same directory adds a second occurrence, which is kept. A
+directory declared twice is now scanned once. The selection is the pure
+function `_source_dirs`, tested in `tests/test_source_dirs.py`.
+
+### Fixed — `build/lib/` is not source, and a checkout's location never decides what is
+
+`pip install .` leaves setuptools' copy of the package in `build/lib/`, and the
+analyzer scanned it: on ORPHEUS, built the way Read the Docs builds, every
+module appeared twice, once as `build.lib.orpheus.*`. Both skip checks (the
+analyzer's file filter and the source-root selection) also compared against
+the ABSOLUTE path's components, so a checkout living under a directory named
+`build`, `dist` or `venv` would have been skipped whole. One predicate,
+`ast_analyzer.is_tool_tree`, now serves both, on parts RELATIVE to the project
+root: tool trees (`.venv`, `venv`, `.tox`, `__pycache__`, `node_modules`,
+`.git`, `site-packages`, `_build`, `*.egg-info`) at any depth, packaging
+outputs (`build`, `dist`) at the top only, so a subpackage named `build` is
+still analysed.
+
 ### Changed — the routing rule routes by skill; the tool catalogue lives in the skills
 
 `rules/nexus-tools.md` carried a 16-row question→tool table that restated, tool

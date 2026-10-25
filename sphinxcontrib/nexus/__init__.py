@@ -219,6 +219,85 @@ def _compute_exclude_patterns(
     return patterns
 
 
+# The interpreter options that consume the NEXT token as their argument,
+# so a scan of ``sys.orig_argv`` must not read that token as the script.
+_OPTIONS_WITH_ARGUMENT = frozenset("WX")
+_LONG_OPTIONS_WITH_ARGUMENT = frozenset({"--check-hash-based-pycs"})
+
+
+def _interpreter_path_entry(
+    orig_argv: list[str], cwd: Path, *, safe_path: bool,
+) -> Path | None:
+    """The one ``sys.path`` entry the INTERPRETER prepended at startup.
+
+    Python puts one directory at the head of ``sys.path`` before any user
+    code runs: the working directory for ``python -m mod``, ``python -c
+    cmd``, ``python -`` and the interactive prompt, and the script's own
+    directory for ``python path/to/script.py`` (the path itself when the
+    script is a directory or a zip archive). ``-P`` / ``PYTHONSAFEPATH``
+    (``safe_path``) turns it off. Read from ``orig_argv``, the command line
+    as the interpreter received it, with ``cwd`` the directory it ran in.
+
+    Nobody DECLARED this entry, so it is not one of the directories a
+    ``conf.py`` added for nexus to analyse: ``cd docs && python -m sphinx .
+    out`` (Read the Docs' build command) leaves the docs directory there,
+    and it is not a source root.
+    """
+    if safe_path:
+        return None
+    tokens = orig_argv[1:]
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "-":
+            return cwd
+        if tok.startswith("--"):
+            i += 2 if tok in _LONG_OPTIONS_WITH_ARGUMENT else 1
+            continue
+        if tok.startswith("-"):
+            flags = tok[1:]
+            for k, flag in enumerate(flags):
+                if flag in "mc":
+                    return cwd
+                if flag in _OPTIONS_WITH_ARGUMENT:
+                    # `-Wd` carries its argument; `-W d` takes the next token.
+                    i += 1 if flags[k + 1:] else 2
+                    break
+            else:
+                i += 1
+            continue
+        script = (cwd / tok).resolve()
+        return script if script.is_dir() or script.suffix == ".zip" else script.parent
+    return cwd
+
+
+def _source_dirs(
+    project_root: Path, sys_path: list[str], interpreter_entry: Path | None,
+) -> list[Path]:
+    """The directories to analyse: the ones ``conf.py`` put on ``sys.path``.
+
+    An entry counts when it is a directory strictly under ``project_root``
+    and not a tool's tree (:func:`~sphinxcontrib.nexus.ast_analyzer.is_tool_tree`). ONE occurrence of
+    ``interpreter_entry`` is set aside first, because the interpreter, not
+    ``conf.py``, put it there (:func:`_interpreter_path_entry`); a
+    ``conf.py`` that inserts the same directory adds a second occurrence,
+    which is kept. With nothing declared, the answer is ``[project_root]``
+    and the module resolver auto-detects the layout.
+    """
+    from sphinxcontrib.nexus.ast_analyzer import is_tool_tree
+
+    entries = [Path(p).resolve() for p in sys_path]
+    if interpreter_entry is not None and interpreter_entry in entries:
+        entries.remove(interpreter_entry)
+    declared: list[Path] = []
+    for pp in entries:
+        if not pp.is_dir() or pp == project_root or not pp.is_relative_to(project_root):
+            continue
+        if not is_tool_tree(pp.relative_to(project_root).parts) and pp not in declared:
+            declared.append(pp)
+    return declared or [project_root]
+
+
 def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     """Run AST analysis on project source and merge into the doc graph."""
     import sys
@@ -226,33 +305,17 @@ def _run_ast_analysis(app: Sphinx, graph: Any) -> None:
     from sphinxcontrib.nexus.ast_analyzer import analyze_directory
     from sphinxcontrib.nexus.merge import merge_graphs
 
-    # Determine the project root and let ModuleResolver auto-detect
-    # source directories. For projects that add dirs to sys.path in
-    # conf.py, we pass those as explicit sys_path_dirs.
+    # Analyse the directories conf.py put on sys.path, or the project root
+    # when it declared none (the module resolver then auto-detects).
     project_root = Path(app.srcdir).parent
-    _skip = {".venv", "venv", ".tox", "__pycache__", "site-packages",
-             "_build", "node_modules", "dist", "build", ".git", ".egg-info"}
-
-    # Collect sys.path entries under project root (set by conf.py)
-    conf_sys_paths: list[Path] = []
-    for p in sys.path:
-        pp = Path(p).resolve()
-        if not pp.is_dir() or pp == project_root:
-            continue
-        if _skip & set(pp.parts):
-            continue
-        try:
-            pp.relative_to(project_root)
-            conf_sys_paths.append(pp)
-        except ValueError:
-            continue
-
-    # If conf.py added directories to sys.path, analyze each one.
-    # Otherwise analyze project_root and let ModuleResolver auto-detect.
-    if conf_sys_paths:
-        source_dirs = conf_sys_paths
-    else:
-        source_dirs = [project_root]
+    source_dirs = _source_dirs(
+        project_root,
+        sys.path,
+        _interpreter_path_entry(
+            list(sys.orig_argv), Path.cwd().resolve(),
+            safe_path=bool(sys.flags.safe_path),
+        ),
+    )
 
     settings = _effective(app)
     exclude_patterns = _compute_exclude_patterns(
